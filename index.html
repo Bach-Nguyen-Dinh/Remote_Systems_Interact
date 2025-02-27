@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Option Selector</title>
+    <style>
+        select {
+            font-size: 14px;
+            padding: 10px;
+            width: 400px;
+            height: 40px;
+        }
+        #status {
+            font-size: 14px;
+            color: blue;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h2>Select Input File</h2>
+    <select id="menuDropdown" onchange="fetchFileSize()">
+        <option value="" disabled selected>Click "Refresh" to load</option>
+    </select>
+    <button onclick="fetchFileList()">Refresh</button> <!-- Manual refresh button -->
+    <button onclick="sendMessage()">Load</button>
+    <button onclick="resetMenu()">Reset</button> <!-- New Reset button -->
+    <p id="status"></p> <!-- Status message area -->
+    <p><strong>File Size:</strong> <span id="fileSize">N/A</span></p>
+
+    <script>
+        function fetchFileList() {
+            const statusElement = document.getElementById("status");
+            statusElement.textContent = "Fetching file list..."; // Show status message
+
+            fetch("http://localhost:5000/send_message", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: "4" })  
+            })
+            .then(() => {
+                setTimeout(() => {
+                    fetch("http://localhost:5000/get_cphd_files")
+                        .then(response => response.json())
+                        .then(data => {
+                            console.log("Fetched CPHD files:", data.files);
+
+                            const select = document.getElementById("menuDropdown");
+                            select.innerHTML = ''; // Clear existing options
+
+                            if (data.files.length === 0) {
+                                statusElement.textContent = "No CPHD files found.";
+                                select.innerHTML = '<option value="" disabled>No files available</option>';
+                                document.getElementById("fileSize").textContent = "N/A";
+                            } else {
+                                statusElement.textContent = `Fetched ${data.files.length} file(s).`;
+
+                                data.files.forEach(file => {
+                                    const option = document.createElement('option');
+                                    option.value = file;
+                                    option.textContent = file;
+                                    select.appendChild(option);
+                                });
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error fetching CPHD files:', error);
+                            statusElement.textContent = "Error fetching file list.";
+                        });
+                }, 500);
+            })
+            .catch(error => {
+                console.error("Error sending fetch command:", error);
+                statusElement.textContent = "Error requesting file fetch.";
+            });
+        }
+
+        function fetchFileSize() {
+            const selectedFile = document.getElementById("menuDropdown").value;
+            if (!selectedFile) return;
+
+            fetch("http://localhost:5000/get_cphd_file_properties")
+                .then(response => response.json())
+                .then(data => {
+                    if (data.files.filename === selectedFile) {
+                        document.getElementById("fileSize").textContent = data.files.size + " bytes";
+                    } else {
+                        document.getElementById("fileSize").textContent = "N/A";
+                    }
+                })
+                .catch(error => {
+                    console.error("Error fetching file size:", error);
+                    document.getElementById("fileSize").textContent = "N/A";
+                });
+        }
+
+        function sendMessage() {
+            const selectedOption = document.getElementById("menuDropdown").value;
+            const statusElement = document.getElementById("status");
+
+            if (!selectedOption) {
+                statusElement.textContent = "Please select a file first.";
+                return;
+            }
+
+            fetch("http://localhost:5000/send_message", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: `SIZE:${selectedOption}` })
+            })
+            .then(response => response.json())
+            .then(data => {
+                statusElement.textContent = "Command sent successfully.";
+                fetchFileSize(); // Fetch file size immediately after sending message
+            })
+            .catch(error => {
+                console.error("Error:", error);
+                statusElement.textContent = "Error sending command.";
+            });
+        }
+
+        function resetMenu() {
+            document.getElementById("menuDropdown").innerHTML = '<option value="" disabled selected>Click "Refresh" to load</option>';
+            document.getElementById("status").textContent = "";
+            document.getElementById("fileSize").textContent = "N/A";
+        }
+    </script>
+</body>
+</html>
