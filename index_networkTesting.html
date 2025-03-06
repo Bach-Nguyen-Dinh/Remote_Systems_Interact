@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Option Selector</title>
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .container {
+            display: flex;
+            align-items: flex-start;
+            gap: 20px;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            max-width: 100%;
+            padding-left: 0;
+            padding-right: 0;
+        }
+
+        .dropdown-container {
+            display: flex;
+            flex-direction: column;
+        }
+
+        select {
+            font-size: 14px;
+            padding: 10px;
+            width: 380px;
+            height: 40px;
+            display: flex;
+        }
+
+        .status-container {
+            height: 20px;
+            margin-top: 5px;
+            font-weight: bold;
+        }
+
+        .image-container {
+            width: 1000px;
+            height: 650px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background-color: rgba(255, 255, 255, 0.08); /* Light background color */
+            border: 0.1px solid rgba(255, 255, 255, 0.2); /* White border with 2px width */
+            margin: 0;
+            padding: 0;
+        }
+
+        #processedImage {
+            display: none;
+            max-width: none;
+            max-height: none;
+            object-fit: contain;
+        }
+
+        .button-container {
+            display: flex;
+            justify-content: left;
+            gap: 20px;
+            margin-top: 10px;
+            width: min-content;
+        }
+
+        .button-container button {
+            width: 80px;
+            height: 40px;
+        }
+
+        /* Add styling for the reset button */
+        .button-container button:nth-child(4) {
+            background-color: #ca2715;
+            color: white;
+            border: none;
+        }
+
+        .button-container button:nth-child(4):hover {
+            background-color: #ff4c47;
+            cursor: pointer;
+        }
+
+        /* Green color for Load and Run buttons */
+        .button-container button:nth-child(1),
+        .button-container button:nth-child(2),
+        .button-container button:nth-child(3) {
+            background-color: #2372cc;
+            color: white;
+            border: none;
+        }
+
+        .button-container button:nth-child(1):hover,
+        .button-container button:nth-child(2):hover,
+        .button-container button:nth-child(3):hover {
+            background-color: #3696ff;
+            cursor: pointer;
+        }
+
+        /* Style the box container */
+        .box-container {
+            padding: 10px; /* Add some space inside the box */
+            background-color: rgba(255, 255, 255, 0.08); /* Light background color */
+            border: 0.1px solid rgba(255, 255, 255, 0.2); /* White border with 2px width */
+            border-radius: 3px; /* Slightly rounded corners */
+            margin-bottom: 20px; /* Space below the box */
+        }
+
+        .box-container p,
+        .box-container h2 {
+            margin: 10px 10px; /* Spacing between elements inside the box */
+        }
+
+        iframe {
+            border-radius: 3px; /* Rounded corners for the iframe */
+            margin-top: 10px;
+        }
+
+        .no-border-background {
+            background-color: transparent; /* No background */
+            border: none; /* Remove the border */
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="dropdown-container">
+            <div class="box-container">
+                <h2>Test Results</h2>
+                <div class="status-container">
+                    <p id="status">&nbsp;</p>
+                </div>
+                <p><strong>Upload Bandwidth:</strong> <span id="upBW">N/A</span></p>
+                <p><strong>Download Bandwidth:</strong> <span id="downBW">N/A</span></p>
+                <p><strong>Upload Latency:</strong> <span id="upLat">N/A</span></p>
+                <p><strong>Download Latency:</strong> <span id="downLat">N/A</span></p>
+            </div>
+            <div class="box-container no-border-background">
+                <div class="button-container">
+                    <button onclick="fetchFileList()">Refresh</button>
+                    <button onclick="sendLoad()">Load</button>
+                    <button onclick="sendRun()">Run</button>
+                    <button onclick="reset()">Reset</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let lastTifFilename = "lastFile"; // Store the last processed tif_filename
+        
+        function fetchFileList() {
+            const statusElement = document.getElementById("status");
+            statusElement.textContent = "Fetching file list..."; // Show status message
+
+            fetch("http://localhost:5000/send_message", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: "4" })  
+            })
+            .then(() => {
+                setTimeout(() => {
+                    fetch("http://localhost:5000/get_cphd_files")
+                        .then(response => response.json())
+                        .then(data => {
+                            console.log("Fetched CPHD files:", data.files);
+
+                            const select = document.getElementById("menuDropdown");
+                            select.innerHTML = ''; // Clear existing options
+
+                            if (data.files.length === 0) {
+                                statusElement.textContent = "No CPHD files found.";
+                                select.innerHTML = '<option value="" disabled>No files available</option>';
+                                document.getElementById("fileSize").textContent = "N/A";
+                            } else {
+                                statusElement.textContent = `Fetched ${data.files.length} file(s).`;
+
+                                data.files.forEach(file => {
+                                    const option = document.createElement('option');
+                                    option.value = file;
+                                    option.textContent = file;
+                                    select.appendChild(option);
+                                });
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error fetching CPHD files:', error);
+                            statusElement.textContent = "Error fetching file list.";
+                        });
+                }, 500);
+            })
+            .catch(error => {
+                console.error("Error sending fetch command:", error);
+                statusElement.textContent = "Error requesting file fetch.";
+            });
+        }
+
+        function fetchFileSize() {
+            const selectedFile = document.getElementById("menuDropdown").value;
+            if (!selectedFile) return;
+
+            fetch("http://localhost:5000/get_cphd_file_properties")
+                .then(response => response.json())
+                .then(data => {
+                    if (data.files.filename === selectedFile) {
+                        document.getElementById("fileSize").textContent = data.files.size;
+                        document.getElementById("imageSize").textContent = data.files.metadata.numRows + " x " + data.files.metadata.numColumns;
+                        document.getElementById("resolution").textContent = data.files.metadata.groundResolution.toFixed(2) + " meters";
+                    } else {
+                        document.getElementById("fileSize").textContent = "N/A";
+                        document.getElementById("imageSize").textContent = "N/A";
+                        document.getElementById("resolution").textContent = "N/A";
+                        document.getElementById("areaSize").textContent = "N/A";
+                    }
+                })
+                .catch(error => {
+                    console.error("Error fetching file size:", error);
+                    document.getElementById("fileSize").textContent = "N/A";
+                    document.getElementById("imageSize").textContent = "N/A";
+                    document.getElementById("resolution").textContent = "N/A";
+                    document.getElementById("areaSize").textContent = "N/A";
+                });
+        }
+
+        function fetchProcessedFile() {
+            fetch("http://localhost:5000/images/tif_image.webp")
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error("Failed to fetch image.");
+                    }
+                    return response.blob();
+                })
+                .then(imageBlob => {
+                    const imageUrl = URL.createObjectURL(imageBlob);
+                    document.getElementById("processedImage1").src = imageUrl;
+                    document.getElementById("processedImage2").src = imageUrl;
+                    document.getElementById("processedImage1").style.display = "block";
+                    document.getElementById("processedImage2").style.display = "block";
+                })
+                .catch(error => {
+                    console.error("Error fetching processed image:", error);
+                    document.getElementById("processedImage1").style.display = "none";
+                    document.getElementById("processedImage2").style.display = "none";
+                });
+        }
+
+        function sendLoad() {
+            const selectedOption = document.getElementById("menuDropdown").value;
+            const statusElement = document.getElementById("status");
+
+            if (!selectedOption) {
+                statusElement.textContent = "Please select a file first.";
+                return;
+            }
+
+            fetch("http://localhost:5000/send_message", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: `SIZE:${selectedOption}` })
+            })
+            .then(response => response.json())
+            .then(data => {
+                statusElement.textContent = "Command sent successfully ... Load.";
+                fetchFileSize(); // Fetch file size immediately after sending message
+            })
+            .catch(error => {
+                console.error("Error:", error);
+                statusElement.textContent = "Error sending command.";
+            });
+            // Reset images
+            document.getElementById("processedImage1").src = "";
+            document.getElementById("processedImage2").src = "";
+            // Reset output properties
+            document.getElementById("outFileSize").textContent = "N/A";
+            document.getElementById("reductionFactor").textContent = "N/A";
+            document.getElementById("sizeCompared").textContent = "N/A";
+        }
+
+        async function sendRun() {
+            // Send the "RUN" command
+            await fetch("http://localhost:5000/send_message", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: `NETRUN` })
+            });
+
+            statusElement.textContent = "Command sent successfully ... Run";
+
+            // Wait a bit for processing
+            let netTestDone = false;
+
+            while (!netTestDone) {
+                // Fetch the output file properties
+                const response = await fetch("http://localhost:5000/get_tif_file_properties");
+                const data = await response.json();
+
+                // Check if tif_filename has changed
+                if (data.files.tif_filename && data.files.tif_filename !== lastTifFilename) {
+                    statusElement.textContent = "Getting output properties ... Data Fetched.";
+
+                    // Update output file properties
+                    document.getElementById("outFileSize").textContent = data.files.size;
+                    document.getElementById("reductionFactor").textContent = "x" + data.files.reduction_scale + " or " + data.files.reduction_factor + "%";
+                    document.getElementById("sizeCompared").textContent = data.files.size_compared + "%";
+
+                    // Fetch the image after properties are updated
+                    fetchProcessedFile();
+
+                    netTestDone = true;
+                } else {
+                    statusElement.textContent = "Waiting for test results...";
+                    await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for 2 seconds before retrying
+                }
+            }
+
+            statusElement.textContent = "Getting output properties ... Done.";
+        }
+
+        function reset() {
+            fetch("http://localhost:5000/send_message", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: "3"})
+            })
+            .then(response => response.json())
+            .then(data => {
+                statusElement.textContent = "Command sent successfully ... Reset.";
+            })
+            .catch(error => {
+                console.error("Error:", error);
+                statusElement.textContent = "Error sending command.";
+            });
+            document.getElementById("menuDropdown").innerHTML = '<option value="" disabled selected>Click "Refresh" to fetch</option>';
+            document.getElementById("status").textContent = "";
+            document.getElementById("fileSize").textContent = "N/A";
+            document.getElementById("imageSize").textContent = "N/A";
+            document.getElementById("resolution").textContent = "N/A";
+            document.getElementById("areaSize").textContent = "N/A";
+            // Reset images
+            document.getElementById("processedImage1").src = "";
+            document.getElementById("processedImage2").src = "";
+            // Reset output properties
+            document.getElementById("outFileSize").textContent = "N/A";
+            document.getElementById("reductionFactor").textContent = "N/A";
+            document.getElementById("sizeCompared").textContent = "N/A";
+        }
+    </script>
+</body>
+</html>
