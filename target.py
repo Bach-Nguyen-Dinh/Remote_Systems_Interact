@@ -1,5 +1,6 @@
 from PIL import Image
 import socket
+import subprocess
 import threading
 import psutil
 import time
@@ -231,7 +232,15 @@ def listen_for_messages():
                     if file_path and os.path.exists(file_path):
                         threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
 
-message_thread = threading.Thread(target=listen_for_messages, daemon=True).start()
+# Function to run the iperf3 server
+def run_iperf3_server():
+    try:
+        # Start iperf3 server as a subprocess
+        subprocess.run(["iperf3", "-s"], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error running iperf3 server: {e}")
+    except FileNotFoundError:
+        print("iperf3 command not found. Please ensure iperf3 is installed.")
 
 def read_rapl_energy():
     try:
@@ -324,6 +333,10 @@ def get_system_info():
     }
     
     return system_info
+
+# All the thread
+threading.Thread(target=listen_for_messages, daemon=True).start()
+threading.Thread(target=run_iperf3_server, daemon=True).start()
 
 while True:
     try:
