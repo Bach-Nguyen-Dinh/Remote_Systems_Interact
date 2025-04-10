@@ -4,8 +4,9 @@ import time
 import socket
 import os
 import threading
+import subprocess
 from http.server import SimpleHTTPRequestHandler, HTTPServer
-from flask import Flask, request, jsonify, send_from_directory  # type: ignore
+from flask import Flask, request, jsonify, send_from_directory, send_file  # type: ignore
 from flask_cors import CORS  # type: ignore
 
 # Configuration
@@ -15,7 +16,7 @@ IMAGE_PORT = 55555
 HTTP_PORT = 8080
 FLASK_PORT = 5000
 
-TARGET_IP = "10.42.0.91"  # Target system IP
+TARGET_IP = "10.42.0.90"  # Target system IP
 TARGET_PORT = 54321       # Target system port
 
 INFLUXDB_HOST = "localhost"
@@ -34,6 +35,17 @@ message = ""
 cphd_file_list = []  # Global list to store CPHD file names
 cphd_file_properties = []  # Global list to store properties of a CPHD file
 tif_file_properties = []
+final_results = {
+    "sender_transfer": "",
+    "sender_bitrate": "",
+    "sender_jitter": "",
+    "sender_loss": "",
+    "receiver_transfer": "",
+    "receiver_bitrate": "",
+    "receiver_jitter": "",
+    "receiver_loss": ""
+}
+netTestDuration = 0
 
 # Initialize Flask
 app = Flask(__name__)
@@ -175,6 +187,19 @@ def receive_metrics():
                         f"per_core_freq{i}": float(system_info["per_core_freq"].get(f"core_{i}_frequency", 0))
                         for i in range(32)
                     }
+                    # Network data
+                    network_data = {}
+                    network_info = system_info.get("network", {})
+
+                    for iface_name, iface_stats in network_info.items():
+                        for stat_name, value in iface_stats.items():
+                            # Create a field like enp2s0_upload_speed, enp1s0f1_bytes_recv, etc.
+                            field_key = f"{iface_name}_{stat_name}"
+                            try:
+                                network_data[field_key] = float(value)
+                            except (ValueError, TypeError):
+                                # Skip if value is not convertible to float
+                                continue
 
                     # Prepare data for InfluxDB
                     json_body = [
@@ -190,14 +215,15 @@ def receive_metrics():
                                 "total_memory": float(system_info["total_memory"]),
                                 "total_swap": float(system_info["total_swap"]),
                                 "num_threads": int(system_info["num_threads"]),
-                                "download_speed": float(system_info.get("download_speed", 0.0)),
-                                "upload_speed": float(system_info.get("upload_speed", 0.0)),
+                                # "download_speed": float(system_info.get("download_speed", 0.0)),
+                                # "upload_speed": float(system_info.get("upload_speed", 0.0)),
                                 "cpu_power": float(system_info.get("cpu_power", 0.0)),
                                 "total_disk_usage": float(system_info.get("total_disk_usage", 0.0)),
                                 "total_disk_size": float(system_info.get("total_disk_size", 0.0)),
                                 "progress_update": float(system_info.get("progress_update", 0.0)),
                                 **per_core_usage_data,
-                                **per_core_freq_data
+                                **per_core_freq_data,
+                                **network_data
                             },
                             "time": int(time.time() * 1e9)  # Nanoseconds
                         }
@@ -213,7 +239,7 @@ def receive_metrics():
 # Flask route to send messages to target system
 @app.route('/send_message', methods=['POST'])
 def send_message():
-    global message
+    global message, netTestDuration
     data = request.get_json()
     message = data.get("message", "Default message from host")
 
@@ -221,7 +247,13 @@ def send_message():
         return delete_all_files()
     elif message.startswith("RUN:"):
         global tif_file_properties
+        # clear the database for new data
         tif_file_properties = []
+    elif message.startswith("NETRUN:"):
+        netTestDuration = message.split(":", 1)[1]
+        # Start iperf3 in a separate thread
+        start_iperf_thread()
+        return jsonify({"status": "iperf3 test started"}), 200
         
     return forward_message_to_target(message)   
     
@@ -277,6 +309,74 @@ def get_tif_file_properties():
 def serve_image(filename):
     """Serve images from the SAVE_DIR directory."""
     return send_from_directory(SAVE_DIR, filename)
+
+# Function to run iperf3 and capture the results
+def run_iperf3():
+    global netTestDuration
+    file_path = "/home/bach/python_script/iperf3_end_result.json"
+
+    def run_test(reverse=False):
+        # Define the command with or without reverse mode
+        command = ["iperf3", "-c", TARGET_IP, "-u", "-b", "100G", "-t", netTestDuration, "-i", "1", "-J"]
+        if reverse:
+            command.append("-R")  # Add reverse flag for upload test
+
+        # Run the command
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+
+        if process.returncode == 0:
+            # Convert JSON output to a Python dictionary
+            iperf3_result = json.loads(stdout)
+            end_data = iperf3_result.get("end", {})
+
+            return end_data
+        else:
+            print(f"Error running iperf3 ({'upload' if reverse else 'download'}): {stderr}")
+            return None
+
+    # Run download test
+    down_result = run_test(reverse=False)
+    
+    # Run upload test
+    up_result = run_test(reverse=True)
+
+    if down_result or up_result:
+        # Load existing results if the file exists
+        try:
+            with open(file_path, "r") as file:
+                existing_data = json.load(file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            existing_data = {}
+
+        # Add results with appropriate tags
+        if down_result:
+            existing_data["down"] = down_result
+        if up_result:
+            existing_data["up"] = up_result
+
+        # Save the updated results back to the file
+        with open(file_path, "w") as json_file:
+            json.dump(existing_data, json_file, indent=4)
+
+        print(f"Results saved to {file_path}")
+    else:
+        print("No valid results to save.")
+
+
+# Function to start the iperf3 test in a background thread
+def start_iperf_thread():
+    iperf_thread = threading.Thread(target=run_iperf3, daemon=True)
+    iperf_thread.start()
+
+# Flask route to fetch and stream the iperf3_end_result.json file
+@app.route('/iperf3/results', methods=['GET'])
+def get_results():
+    file_path = '/home/bach/python_script/iperf3_end_result.json'
+    try:
+        return send_file(file_path, mimetype='application/json', as_attachment=False)
+    except FileNotFoundError:
+        return "File not found", 404
 
 # Function to run Flask server
 def run_flask_server():
