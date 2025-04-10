@@ -98,7 +98,7 @@ def handle_image_sending(image_path):
             progress_update = timestamps[second]
     send_image(image_path)
 
-def send_cphd_files():
+def send_cphd_files_list():
     global cphd_files
     cphd_files = {}  # Change to dictionary
 
@@ -151,11 +151,15 @@ def get_metadata_from_json(directory):
 def process_cphd_file(file_path):
     directory = os.path.dirname(file_path)
     tif_files = [f for f in os.listdir(directory) if f.endswith(".tif")]
+    # png_files = [f for f in os.listdir(directory) if f.endswith(".png")]
     
     if tif_files:
         tif_path = os.path.join(directory, tif_files[0])  # Take the first .tif file found
+
+        # send the processed image
         handle_image_sending(tif_path)
         
+        # send the properies of the processed image
         tif_size = os.path.getsize(tif_path)
         cphd_size = os.path.getsize(file_path)
         reduction_scale = round(cphd_size / tif_size, 2)
@@ -181,6 +185,12 @@ def process_cphd_file(file_path):
         except Exception as e:
             print(f"Error sending tif file properties: {e}")
 
+        # if png_files:
+        #     png_path = os.path.join(directory, png_files[0])
+
+        #     # send the furhter processed image
+        #     handle_image_sending(png_path)
+
 def listen_for_messages():
     global progress_update
 
@@ -204,7 +214,7 @@ def listen_for_messages():
                 if message == "3":
                     progress_update = 0.0
                 elif message == "4":
-                    send_cphd_files()  # Send CPHD files back to host
+                    send_cphd_files_list()  # Send CPHD files back to host
                 elif message.startswith("SIZE:"):
                     progress_update = 0.0
                     filename = message.split(":", 1)[1]
