@@ -12,7 +12,7 @@ TARGET_PORT = 54321      # Port on which the target system is listening
 def send_message():
     data = request.get_json()
     message = data.get("message", "Default message from host")
-
+    print(f"Message from host: {message}")
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
             client_socket.connect((TARGET_IP, TARGET_PORT))
