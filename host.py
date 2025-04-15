@@ -12,8 +12,8 @@ from flask_cors import CORS  # type: ignore
 # Configuration
 HOST_IP = '0.0.0.0'
 SYSINFO_PORT = 12345  # Port for system metrics
-IMAGE_PORT = 55555
-HTTP_PORT = 8080
+DATA_PORT = 55555
+IMAGE_PORT = 8080
 FLASK_PORT = 5000
 
 TARGET_IP = "10.42.0.90"  # Target system IP
@@ -29,6 +29,10 @@ SAVE_DIR = "/home/bach/python_script/pictures/"
 # SAVE_PATH = os.path.join(SAVE_DIR, "latest_image.png")
 SAVE_PATH_TIF = os.path.join(SAVE_DIR, "tif_image.webp")
 SAVE_PATH_OUT = os.path.join(SAVE_DIR, "out_image.png")
+SAVE_PATH_IPERF_LW_ETH_OB = "/home/bach/python_script/iperf3_end_result_LwEthOnb.json"
+SAVE_PATH_IPERF_UP_ETH_OB = "/home/bach/python_script/iperf3_end_result_UpEthOnb.json"
+SAVE_PATH_IPERF_LW_ETH_ADT = "/home/bach/python_script/iperf3_end_result_LwEthAdt.json"
+SAVE_PATH_IPERF_UP_ETH_ADT = "/home/bach/python_script/iperf3_end_result_UpEthAdt.json"
 
 # Global variable
 message = ""
@@ -51,13 +55,13 @@ netTestDuration = 0
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-def receive_image():
+def start_server():
     global message, cphd_file_list, cphd_file_properties, tif_file_properties
     imageSaved = False
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
-        server_socket.bind((HOST_IP, IMAGE_PORT))
+        server_socket.bind((HOST_IP, DATA_PORT))
         server_socket.listen(1)
-        print(f"Listening for incoming image on {HOST_IP}:{IMAGE_PORT}...")
+        print(f"Listening for incoming image on {HOST_IP}:{DATA_PORT}...")
 
         while True:
             conn, addr = server_socket.accept()
@@ -67,13 +71,20 @@ def receive_image():
                 # Check if message is related to an image
                 if message.startswith("RUN:") and imageSaved == False:
                     save_path = SAVE_PATH_TIF
+                elif message.startswith("NETRUN:"):
+                    if "LwEthAdt" in message:
+                        save_path = SAVE_PATH_IPERF_LW_ETH_ADT
+                    elif "UpEthAdt" in message:
+                        save_path = SAVE_PATH_IPERF_UP_ETH_ADT
+                    else:
+                        save_path = None
                 else:
                     save_path = None
                     imageSaved = False
 
                 print(f"Current save path: {save_path}")
 
-                if save_path:
+                if save_path == SAVE_PATH_TIF:
                     # Receive file size first
                     file_size = int.from_bytes(conn.recv(8), byteorder="big")
                     print(f"Expecting to receive {file_size} bytes...")
@@ -92,7 +103,28 @@ def receive_image():
                     else:
                         print(f"Error: Received {len(received_data)} bytes, expected {file_size} bytes")
                     imageSaved = True
-                    
+                elif save_path is not None and save_path != SAVE_PATH_TIF:
+                    try:
+                        # Read the incoming JSON data until the client closes the connection
+                        received_data = b""
+                        while True:
+                            chunk = conn.recv(4096)
+                            if not chunk:
+                                break  # Connection closed by client
+                            received_data += chunk
+
+                        # Decode and save
+                        if received_data:
+                            json_text = received_data.decode()
+                            with open(save_path, "w") as f:
+                                f.write(json_text)
+                            print(f"JSON file saved to: {save_path} ({len(received_data)} bytes)")
+
+                        else:
+                            print("No data received.")
+
+                    except Exception as e:
+                        print(f"Error receiving JSON file: {e}")
                 else:
                     data = conn.recv(4096).decode()
                     try:
@@ -128,8 +160,8 @@ def receive_image():
 # # Function to serve images over HTTP
 # def run_http_server():
 #     os.chdir(SAVE_DIR)
-#     httpd = HTTPServer(("0.0.0.0", HTTP_PORT), SimpleHTTPRequestHandler)
-#     print(f"Serving images on port {HTTP_PORT}...")
+#     httpd = HTTPServer(("0.0.0.0", IMAGE_PORT), SimpleHTTPRequestHandler)
+#     print(f"Serving images on port {IMAGE_PORT}...")
 #     httpd.serve_forever()
 
 # Override to suppress logging for specific status codes (200 and 404)
@@ -149,8 +181,8 @@ def run_http_server():
     # Set the working directory to serve files from
     os.chdir(SAVE_DIR)
     # Start the HTTP server with the custom request handler
-    httpd = HTTPServer((HOST_IP, HTTP_PORT), CustomHTTPRequestHandler)
-    print(f"Serving images on port {HTTP_PORT}...")
+    httpd = HTTPServer((HOST_IP, IMAGE_PORT), CustomHTTPRequestHandler)
+    print(f"Serving images on port {IMAGE_PORT}...")
     httpd.serve_forever()
 
 # Function to receive system metrics and store them in InfluxDB
@@ -242,6 +274,7 @@ def send_message():
     global message, netTestDuration
     data = request.get_json()
     message = data.get("message", "Default message from host")
+    print(message)
 
     if message == "3":
         return delete_all_files()
@@ -251,10 +284,17 @@ def send_message():
         tif_file_properties = []
     elif message.startswith("NETRUN:"):
         netTestDuration = message.split(":", 1)[1]
-        # Start iperf3 in a separate thread
-        start_iperf_thread()
-        return jsonify({"status": "iperf3 test started"}), 200
-        
+
+        if "LwEthOnb" in message:
+            # Start iperf3 in a separate thread
+            start_iperf_thread(SAVE_PATH_IPERF_LW_ETH_OB)
+            return jsonify({"status": "iperf3 test started"}), 200
+        elif "UpEthOnb" in message:
+            # Start iperf3 in a separate thread
+            start_iperf_thread(SAVE_PATH_IPERF_UP_ETH_OB)
+            return jsonify({"status": "iperf3 test started"}), 200
+        elif "EthAdt" in message:
+            return forward_message_to_target(message)
     return forward_message_to_target(message)   
     
 def delete_all_files():
@@ -311,9 +351,8 @@ def serve_image(filename):
     return send_from_directory(SAVE_DIR, filename)
 
 # Function to run iperf3 and capture the results
-def run_iperf3():
+def run_iperf3(file_path):
     global netTestDuration
-    file_path = "/home/bach/python_script/iperf3_end_result.json"
 
     def run_test(reverse=False):
         # Define the command with or without reverse mode
@@ -365,14 +404,38 @@ def run_iperf3():
 
 
 # Function to start the iperf3 test in a background thread
-def start_iperf_thread():
-    iperf_thread = threading.Thread(target=run_iperf3, daemon=True)
+def start_iperf_thread(file_path):
+    iperf_thread = threading.Thread(target=run_iperf3, args=(file_path,), daemon=True)
     iperf_thread.start()
 
 # Flask route to fetch and stream the iperf3_end_result.json file
-@app.route('/iperf3/results', methods=['GET'])
-def get_results():
-    file_path = '/home/bach/python_script/iperf3_end_result.json'
+@app.route('/iperf3/lw_eth_onb_results', methods=['GET'])
+def iperf_lw_eth_onb_results():
+    file_path = SAVE_PATH_IPERF_LW_ETH_OB
+    try:
+        return send_file(file_path, mimetype='application/json', as_attachment=False)
+    except FileNotFoundError:
+        return "File not found", 404
+    
+@app.route('/iperf3/up_eth_onb_results', methods=['GET'])
+def iperf_up_eth_onb_results():
+    file_path = SAVE_PATH_IPERF_UP_ETH_OB
+    try:
+        return send_file(file_path, mimetype='application/json', as_attachment=False)
+    except FileNotFoundError:
+        return "File not found", 404
+    
+@app.route('/iperf3/lw_eth_adt_results', methods=['GET'])
+def iperf_lw_eth_adt_results():
+    file_path = SAVE_PATH_IPERF_LW_ETH_ADT
+    try:
+        return send_file(file_path, mimetype='application/json', as_attachment=False)
+    except FileNotFoundError:
+        return "File not found", 404
+    
+@app.route('/iperf3/up_eth_adt_results', methods=['GET'])
+def iperf_up_eth_adt_results():
+    file_path = SAVE_PATH_IPERF_UP_ETH_OB
     try:
         return send_file(file_path, mimetype='application/json', as_attachment=False)
     except FileNotFoundError:
@@ -383,7 +446,7 @@ def run_flask_server():
     app.run(host="0.0.0.0", port=FLASK_PORT, debug=True, use_reloader=False)
 
 # Start all services in separate threads
-threading.Thread(target=receive_image, daemon=True).start()
+threading.Thread(target=start_server, daemon=True).start()
 threading.Thread(target=run_http_server, daemon=True).start()
 threading.Thread(target=receive_metrics, daemon=True).start()
 threading.Thread(target=run_flask_server, daemon=True).start()
