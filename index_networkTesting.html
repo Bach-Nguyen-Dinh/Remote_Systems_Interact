@@ -131,53 +131,92 @@
 <body>
     <div class="container">
         <div class="dropdown-container">
-            <div class="box-container no-border-background">
-                <h2>Lower Ethernet port on Board</h2>
-                <p>Select test duration</p>
-                <select id="durationDropdown_LwEthOnb" onfocus="populateDropdownLwEthOnb()" onchange="clearLwEthOnbStatusNet()"></select>
-                <div class="status-container">
-                    <p id="statusNet_LwEthOnb">&nbsp;</p>
+            <div style="display: flex; gap: 30px;">
+                <!-- test duration -->
+                <div class="box-container no-border-background">
+                    <h2>Lower Ethernet port on Board</h2>
+                    <p>Select test duration</p>
+                    <select id="durationDropdown_LwEthOnb" onfocus="populateDropdownLwEthOnb()" onchange="clearLwEthOnbStatusNet()"></select>
+                    <div class="status-container">
+                        <p id="statusNet_LwEthOnb">&nbsp;</p>
+                    </div>
                 </div>
-            </div>
-            <div class="box-container no-border-background">
-                <h2>Test Results</h2>            
-                <p><strong>Up Bandwidth:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</strong><span id="upBW_LwEthOnb">N/A</span></p>
-                <p><strong>Up Latency:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</strong> <span id="upLat_LwEthOnb">N/A</span></p>
-                <p><strong>Up Lost/Total:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</strong> <span id="upLostTotal_LwEthOnb">N/A</span></p>
-                <p><strong>Down Bandwidth:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</strong> <span id="downBW_LwEthOnb">N/A</span></p>
-                <p><strong>Down Latency:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</strong> <span id="downLat_LwEthOnb">N/A</span></p>
-                <p><strong>Down Lost/Total:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</strong> <span id="downLostTotal_LwEthOnb">N/A</span></p>
-            </div>
-            <div class="box-container no-border-background">
-                <div class="button-container">
-                    <button onclick="btnLwEthOnbRunClick()">Run</button>
-                    <button onclick="btnLwEthOnbResetClick()">Reset</button>
+                <!-- results -->
+                <div class="box-container no-border-background">
+                    <h2>Test Results</h2>
+                    <div style="display: flex; gap: 10px;">
+                        <!-- Labels column -->
+                        <div style="display: flex; flex-direction: column; align-items: flex-start;">
+                            <p><strong>Up Bandwidth:</strong></p>
+                            <p><strong>Up Latency:</strong></p>
+                            <p><strong>Up Lost/Total:</strong></p>
+                            <p><strong>Down Bandwidth:</strong></p>
+                            <p><strong>Down Latency:</strong></p>
+                            <p><strong>Down Lost/Total:</strong></p>
+                        </div>
+                        <!-- Values column -->
+                        <div style="display: flex; flex-direction: column; width: 150px; align-items: flex-start;">                            <p><span id="upBW_LwEthOnb">N/A</span></p>
+                            <p><span id="upLat_LwEthOnb">N/A</span></p>
+                            <p><span id="upLostTotal_LwEthOnb">N/A</span></p>
+                            <p><span id="downBW_LwEthOnb">N/A</span></p>
+                            <p><span id="downLat_LwEthOnb">N/A</span></p>
+                            <p><span id="downLostTotal_LwEthOnb">N/A</span></p>
+                        </div>
+                    </div>
+                </div>
+                <!-- buttons -->
+                <div class="box-container no-border-background">
+                    <div class="button-container">
+                        <button onclick="btnLwEthOnbRunClick()">Run</button>
+                        <button onclick="btnLwEthOnbResetClick()">Reset</button>
+                    </div>
                 </div>
             </div>
 
-            <div class="box-container no-border-background">
-                <h2>Lower Ethernet port on NIC</h2>
-                <p>Select test duration</p>
-                <select id="durationDropdown_LwEthAdt" onfocus="populateDropdownLwEthAdt()" onchange="clearLwEthAdtStatusNet()"></select>
-                <div class="status-container">
-                    <p id="statusNet_LwEthAdt">&nbsp;</p>
+
+            <div style="display: flex; gap: 30px;">
+                <!-- test duration -->
+                <div class="box-container no-border-background">
+                    <h2>Lower Ethernet port on NIC</h2>
+                    <p>Select test duration</p>
+                    <select id="durationDropdown_LwEthAdt" onfocus="populateDropdownLwEthAdt()" onchange="clearLwEthAdtStatusNet()"></select>
+                    <div class="status-container">
+                        <p id="statusNet_LwEthAdt">&nbsp;</p>
+                    </div>
+                </div>
+                <!-- results -->
+                <div class="box-container no-border-background">
+                    <h2>Test Results</h2>
+                    <div style="display: flex; gap: 10px;">
+                        <!-- Labels column -->
+                        <div style="display: flex; flex-direction: column; align-items: flex-start;">
+                            <p><strong>Up Bandwidth:</strong></p>
+                            <p><strong>Up Latency:</strong></p>
+                            <p><strong>Up Lost/Total:</strong></p>
+                            <p><strong>Down Bandwidth:</strong></p>
+                            <p><strong>Down Latency:</strong></p>
+                            <p><strong>Down Lost/Total:</strong></p>
+                        </div>
+                        <!-- Values column -->
+                        <div style="display: flex; flex-direction: column; width: 200px; align-items: flex-start;">
+                            <p><span id="upBW_LwEthAdt">N/A</span></p>
+                            <p><span id="upLat_LwEthAdt">N/A</span></p>
+                            <p><span id="upLostTotal_LwEthAdt">N/A</span></p>
+                            <p><span id="downBW_LwEthAdt">N/A</span></p>
+                            <p><span id="downLat_LwEthAdt">N/A</span></p>
+                            <p><span id="downLostTotal_LwEthAdt">N/A</span></p>
+                        </div>
+                    </div>
+                </div>
+                <!-- buttons -->            
+                <div class="box-container no-border-background">
+                    <div class="button-container">
+                        <button onclick="btnLwEthAdtRunClick()">Run</button>
+                        <button onclick="btnLwEthAdtResetClick()">Reset</button>
+                    </div>
                 </div>
             </div>
-            <div class="box-container no-border-background">
-                <h2>Test Results</h2>            
-                <p><strong>Up Bandwidth:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</strong><span id="upBW_LwEthAdt">N/A</span></p>
-                <p><strong>Up Latency:</strong> <span id="upLat_LwEthAdt">N/A</span></p>
-                <p><strong>Up Lost/Total:</strong> <span id="upLostTotal_LwEthAdt">N/A</span></p>
-                <p><strong>Down Bandwidth:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</strong> <span id="downBW_LwEthAdt">N/A</span></p>
-                <p><strong>Down Latency:</strong> <span id="downLat_LwEthAdt">N/A</span></p>
-                <p><strong>Down Lost/Total:</strong> <span id="downLostTotal_LwEthAdt">N/A</span></p>
-            </div>
-            <div class="box-container no-border-background">
-                <div class="button-container">
-                    <button onclick="btnLwEthAdtRunClick()">Run</button>
-                    <button onclick="btnLwEthAdtResetClick()">Reset</button>
-                </div>
-            </div>
+
         </div>
     </div>
 
