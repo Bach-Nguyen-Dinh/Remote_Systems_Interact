@@ -140,6 +140,11 @@
                     <div class="status-container">
                         <p id="statusNet_LwEthOnb">&nbsp;</p>
                     </div>
+                    <p>Select Bandwidth</p>
+                    <select id="bwDropdown_LwEthOnb" onfocus="populateBwDropdownLwEthOnb()" onchange="setBwLwEthOnb()"></select>
+                    <div class="status-container">
+                        <p id="statusNet_LwEthOnbBw">&nbsp;</p>
+                    </div>
                 </div>
                 <!-- results -->
                 <div class="box-container no-border-background">
@@ -166,6 +171,7 @@
                 </div>
                 <!-- buttons -->
                 <div class="box-container no-border-background">
+                    <div class=" button-container"></div>
                     <div class="button-container">
                         <button onclick="btnLwEthOnbRunClick()">Run</button>
                         <button onclick="btnLwEthOnbResetClick()">Reset</button>
@@ -182,6 +188,11 @@
                     <select id="durationDropdown_LwEthAdt" onfocus="populateDropdownLwEthAdt()" onchange="clearLwEthAdtStatusNet()"></select>
                     <div class="status-container">
                         <p id="statusNet_LwEthAdt">&nbsp;</p>
+                    </div>
+                    <p>Select Bandwidth</p>
+                    <select id="bwDropdown_LwEthAdt" onfocus="populateBwDropdownLwEthAdt()" onchange="setBwLwEthAdt()"></select>
+                    <div class="status-container">
+                        <p id="statusNet_LwEthAdtBw">&nbsp;</p>
                     </div>
                 </div>
                 <!-- results -->
@@ -210,6 +221,7 @@
                 </div>
                 <!-- buttons -->            
                 <div class="box-container no-border-background">
+                    <div class=" button-container"></div>
                     <div class="button-container">
                         <button onclick="btnLwEthAdtRunClick()">Run</button>
                         <button onclick="btnLwEthAdtResetClick()">Reset</button>
@@ -471,6 +483,102 @@
 
             const dropdown = document.getElementById("durationDropdown_LwEthAdt");
             testDurationLwEthAdt = parseInt(dropdown.value, 10);
+        }
+
+        function populateBwDropdownLwEthOnb() {
+            document.getElementById("statusNet_LwEthOnbBw").textContent = "";
+
+            let dropdown = document.getElementById("bwDropdown_LwEthOnb");
+            dropdown.innerHTML = ""; // Clear existing options
+
+            let defaultOption = document.createElement("option");
+            defaultOption.value = "";
+            defaultOption.textContent = "Select Bandwidth";
+            defaultOption.disabled = true;
+            dropdown.appendChild(defaultOption);
+
+            let option100 = document.createElement("option");
+            option100.textContent = `100 Mbits/sec`;
+            option100.value = "100";
+            dropdown.appendChild(option100);
+
+            let option1000 = document.createElement("option");
+            option1000.textContent = `1000 Mbits/sec`;
+            option1000.value = "1000";
+            // option1000.selected = true; // set as the default selected option
+            dropdown.appendChild(option1000);
+        }
+
+        function populateBwDropdownLwEthAdt() {
+            document.getElementById("statusNet_LwEthAdtBw").textContent = "";
+
+            let dropdown = document.getElementById("bwDropdown_LwEthAdt");
+            dropdown.innerHTML = ""; // Clear existing options
+
+            const bandwidthOptions = [
+                { value: "", text: "Select Bandwidth", disabled: true },
+                { value: "100", text: "100 Mbits/sec" },
+                { value: "1000", text: "1000 Mbits/sec" },
+                { value: "2500", text: "2500 Mbits/sec" },
+                { value: "5000", text: "5000 Mbits/sec" },
+                { value: "10000", text: "10000 Mbits/sec" }
+            ];
+
+            bandwidthOptions.forEach(optionData => {
+                let option = document.createElement("option");
+                option.value = optionData.value;
+                option.textContent = optionData.text;
+                if (optionData.disabled) option.disabled = true;
+                dropdown.appendChild(option);
+            });
+        }
+
+        function setBwLwEthOnb() {
+            const dropdown = document.getElementById("bwDropdown_LwEthOnb");
+            const selectedBwValue = dropdown.value;
+
+            // Display the status (optional)
+            document.getElementById("statusNet_LwEthOnbBw").innerText = "Sending...";
+
+            fetch("http://localhost:5000/send_message", {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ message: `BW:${selectedBwValue}:LwEthOnb` })
+            })
+            .then(response => response.ok ? "Sent successfully" : "Failed to send")
+            .then(status => {
+                document.getElementById("statusNet_LwEthOnbBw").innerText = status;
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                document.getElementById("statusNet_LwEthOnbBw").innerText = "Error sending";
+            });
+        }
+
+        function setBwLwEthAdt() {
+            const dropdown = document.getElementById("bwDropdown_LwEthAdt");
+            const selectedBwValue = dropdown.value;
+
+            // Display the status (optional)
+            document.getElementById("statusNet_LwEthAdtBw").innerText = "Sending...";
+
+            fetch("http://localhost:5000/send_message", {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ message: `BW:${selectedBwValue}:LwEthAdt` })
+            })
+            .then(response => response.ok ? "Sent successfully" : "Failed to send")
+            .then(status => {
+                document.getElementById("statusNet_LwEthAdtBw").innerText = status;
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                document.getElementById("statusNet_LwEthAdtBw").innerText = "Error sending";
+            });
         }
     </script>
 </body>
