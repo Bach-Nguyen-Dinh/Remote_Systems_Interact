@@ -284,7 +284,6 @@ def send_message():
         tif_file_properties = []
     elif message.startswith("NETRUN:"):
         netTestDuration = message.split(":", 1)[1]
-
         if "LwEthOnb" in message:
             # Start iperf3 in a separate thread
             start_iperf_thread(SAVE_PATH_IPERF_LW_ETH_OB)
@@ -376,7 +375,7 @@ def run_iperf3(file_path):
 
     # Run download test
     down_result = run_test(reverse=False)
-    
+    time.sleep(2)
     # Run upload test
     up_result = run_test(reverse=True)
 
