@@ -213,12 +213,12 @@ def receive_metrics():
                     # Per-core CPU data
                     per_core_usage_data = {
                         f"per_core_usage{i}": float(system_info["per_core_usage"].get(f"core_{i}_usage", 0))
-                        for i in range(32)
+                        for i in range(4)
                     }
-                    per_core_freq_data = {
-                        f"per_core_freq{i}": float(system_info["per_core_freq"].get(f"core_{i}_frequency", 0))
-                        for i in range(32)
-                    }
+                    # per_core_freq_data = {
+                    #     f"per_core_freq{i}": float(system_info["per_core_freq"].get(f"core_{i}_frequency", 0))
+                    #     for i in range(4)
+                    # }
                     # Network data
                     network_data = {}
                     network_info = system_info.get("network", {})
@@ -242,19 +242,17 @@ def receive_metrics():
                                 "cpu_usage": float(system_info["cpu_usage"]),
                                 "memory_usage": float(system_info["memory_usage"]),
                                 "swap_usage": float(system_info["swap_usage"]),
-                                "cpu_temperature": float(system_info.get("cpu_temperature", 0.0)),
+                                # "cpu_temperature": float(system_info.get("cpu_temperature", 0.0)),
                                 "uptime_seconds": float(system_info["uptime_seconds"]),
                                 "total_memory": float(system_info["total_memory"]),
                                 "total_swap": float(system_info["total_swap"]),
                                 "num_threads": int(system_info["num_threads"]),
-                                # "download_speed": float(system_info.get("download_speed", 0.0)),
-                                # "upload_speed": float(system_info.get("upload_speed", 0.0)),
-                                "cpu_power": float(system_info.get("cpu_power", 0.0)),
+                                # "cpu_power": float(system_info.get("cpu_power", 0.0)),
                                 "total_disk_usage": float(system_info.get("total_disk_usage", 0.0)),
                                 "total_disk_size": float(system_info.get("total_disk_size", 0.0)),
                                 "progress_update": float(system_info.get("progress_update", 0.0)),
                                 **per_core_usage_data,
-                                **per_core_freq_data,
+                                # **per_core_freq_data,
                                 **network_data
                             },
                             "time": int(time.time() * 1e9)  # Nanoseconds
