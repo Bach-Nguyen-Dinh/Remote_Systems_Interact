@@ -16,7 +16,7 @@ DATA_PORT = 55555
 IMAGE_PORT = 8080
 FLASK_PORT = 5000
 
-TARGET_IP = "10.42.0.90"  # Target system IP
+TARGET_IP = "10.42.0.123"  # Target system IP
 TARGET_PORT = 54321       # Target system port
 
 INFLUXDB_HOST = "localhost"
@@ -25,14 +25,21 @@ INFLUXDB_DB = "system_metrics"
 INFLUXDB_USER = "root"
 INFLUXDB_PASSWORD = "root"
 
+DOCKER_INTERFACE_ID = "docker0"
+FM_INTERFACE_ID = "fm1-mac9"
+LOCAL_INTERFACE_ID = "lo"
+VIRTUAL_INTERFACE_ID = "virbr0"
+
+COMP_ETH_PORT_INTERFACE_ID = "enp3s0"
+
 SAVE_DIR = "/home/bach/python_script/pictures/"
 # SAVE_PATH = os.path.join(SAVE_DIR, "latest_image.png")
 SAVE_PATH_TIF = os.path.join(SAVE_DIR, "tif_image.webp")
 SAVE_PATH_OUT = os.path.join(SAVE_DIR, "out_image.png")
-SAVE_PATH_IPERF_LW_ETH_OB = "/home/bach/python_script/iperf3_end_result_LwEthOnb.json"
-SAVE_PATH_IPERF_UP_ETH_OB = "/home/bach/python_script/iperf3_end_result_UpEthOnb.json"
-SAVE_PATH_IPERF_LW_ETH_ADT = "/home/bach/python_script/iperf3_end_result_LwEthAdt.json"
-SAVE_PATH_IPERF_UP_ETH_ADT = "/home/bach/python_script/iperf3_end_result_UpEthAdt.json"
+SAVE_PATH_IPERF_FM = "/home/bach/python_script/iperf3_end_result_fm.json"
+SAVE_PATH_IPERF_LOCAL = "/home/bach/python_script/iperf3_end_result_local.json"
+SAVE_PATH_IPERF_DOCKER = "/home/bach/python_script/iperf3_end_result_docker.json"
+SAVE_PATH_IPERF_VIRTUAL = "/home/bach/python_script/iperf3_end_result_virtual.json"
 
 # Global variable
 message = ""
@@ -72,10 +79,10 @@ def start_server():
                 if message.startswith("RUN:") and imageSaved == False:
                     save_path = SAVE_PATH_TIF
                 elif message.startswith("NETRUN:"):
-                    if "LwEthAdt" in message:
-                        save_path = SAVE_PATH_IPERF_LW_ETH_ADT
-                    elif "UpEthAdt" in message:
-                        save_path = SAVE_PATH_IPERF_UP_ETH_ADT
+                    if DOCKER_INTERFACE_ID in message:
+                        save_path = SAVE_PATH_IPERF_DOCKER
+                    elif VIRTUAL_INTERFACE_ID in message:
+                        save_path = SAVE_PATH_IPERF_VIRTUAL
                     else:
                         save_path = None
                 else:
@@ -245,7 +252,7 @@ def receive_metrics():
                                 "cpu_usage": total_cpu_usage,
                                 "memory_usage": float(system_info["memory_usage"]),
                                 "swap_usage": float(system_info["swap_usage"]),
-                                # "cpu_temperature": float(system_info.get("cpu_temperature", 0.0)),
+                                "sys_temp": system_info.get("sys_temp", 0.0),
                                 "uptime_seconds": float(system_info["uptime_seconds"]),
                                 "total_memory": float(system_info["total_memory"]),
                                 "total_swap": float(system_info["total_swap"]),
@@ -285,16 +292,48 @@ def send_message():
         tif_file_properties = []
     elif message.startswith("NETRUN:"):
         netTestDuration = message.split(":", 1)[1]
-        if "LwEthOnb" in message:
+        if FM_INTERFACE_ID in message:
             # Start iperf3 in a separate thread
-            start_iperf_thread(SAVE_PATH_IPERF_LW_ETH_OB)
+            start_iperf_thread(SAVE_PATH_IPERF_FM)
             return jsonify({"status": "iperf3 test started"}), 200
-        elif "UpEthOnb" in message:
+        elif LOCAL_INTERFACE_ID in message:
             # Start iperf3 in a separate thread
-            start_iperf_thread(SAVE_PATH_IPERF_UP_ETH_OB)
+            start_iperf_thread(SAVE_PATH_IPERF_LOCAL)
             return jsonify({"status": "iperf3 test started"}), 200
-        elif "EthAdt" in message:
+        elif DOCKER_INTERFACE_ID in message:
             return forward_message_to_target(message)
+        elif VIRTUAL_INTERFACE_ID in message:
+            return forward_message_to_target(message)
+    elif message.startswith("BW:"):
+        if FM_INTERFACE_ID in message:
+            parts = message.split(":")
+            if len(parts) != 3:
+                print("Invalid BW message format")
+                return
+            _, bwValue, target = parts  # bwValue = "1000", target = "LwEthOnb"
+            target = COMP_ETH_PORT_INTERFACE_ID
+            # Construct the ethtool command
+            command = ["sudo", "ethtool", "-s", target, "speed", bwValue, "autoneg", "on"]
+            print(f"Executing command: {' '.join(command)}")
+            # Run the command and capture stdout and stderr
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            # Capture output and error streams
+            stdout, stderr = process.communicate()
+
+            # Check the return code
+            if process.returncode == 0:
+                print("Command executed successfully.")
+                if stdout:
+                    print("Output:", stdout)
+                else:
+                    print("No output from the command.")
+                return jsonify({"status": "success", "message": "Bandwidth updated successfully"}), 200
+            else:
+                print(f"Error executing command. Return code: {process.returncode}")
+                if stderr:
+                    print("Error message:", stderr)
+                return jsonify({"status": "error", "message": stderr.strip()}), 500
+
     return forward_message_to_target(message)   
     
 def delete_all_files():
@@ -411,7 +450,7 @@ def start_iperf_thread(file_path):
 # Flask route to fetch and stream the iperf3_end_result.json file
 @app.route('/iperf3/lw_eth_onb_results', methods=['GET'])
 def iperf_lw_eth_onb_results():
-    file_path = SAVE_PATH_IPERF_LW_ETH_OB
+    file_path = SAVE_PATH_IPERF_FM
     try:
         return send_file(file_path, mimetype='application/json', as_attachment=False)
     except FileNotFoundError:
@@ -419,7 +458,7 @@ def iperf_lw_eth_onb_results():
     
 @app.route('/iperf3/up_eth_onb_results', methods=['GET'])
 def iperf_up_eth_onb_results():
-    file_path = SAVE_PATH_IPERF_UP_ETH_OB
+    file_path = SAVE_PATH_IPERF_LOCAL
     try:
         return send_file(file_path, mimetype='application/json', as_attachment=False)
     except FileNotFoundError:
@@ -427,7 +466,7 @@ def iperf_up_eth_onb_results():
     
 @app.route('/iperf3/lw_eth_adt_results', methods=['GET'])
 def iperf_lw_eth_adt_results():
-    file_path = SAVE_PATH_IPERF_LW_ETH_ADT
+    file_path = SAVE_PATH_IPERF_DOCKER
     try:
         return send_file(file_path, mimetype='application/json', as_attachment=False)
     except FileNotFoundError:
@@ -435,7 +474,7 @@ def iperf_lw_eth_adt_results():
     
 @app.route('/iperf3/up_eth_adt_results', methods=['GET'])
 def iperf_up_eth_adt_results():
-    file_path = SAVE_PATH_IPERF_UP_ETH_OB
+    file_path = SAVE_PATH_IPERF_LOCAL
     try:
         return send_file(file_path, mimetype='application/json', as_attachment=False)
     except FileNotFoundError:
