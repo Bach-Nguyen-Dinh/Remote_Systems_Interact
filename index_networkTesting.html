@@ -186,6 +186,61 @@
                 </div>
             </div>
 
+            <div style="display: flex; gap: 30px;">
+                <!-- test duration -->
+                <div class="box-container no-border-background">
+                    <h2>Upper Ethernet port on Board</h2>
+                    <p>Select test duration</p>
+                    <select id="durationDropdown_UpEthOnb" 
+                        onfocus="populateDurationDropdownUpEthOnb()" 
+                        onchange="setTestDurationUpEthOnb()">
+                    </select>
+                    <div class="status-container">
+                        <p id="statusNet_UpEthOnb">&nbsp;</p>
+                    </div>
+                    <p>Select Bandwidth</p>
+                    <select id="bwDropdown_UpEthOnb"
+                        onfocus="populateBwDropdownUpEthOnb()"
+                        onchange="setBwUpEthOnb()"
+                        onblur="resetBwDropdownToDefaultUpEthOnb()">
+                    </select>
+                    <div class="status-container">
+                        <p id="statusNet_UpEthOnbBw">&nbsp;</p>
+                    </div>
+                </div>
+                <!-- results -->
+                <div class="box-container no-border-background">
+                    <h2>Test Results</h2>
+                    <div style="display: flex; gap: 10px;">
+                        <!-- Labels column -->
+                        <div style="display: flex; flex-direction: column; align-items: flex-start;">
+                            <p><strong>Up Bandwidth:</strong></p>
+                            <p><strong>Up Latency:</strong></p>
+                            <p><strong>Up Lost/Total:</strong></p>
+                            <p><strong>Down Bandwidth:</strong></p>
+                            <p><strong>Down Latency:</strong></p>
+                            <p><strong>Down Lost/Total:</strong></p>
+                        </div>
+                        <!-- Values column -->
+                        <div style="display: flex; flex-direction: column; width: 250px; align-items: flex-start;">                            
+                            <p><span id="upBW_UpEthOnb">N/A</span></p>
+                            <p><span id="upLat_UpEthOnb">N/A</span></p>
+                            <p><span id="upLostTotal_UpEthOnb">N/A</span></p>
+                            <p><span id="downBW_UpEthOnb">N/A</span></p>
+                            <p><span id="downLat_UpEthOnb">N/A</span></p>
+                            <p><span id="downLostTotal_UpEthOnb">N/A</span></p>
+                        </div>
+                    </div>
+                </div>
+                <!-- buttons -->
+                <div class="box-container no-border-background">
+                    <div class=" button-container"></div>
+                    <div class="button-container">
+                        <button onclick="btnUpEthOnbRunClick()">Run</button>
+                        <button onclick="btnUpEthOnbResetClick()">Reset</button>
+                    </div>
+                </div>
+            </div>
 
             <div style="display: flex; gap: 30px;">
                 <!-- test duration -->
@@ -242,13 +297,74 @@
                     </div>
                 </div>
             </div>
+
+            <div style="display: flex; gap: 30px;">
+                <!-- test duration -->
+                <div class="box-container no-border-background">
+                    <h2>Upper Ethernet port on NIC</h2>
+                    <p>Select test duration</p>
+                    <select id="durationDropdown_UpEthAdt" 
+                        onfocus="populateDurationDropdownUpEthAdt()" 
+                        onchange="setTestDurationUpEthAdt()">
+                    </select>
+                    <div class="status-container">
+                        <p id="statusNet_UpEthAdt">&nbsp;</p>
+                    </div>
+                    <p>Select Bandwidth</p>
+                    <select id="bwDropdown_UpEthAdt" 
+                        onfocus="populateBwDropdownUpEthAdt()" 
+                        onchange="setBwUpEthAdt()">
+                        onblur="resetBwDropdownToDefaultUpEthAdt()">
+                    </select>
+                    <div class="status-container">
+                        <p id="statusNet_UpEthAdtBw">&nbsp;</p>
+                    </div>
+                </div>
+                <!-- results -->
+                <div class="box-container no-border-background">
+                    <h2>Test Results</h2>
+                    <div style="display: flex; gap: 10px;">
+                        <!-- Labels column -->
+                        <div style="display: flex; flex-direction: column; align-items: flex-start;">
+                            <p><strong>Up Bandwidth:</strong></p>
+                            <p><strong>Up Latency:</strong></p>
+                            <p><strong>Up Lost/Total:</strong></p>
+                            <p><strong>Down Bandwidth:</strong></p>
+                            <p><strong>Down Latency:</strong></p>
+                            <p><strong>Down Lost/Total:</strong></p>
+                        </div>
+                        <!-- Values column -->
+                        <div style="display: flex; flex-direction: column; width: 250px; align-items: flex-start;">
+                            <p><span id="upBW_UpEthAdt">N/A</span></p>
+                            <p><span id="upLat_UpEthAdt">N/A</span></p>
+                            <p><span id="upLostTotal_UpEthAdt">N/A</span></p>
+                            <p><span id="downBW_UpEthAdt">N/A</span></p>
+                            <p><span id="downLat_UpEthAdt">N/A</span></p>
+                            <p><span id="downLostTotal_UpEthAdt">N/A</span></p>
+                        </div>
+                    </div>
+                </div>
+                <!-- buttons -->            
+                <div class="box-container no-border-background">
+                    <div class=" button-container"></div>
+                    <div class="button-container">
+                        <button onclick="btnUpEthAdtRunClick()">Run</button>
+                        <button onclick="btnUpEthAdtResetClick()">Reset</button>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
         let testDurationLwEthOnb = null; // Variable to store selected duration
+        let testDurationUpEthOnb = null;
         let testDurationLwEthAdt = null;
+        let testDurationUpEthAdt = null;
         
+        // ================================================================================================================
+        // ========================================= Lower Ethernet Port on board =========================================
+        // ================================================================================================================
         async function btnLwEthOnbRunClick() {
             const selectedTestDuration = testDurationLwEthOnb; // Use the global testDuration variable
             const statusNetElement = document.getElementById("statusNet_LwEthOnb");
@@ -467,7 +583,232 @@
                 dropdown.selectedIndex = 0; // fallback to "Select Bandwidth"
             }
         }
+        
+        // ================================================================================================================
+        // ========================================= Upper Ethernet Port on board =========================================
+        // ================================================================================================================
+        async function btnUpEthOnbRunClick() {
+            const selectedTestDuration = testDurationUpEthOnb; // Use the global testDuration variable
+            const statusNetElement = document.getElementById("statusNet_UpEthOnb");
+            const bwDropdown = document.getElementById("bwDropdown_UpEthOnb");
 
+            document.getElementById("upBW_UpEthOnb").textContent = "N/A";
+            document.getElementById("upLat_UpEthOnb").textContent = "N/A";
+            document.getElementById("upLostTotal_UpEthOnb").textContent = "N/A";
+            document.getElementById("downBW_UpEthOnb").textContent = "N/A";
+            document.getElementById("downLat_UpEthOnb").textContent = "N/A";
+            document.getElementById("downLostTotal_UpEthOnb").textContent = "N/A";
+
+            if (!selectedTestDuration) {
+                statusNetElement.textContent = "Please select a duration";
+                if (!bwDropdown || !bwDropdown.value || bwDropdown.value === "default") {
+                    document.getElementById("statusNet_UpEthOnbBw").textContent = "Please select a bandwidth";
+                    return;
+                }
+                return;
+            }
+            if (!bwDropdown || !bwDropdown.value || bwDropdown.value === "default") {
+                document.getElementById("statusNet_UpEthOnbBw").textContent = "Please select a bandwidth";
+                if (!selectedTestDuration) {
+                    statusNetElement.textContent = "Please select a duration";
+                    return;
+                }
+                return;
+            }
+            // Send the NETRUN message via POST request
+            await fetch("http://localhost:5000/send_message", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:UpEthOnb` })
+            });
+            statusNetElement.textContent = "Waiting for results...";
+            
+            await new Promise(resolve => setTimeout(resolve, testDurationUpEthOnb*1000*2+5000));
+
+            fetch('http://localhost:5000/iperf3/lw_eth_onb_results')
+                .then(response => response.json())
+                .then(data => {
+                    // Extract the relevant data from the JSON response
+                    stream = data.down.sum;
+
+                    // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                    bitsPerSecondMbit = stream.bits_per_second / 1e6;
+                    jitterMs = stream.jitter_ms;
+                    lostPackets = stream.lost_packets;
+                    totalPackets = stream.packets;
+                    lostPercent = stream.lost_percent;
+
+                    // Function to format the lostPercent to 2 non-zero decimal points
+                    function formatLostPercent(percent) {
+                        // Round the number to 2 non-zero digits after the decimal
+                        return parseFloat(percent.toFixed(4)); // This keeps 2 decimal digits, removing unnecessary zeros
+                    }
+
+                    document.getElementById('downBW_UpEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbit/sec`;
+                    document.getElementById('downLat_UpEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
+                    document.getElementById('downLostTotal_UpEthOnb').textContent = `${lostPackets}/${totalPackets} (${formatLostPercent(lostPercent)}%)`;
+                    
+                    stream = data.up.sum;
+
+                    // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                    bitsPerSecondMbit = stream.bits_per_second / 1e6;
+                    jitterMs = stream.jitter_ms;
+                    lostPackets = stream.lost_packets;
+                    totalPackets = stream.packets;
+                    lostPercent = stream.lost_percent;
+
+                    // Function to format the lostPercent to 2 non-zero decimal points
+                    function formatLostPercent(percent) {
+                        // Round the number to 2 non-zero digits after the decimal
+                        return parseFloat(percent.toFixed(4)); // This keeps 2 decimal digits, removing unnecessary zeros
+                    }
+
+                    // Display the extracted information on the page
+                    document.getElementById('upBW_UpEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbit/sec`;
+                    document.getElementById('upLat_UpEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
+                    document.getElementById('upLostTotal_UpEthOnb').textContent = `${lostPackets}/${totalPackets} (${formatLostPercent(lostPercent)}%)`;
+         
+                    statusNetElement.textContent = "Waiting for results... Done";
+                })
+                .catch(error => {
+                    statusNetElement.textContent = "Test run error";
+                    console.error('Error fetching the data:', error);
+                });
+        }
+        
+        function btnUpEthOnbResetClick() {
+            testDurationUpEthOnb = null;
+            document.getElementById("durationDropdown_UpEthOnb").innerHTML = '<option value="" disabled selected></option>';
+            document.getElementById("statusNet_UpEthOnb").textContent = "";
+            document.getElementById("bwDropdown_UpEthOnb").innerHTML = '<option value="" disabled selected></option>';
+            document.getElementById("statusNet_UpEthOnbBw").textContent = "";
+            document.getElementById("upBW_UpEthOnb").textContent = "N/A";
+            document.getElementById("upLat_UpEthOnb").textContent = "N/A";
+            document.getElementById("upLostTotal_UpEthOnb").textContent = "N/A";
+            document.getElementById("downBW_UpEthOnb").textContent = "N/A";
+            document.getElementById("downLat_UpEthOnb").textContent = "N/A";
+            document.getElementById("downLostTotal_UpEthOnb").textContent = "N/A";
+        }
+
+        // Function to populate the dropdown for the lower ethernet port on the board
+        function populateDurationDropdownUpEthOnb() {
+            document.getElementById("statusNet_UpEthOnb").textContent = "";
+
+            let dropdown = document.getElementById("durationDropdown_UpEthOnb");
+            dropdown.innerHTML = ""; // Clear existing options
+
+            let defaultOption = document.createElement("option");
+            defaultOption.value = "";
+            defaultOption.textContent = "Select Duration";
+            defaultOption.disabled = true;
+            defaultOption.selected = true;
+            dropdown.appendChild(defaultOption);
+
+            for (let i = 5; i <= 60; i += 5) {
+                let option = document.createElement("option");
+                option.value = i; // Store only the numeric value
+                option.textContent = `${i} seconds`;
+                dropdown.appendChild(option);
+            }
+        }
+
+        // Function to handle the change in the dropdown value
+        function setTestDurationUpEthOnb() {
+            document.getElementById("statusNet_UpEthOnb").textContent = "";
+            document.getElementById("upBW_UpEthOnb").textContent = "N/A";
+            document.getElementById("upLat_UpEthOnb").textContent = "N/A";
+            document.getElementById("upLostTotal_UpEthOnb").textContent = "N/A";
+            document.getElementById("downBW_UpEthOnb").textContent = "N/A";
+            document.getElementById("downLat_UpEthOnb").textContent = "N/A";
+            document.getElementById("downLostTotal_UpEthOnb").textContent = "N/A";
+
+            const dropdown = document.getElementById("durationDropdown_UpEthOnb");
+            testDurationUpEthOnb = parseInt(dropdown.value, 10);
+        }
+
+        function populateBwDropdownUpEthOnb() {
+            document.getElementById("statusNet_UpEthOnbBw").textContent = "";
+
+            const dropdown = document.getElementById("bwDropdown_UpEthOnb");
+            dropdown.innerHTML = ""; // Clear existing options
+
+            // Add the placeholder (disabled and selected by default)
+            const defaultOption = document.createElement("option");
+            defaultOption.value = "";
+            defaultOption.textContent = "Select Bandwidth";
+            defaultOption.disabled = true;
+            defaultOption.selected = true;
+            dropdown.appendChild(defaultOption);
+
+            // Add real options
+            const bandwidthOptions = [
+                { value: "10", text: "10 Mbits/sec" },
+                { value: "100", text: "100 Mbits/sec" },
+                { value: "1000", text: "1000 Mbits/sec" }
+            ];
+
+            bandwidthOptions.forEach(optionData => {
+                const option = document.createElement("option");
+                option.value = optionData.value;
+                option.textContent = optionData.text;
+                dropdown.appendChild(option);
+            });
+        }
+
+        function setBwUpEthOnb() {
+            const dropdown = document.getElementById("bwDropdown_UpEthOnb");
+            const selectedBwValue = dropdown.value;
+
+            if (selectedBwValue == "") {
+                document.getElementById("statusNet_UpEthOnbBw").textContent = ""
+                return
+            }
+            document.getElementById("statusNet_UpEthOnb").textContent = "";
+            document.getElementById("upBW_UpEthOnb").textContent = "N/A";
+            document.getElementById("upLat_UpEthOnb").textContent = "N/A";
+            document.getElementById("upLostTotal_UpEthOnb").textContent = "N/A";
+            document.getElementById("downBW_UpEthOnb").textContent = "N/A";
+            document.getElementById("downLat_UpEthOnb").textContent = "N/A";
+            document.getElementById("downLostTotal_UpEthOnb").textContent = "N/A";
+            // Display the status (optional)
+            document.getElementById("statusNet_UpEthOnbBw").innerText = "Configuring...";
+
+            fetch("http://localhost:5000/send_message", {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ message: `BW:${selectedBwValue}:UpEthOnb` })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error("Configuring... Failed");
+                }
+                // Wait for 5 seconds before updating status
+                return new Promise(resolve => {
+                    setTimeout(() => resolve("Configuring... Done"), 5000);
+                });
+            })
+            .then(status => {
+                document.getElementById("statusNet_UpEthOnbBw").innerText = status;
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                document.getElementById("statusNet_UpEthOnbBw").innerText = "Error sending";
+            });
+        }
+
+        function resetBwDropdownToDefaultUpEthOnb() {
+            const dropdown = document.getElementById("bwDropdown_UpEthOnb");
+            // If user leaves dropdown without selecting a valid option, reset
+            if (!dropdown.value) {
+                dropdown.selectedIndex = 0; // fallback to "Select Bandwidth"
+            }
+        }
+
+        // ================================================================================================================
+        // ========================================= Lower Ethernet Port on adapter =======================================
+        // ================================================================================================================
         async function btnLwEthAdtRunClick() {
             const selectedTestDuration = testDurationLwEthAdt; // Use the global testDuration variable
             const statusNetElement = document.getElementById("statusNet_LwEthAdt");
@@ -559,7 +900,7 @@
 
         function btnLwEthAdtResetClick() {
             testDurationLwEthAdt = null;
-            document.getElementById("durationDropdown_LwEthAdt").innerHTML = '<option value="" disabled selected>Select Duration</option>';
+            document.getElementById("durationDropdown_LwEthAdt").innerHTML = '<option value="" disabled selected></option>';
             document.getElementById("statusNet_LwEthAdt").textContent = "";
             document.getElementById("bwDropdown_LwEthAdt").innerHTML = '<option value="" disabled selected></option>';
             document.getElementById("statusNet_LwEthAdtBw").textContent = "";
@@ -683,6 +1024,230 @@
 
         function resetBwDropdownToDefaultLwEthAdt() {
             const dropdown = document.getElementById("bwDropdown_LwEthAdt");
+            // If user leaves dropdown without selecting a valid option, reset
+            if (!dropdown.value) {
+                dropdown.selectedIndex = 0; // fallback to "Select Bandwidth"
+            }
+        }
+
+        // ================================================================================================================
+        // ========================================= Upper Ethernet Port on adapter =======================================
+        // ================================================================================================================
+        async function btnUpEthAdtRunClick() {
+            const selectedTestDuration = testDurationUpEthAdt; // Use the global testDuration variable
+            const statusNetElement = document.getElementById("statusNet_UpEthAdt");
+            const bwDropdown = document.getElementById("bwDropdown_UpEthAdt");
+
+            document.getElementById("upBW_UpEthAdt").textContent = "N/A";
+            document.getElementById("upLat_UpEthAdt").textContent = "N/A";
+            document.getElementById("upLostTotal_UpEthAdt").textContent = "N/A";
+            document.getElementById("downBW_UpEthAdt").textContent = "N/A";
+            document.getElementById("downLat_UpEthAdt").textContent = "N/A";
+            document.getElementById("downLostTotal_UpEthAdt").textContent = "N/A";
+
+            if (!selectedTestDuration) {
+                statusNetElement.textContent = "Please select a duration";
+                if (!bwDropdown || !bwDropdown.value || bwDropdown.value === "default") {
+                    document.getElementById("statusNet_UpEthAdtBw").textContent = "Please select a bandwidth";
+                    return;
+                }
+                return;
+            }
+            if (!bwDropdown || !bwDropdown.value || bwDropdown.value === "default") {
+                document.getElementById("statusNet_UpEthAdtBw").textContent = "Please select a bandwidth";
+                if (!selectedTestDuration) {
+                    statusNetElement.textContent = "Please select a duration";
+                    return;
+                }
+                return;
+            }
+            // Send the NETRUN message via POST request
+            await fetch("http://localhost:5000/send_message", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:UpEthAdt` })
+            });
+            statusNetElement.textContent = "Waiting for results...";
+            
+            await new Promise(resolve => setTimeout(resolve, testDurationUpEthAdt*1000*2+5000));
+
+            fetch('http://localhost:5000/iperf3/lw_eth_adt_results')
+                .then(response => response.json())
+                .then(data => {
+                    // Extract the relevant data from the JSON response
+                    stream = data.data.down.sum_sent;
+
+                    // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                    bitsPerSecondMbit = stream.bits_per_second / 1e6;
+                    // jitterMs = stream.jitter_ms;
+                    // lostPackets = stream.lost_packets;
+                    // totalPackets = stream.packets;
+                    // lostPercent = stream.lost_percent;
+
+                    // Function to format the lostPercent to 2 non-zero decimal points
+                    function formatLostPercent(percent) {
+                        // Round the number to 2 non-zero digits after the decimal
+                        return parseFloat(percent.toFixed(4)); // This keeps 2 decimal digits, removing unnecessary zeros
+                    }
+
+                    document.getElementById('downBW_UpEthAdt').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbit/sec`;
+                    // document.getElementById('downLat_UpEthAdt').textContent = `${jitterMs.toFixed(4)} ms`;
+                    // document.getElementById('downLostTotal_UpEthAdt').textContent = `${lostPackets}/${totalPackets} (${formatLostPercent(lostPercent)}%)`;
+                    
+                    stream = data.data.up.sum_sent;
+
+                    // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                    bitsPerSecondMbit = stream.bits_per_second / 1e6;
+                    // jitterMs = stream.jitter_ms;
+                    // lostPackets = stream.lost_packets;
+                    // totalPackets = stream.packets;
+                    // lostPercent = stream.lost_percent;
+
+                    // Function to format the lostPercent to 2 non-zero decimal points
+                    function formatLostPercent(percent) {
+                        // Round the number to 2 non-zero digits after the decimal
+                        return parseFloat(percent.toFixed(4)); // This keeps 2 decimal digits, removing unnecessary zeros
+                    }
+
+                    // Display the extracted information on the page
+                    document.getElementById('upBW_UpEthAdt').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbit/sec`;
+                    // document.getElementById('upLat_UpEthAdt').textContent = `${jitterMs.toFixed(4)} ms`;
+                    // document.getElementById('upLostTotal_UpEthAdt').textContent = `${lostPackets}/${totalPackets} (${formatLostPercent(lostPercent)}%)`;
+
+                    statusNetElement.textContent = "Waiting for results... Done";
+                })
+                .catch(error => {
+                    statusNetElement.textContent = "Test run error";
+                    console.error('Error fetching the data:', error);
+                });        
+        }
+
+        function btnUpEthAdtResetClick() {
+            testDurationUpEthAdt = null;
+            document.getElementById("durationDropdown_UpEthAdt").innerHTML = '<option value="" disabled selected></option>';
+            document.getElementById("statusNet_UpEthAdt").textContent = "";
+            document.getElementById("bwDropdown_UpEthAdt").innerHTML = '<option value="" disabled selected></option>';
+            document.getElementById("statusNet_UpEthAdtBw").textContent = "";
+            document.getElementById("upBW_UpEthAdt").textContent = "N/A";
+            document.getElementById("upLat_UpEthAdt").textContent = "N/A";
+            document.getElementById("upLostTotal_UpEthAdt").textContent = "N/A";
+            document.getElementById("downBW_UpEthAdt").textContent = "N/A";
+            document.getElementById("downLat_UpEthAdt").textContent = "N/A";
+            document.getElementById("downLostTotal_UpEthAdt").textContent = "N/A";
+        }
+
+        // Function to populate the dropdown for the lower ethernet port of the adapter
+        function populateDurationDropdownUpEthAdt() {
+            document.getElementById("statusNet_UpEthAdt").textContent = "";
+
+            let dropdown = document.getElementById("durationDropdown_UpEthAdt");
+            dropdown.innerHTML = ""; // Clear existing options
+
+            let defaultOption = document.createElement("option");
+            defaultOption.value = "";
+            defaultOption.textContent = "Select Duration";
+            defaultOption.disabled = true;
+            defaultOption.selected = true;
+            dropdown.appendChild(defaultOption);
+
+            for (let i = 5; i <= 60; i += 5) {
+                let option = document.createElement("option");
+                option.value = i; // Store only the numeric value
+                option.textContent = `${i} seconds`;
+                dropdown.appendChild(option);
+            }
+        }
+
+        // Function to handle the change in the dropdown value
+        function setTestDurationUpEthAdt() {
+            document.getElementById("statusNet_UpEthAdt").textContent = "";
+            document.getElementById("upBW_UpEthAdt").textContent = "N/A";
+            document.getElementById("upLat_UpEthAdt").textContent = "N/A";
+            document.getElementById("upLostTotal_UpEthAdt").textContent = "N/A";
+            document.getElementById("downBW_UpEthAdt").textContent = "N/A";
+            document.getElementById("downLat_UpEthAdt").textContent = "N/A";
+            document.getElementById("downLostTotal_UpEthAdt").textContent = "N/A";
+
+            const dropdown = document.getElementById("durationDropdown_UpEthAdt");
+            testDurationUpEthAdt = parseInt(dropdown.value, 10);
+        }
+
+        function populateBwDropdownUpEthAdt() {
+            document.getElementById("statusNet_UpEthAdtBw").textContent = "";
+
+            const dropdown = document.getElementById("bwDropdown_UpEthAdt");
+            dropdown.innerHTML = ""; // Clear existing options
+
+            // Add the placeholder (disabled and selected by default)
+            const defaultOption = document.createElement("option");
+            defaultOption.value = "";
+            defaultOption.textContent = "Select Bandwidth";
+            defaultOption.disabled = true;
+            defaultOption.selected = true;
+            dropdown.appendChild(defaultOption);
+
+            // Add real options
+            const bandwidthOptions = [
+                // { value: "100", text: "100 Mbits/sec" },
+                { value: "1000", text: "1000 Mbits/sec" },
+                // { value: "2500", text: "2500 Mbits/sec" },
+                // { value: "5000", text: "5000 Mbits/sec" },
+                { value: "10000", text: "10000 Mbits/sec" }
+            ];
+
+            bandwidthOptions.forEach(optionData => {
+                const option = document.createElement("option");
+                option.value = optionData.value;
+                option.textContent = optionData.text;
+                dropdown.appendChild(option);
+            });
+        }
+
+        function setBwUpEthAdt() {
+            const dropdown = document.getElementById("bwDropdown_UpEthAdt");
+            const selectedBwValue = dropdown.value;
+            
+            if (selectedBwValue == "") {
+                document.getElementById("statusNet_UpEthAdtBw").textContent = ""
+                return
+            }
+            document.getElementById("statusNet_UpEthAdt").textContent = "";
+            document.getElementById("upBW_UpEthAdt").textContent = "N/A";
+            document.getElementById("upLat_UpEthAdt").textContent = "N/A";
+            document.getElementById("upLostTotal_UpEthAdt").textContent = "N/A";
+            document.getElementById("downBW_UpEthAdt").textContent = "N/A";
+            document.getElementById("downLat_UpEthAdt").textContent = "N/A";
+            document.getElementById("downLostTotal_UpEthAdt").textContent = "N/A";
+            // Display the status (optional)
+            document.getElementById("statusNet_UpEthAdtBw").innerText = "Configuring...";
+
+            fetch("http://localhost:5000/send_message", {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ message: `BW:${selectedBwValue}:UpEthAdt` })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error("Configuring... Failed");
+                }
+                // Wait for 5 seconds before updating status
+                return new Promise(resolve => {
+                    setTimeout(() => resolve("Configuring... Done"), 5000);
+                });
+            })
+            .then(status => {
+                document.getElementById("statusNet_UpEthAdtBw").innerText = status;
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                document.getElementById("statusNet_UpEthAdtBw").innerText = "Error sending";
+            });
+        }
+
+        function resetBwDropdownToDefaultUpEthAdt() {
+            const dropdown = document.getElementById("bwDropdown_UpEthAdt");
             // If user leaves dropdown without selecting a valid option, reset
             if (!dropdown.value) {
                 dropdown.selectedIndex = 0; // fallback to "Select Bandwidth"
