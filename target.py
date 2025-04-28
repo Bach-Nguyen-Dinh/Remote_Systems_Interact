@@ -20,6 +20,16 @@ LISTEN_IP = "0.0.0.0"
 LISTEN_PORT = 54321
 SOCK_TOUT = 3
 
+RDB_IP = "169.254.207.123"
+
+LW_ETH_OB_INTERFACE_ID = "enp2s0"
+UP_ETH_OB_INTERFACE_ID = "enp3s0"
+LW_ETH_ADT_INTERFACE_ID = "enp1s0f1"
+UP_ETH_ADT_INTERFACE_ID = "enp1s0f0"
+
+SAVE_PATH_IPERF_LW_ETH_ADT = "/home/root/iperf3_end_result_LwEthAdt.json"
+SAVE_PATH_IPERF_UP_ETH_ADT = "/home/root/iperf3_end_result_UpEthAdt.json"
+
 # Global variable
 progress_update = 0.0
 cphd_files = {}
@@ -241,6 +251,118 @@ def listen_for_messages():
                     
                     if file_path and os.path.exists(file_path):
                         threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
+                elif message.startswith("NETRUN:"):
+                    netTestDuration = message.split(":", 1)[1]
+                    file_path = SAVE_PATH_IPERF_LW_ETH_ADT
+
+                    def run_test(reverse=False):
+                        # Define the command with or without reverse mode
+                        command = ["iperf3", "-c", RDB_IP, "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
+                        if reverse:
+                            command.append("-R")  # Add reverse flag for upload test
+
+                        # Run the command
+                        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                        stdout, stderr = process.communicate()
+
+                        if process.returncode == 0:
+                            # Convert JSON output to a Python dictionary
+                            iperf3_result = json.loads(stdout)
+                            end_data = iperf3_result.get("end", {})
+
+                            return end_data
+                        else:
+                            print(f"Error running iperf3 ({'upload' if reverse else 'download'}): {stderr}")
+                            return None
+
+                    # Run download test
+                    down_result = run_test(reverse=True)
+                    # Wait for 2 seconds before running the upload test
+                    time.sleep(2)
+                    # Run upload test
+                    up_result = run_test(reverse=False)
+
+                    if down_result or up_result:
+                        # Load existing results if the file exists
+                        try:
+                            with open(file_path, "r") as file:
+                                existing_data = json.load(file)
+                        except (FileNotFoundError, json.JSONDecodeError):
+                            existing_data = {}
+
+                        # Add results with appropriate tags
+                        if down_result:
+                            existing_data["down"] = down_result
+                        if up_result:
+                            existing_data["up"] = up_result
+
+                        # Save the updated results back to the file
+                        with open(file_path, "w") as json_file:
+                            json.dump(existing_data, json_file, indent=4)
+
+                        print(f"Results saved to {file_path}")
+
+                        # Send the JSON file over the socket
+                        try:
+                            with open(file_path, "r") as json_file:
+                                json_data = json.load(json_file)  # Load the contents of the JSON file
+                                
+                            # Create a response dictionary (you can add any metadata or extra info)
+                            response = {"data": json_data}
+                            
+                            # Send the JSON data over the socket
+                            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_sock:
+                                data_sock.connect((HOST_IP, IMAGE_PORT))  # Use an appropriate port for this purpose
+                                data_sock.sendall(json.dumps(response).encode())  # Send the JSON data
+                            
+                            print(f"JSON data sent to {HOST_IP}:{IMAGE_PORT}")
+                        except Exception as e:
+                            print(f"Error sending JSON data over socket: {e}")
+                    else:
+                        print("No valid results to save.")
+                elif message.startswith("BW:"):
+                    parts = message.split(":")
+                    if len(parts) != 3:
+                        print("Invalid BW message format")
+                        return
+
+                    _, bwValue, target = parts  # bwValue = "1000", target = "LwEthOnb"
+
+                    # Determine the correct interface ID
+                    if target == "LwEthOnb":
+                        interface_id = LW_ETH_OB_INTERFACE_ID
+                    elif target == "UpEthOnb":
+                        interface_id = UP_ETH_OB_INTERFACE_ID
+                    elif target == "LwEthAdt":
+                        interface_id = LW_ETH_ADT_INTERFACE_ID
+                    elif target == "UpEthAdt":
+                        interface_id = UP_ETH_ADT_INTERFACE_ID
+                    else:
+                        print(f"Unknown interface identifier: {target}")
+                        return
+
+                    # Construct the ethtool command
+                    command = ["ethtool", "-s", interface_id, "speed", bwValue, "autoneg", "on"]
+                    print(f"Executing command: {' '.join(command)}")
+
+                    # Run the command and capture stdout and stderr
+                    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+                    # Capture output and error streams
+                    stdout, stderr = process.communicate()
+
+                    # Check the return code
+                    if process.returncode == 0:
+                        print("Command executed successfully.")
+                        if stdout:
+                            print("Output:", stdout)
+                        else:
+                            print("No output from the command.")
+                    else:
+                        print(f"Error executing command. Return code: {process.returncode}")
+                        if stderr:
+                            print("Error message:", stderr)
+
 
 # Function to run the iperf3 server
 def run_iperf3_server():
@@ -309,14 +431,38 @@ def get_system_info():
     
     uptime_seconds = time.time() - psutil.boot_time()
     
-    net_io = psutil.net_io_counters()
-    bytes_sent = net_io.bytes_sent
-    bytes_recv = net_io.bytes_recv
+    # net_io = psutil.net_io_counters()
+    # bytes_sent = net_io.bytes_sent
+    # bytes_recv = net_io.bytes_recv
     
+    # # time.sleep(0.1)
+    # net_io_after = psutil.net_io_counters()
+    # download_speed = (net_io_after.bytes_recv - bytes_recv) / 0.1
+    # upload_speed = (net_io_after.bytes_sent - bytes_sent) / 0.1
+
+    # Network info for specific interfaces
+    interfaces = [LW_ETH_OB_INTERFACE_ID, LW_ETH_ADT_INTERFACE_ID, UP_ETH_OB_INTERFACE_ID, UP_ETH_ADT_INTERFACE_ID]
+    net_before = psutil.net_io_counters(pernic=True)
     time.sleep(0.1)
-    net_io_after = psutil.net_io_counters()
-    download_speed = (net_io_after.bytes_recv - bytes_recv) / 0.1
-    upload_speed = (net_io_after.bytes_sent - bytes_sent) / 0.1
+    net_after = psutil.net_io_counters(pernic=True)
+
+    network_stats = {}
+    for iface in interfaces:
+        if iface in net_before and iface in net_after:
+            net_b = net_before[iface]
+            net_a = net_after[iface]
+            network_stats[iface] = {
+                "bytes_sent": net_a.bytes_sent,
+                "bytes_recv": net_a.bytes_recv,
+                "upload_speed": (net_a.bytes_sent - net_b.bytes_sent) / 0.1,
+                "download_speed": (net_a.bytes_recv - net_b.bytes_recv) / 0.1,
+                "packets_sent": net_a.packets_sent,
+                "packets_recv": net_a.packets_recv,
+                # "errors_in": net_a.errin,
+                # "errors_out": net_a.errout,
+                # "dropin": net_a.dropin,
+                # "dropout": net_a.dropout,
+            }
     
     cpu_power = get_cpu_power()
     
@@ -332,8 +478,9 @@ def get_system_info():
         "per_core_usage": core_usage,
         "per_core_freq": core_frequencies,
         "cpu_temperature": cpu_temperature,
-        "download_speed": download_speed,
-        "upload_speed": upload_speed,
+        # "download_speed": download_speed,
+        # "upload_speed": upload_speed,
+        "network": network_stats,
         "cpu_power": cpu_power,
         "root_disk_usage": root_disk_usage,
         "home_disk_usage": home_disk_usage,
