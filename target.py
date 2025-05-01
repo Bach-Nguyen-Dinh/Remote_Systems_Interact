@@ -201,6 +201,55 @@ def process_cphd_file(file_path):
         #     # send the furhter processed image
         #     handle_image_sending(png_path)
 
+def handle_netrun_test(netTestDuration):
+    file_path = SAVE_PATH_IPERF_LW_ETH_ADT
+
+    def run_test(reverse=False):
+        command = ["iperf3", "-c", RDB_IP, "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
+        if reverse:
+            command.append("-R")
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode == 0:
+            return json.loads(stdout).get("end", {})
+        else:
+            print(f"Error running iperf3 ({'upload' if reverse else 'download'}): {stderr}")
+            return None
+
+    down_result = run_test(reverse=True)
+    time.sleep(2)
+    up_result = run_test(reverse=False)
+
+    if down_result or up_result:
+        try:
+            with open(file_path, "r") as file:
+                existing_data = json.load(file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            existing_data = {}
+
+        if down_result:
+            existing_data["down"] = down_result
+        if up_result:
+            existing_data["up"] = up_result
+
+        with open(file_path, "w") as json_file:
+            json.dump(existing_data, json_file, indent=4)
+
+        print(f"Results saved to {file_path}")
+
+        try:
+            with open(file_path, "r") as json_file:
+                json_data = json.load(json_file)
+            response = {"data": json_data}
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_sock:
+                data_sock.connect((HOST_IP, IMAGE_PORT))
+                data_sock.sendall(json.dumps(response).encode())
+            print(f"JSON data sent to {HOST_IP}:{IMAGE_PORT}")
+        except Exception as e:
+            print(f"Error sending JSON data over socket: {e}")
+    else:
+        print("No valid results to save.")
+
 def listen_for_messages():
     global progress_update
 
@@ -252,74 +301,10 @@ def listen_for_messages():
                     if file_path and os.path.exists(file_path):
                         threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
                 elif message.startswith("NETRUN:"):
+                    # handle run iperf test in thread to avoid blocking other tasks
                     netTestDuration = message.split(":", 1)[1]
-                    file_path = SAVE_PATH_IPERF_LW_ETH_ADT
+                    threading.Thread(target=handle_netrun_test, args=(netTestDuration,), daemon=True).start()
 
-                    def run_test(reverse=False):
-                        # Define the command with or without reverse mode
-                        command = ["iperf3", "-c", RDB_IP, "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
-                        if reverse:
-                            command.append("-R")  # Add reverse flag for upload test
-
-                        # Run the command
-                        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                        stdout, stderr = process.communicate()
-
-                        if process.returncode == 0:
-                            # Convert JSON output to a Python dictionary
-                            iperf3_result = json.loads(stdout)
-                            end_data = iperf3_result.get("end", {})
-
-                            return end_data
-                        else:
-                            print(f"Error running iperf3 ({'upload' if reverse else 'download'}): {stderr}")
-                            return None
-
-                    # Run download test
-                    down_result = run_test(reverse=True)
-                    # Wait for 2 seconds before running the upload test
-                    time.sleep(2)
-                    # Run upload test
-                    up_result = run_test(reverse=False)
-
-                    if down_result or up_result:
-                        # Load existing results if the file exists
-                        try:
-                            with open(file_path, "r") as file:
-                                existing_data = json.load(file)
-                        except (FileNotFoundError, json.JSONDecodeError):
-                            existing_data = {}
-
-                        # Add results with appropriate tags
-                        if down_result:
-                            existing_data["down"] = down_result
-                        if up_result:
-                            existing_data["up"] = up_result
-
-                        # Save the updated results back to the file
-                        with open(file_path, "w") as json_file:
-                            json.dump(existing_data, json_file, indent=4)
-
-                        print(f"Results saved to {file_path}")
-
-                        # Send the JSON file over the socket
-                        try:
-                            with open(file_path, "r") as json_file:
-                                json_data = json.load(json_file)  # Load the contents of the JSON file
-                                
-                            # Create a response dictionary (you can add any metadata or extra info)
-                            response = {"data": json_data}
-                            
-                            # Send the JSON data over the socket
-                            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_sock:
-                                data_sock.connect((HOST_IP, IMAGE_PORT))  # Use an appropriate port for this purpose
-                                data_sock.sendall(json.dumps(response).encode())  # Send the JSON data
-                            
-                            print(f"JSON data sent to {HOST_IP}:{IMAGE_PORT}")
-                        except Exception as e:
-                            print(f"Error sending JSON data over socket: {e}")
-                    else:
-                        print("No valid results to save.")
                 elif message.startswith("BW:"):
                     parts = message.split(":")
                     if len(parts) != 3:
