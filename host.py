@@ -25,14 +25,20 @@ INFLUXDB_DB = "system_metrics"
 INFLUXDB_USER = "root"
 INFLUXDB_PASSWORD = "root"
 
-SAVE_DIR = "/home/bach/python_script/pictures/"
-# SAVE_PATH = os.path.join(SAVE_DIR, "latest_image.png")
+CURR_DIR = os.path.dirname(os.path.abspath(__file__))
+SAVE_DIR = os.path.join(CURR_DIR, "pictures")
+# Check if the "pictures" folder exists, create it if not
+if not os.path.exists(SAVE_DIR):
+    os.makedirs(SAVE_DIR)
+    print(f"Folder 'pictures' created at: {SAVE_DIR}")
+else:
+    print(f"Folder 'pictures' already exists at: {SAVE_DIR}")
 SAVE_PATH_TIF = os.path.join(SAVE_DIR, "tif_image.webp")
 SAVE_PATH_OUT = os.path.join(SAVE_DIR, "out_image.png")
-SAVE_PATH_IPERF_LW_ETH_OB = "/home/bach/python_script/iperf3_end_result_LwEthOnb.json"
-SAVE_PATH_IPERF_UP_ETH_OB = "/home/bach/python_script/iperf3_end_result_UpEthOnb.json"
-SAVE_PATH_IPERF_LW_ETH_ADT = "/home/bach/python_script/iperf3_end_result_LwEthAdt.json"
-SAVE_PATH_IPERF_UP_ETH_ADT = "/home/bach/python_script/iperf3_end_result_UpEthAdt.json"
+SAVE_PATH_IPERF_LW_ETH_OB = os.path.join(CURR_DIR, "iperf3_end_result_LwEthOnb.json")
+SAVE_PATH_IPERF_UP_ETH_OB = os.path.join(CURR_DIR, "iperf3_end_result_UpEthOnb.json")
+SAVE_PATH_IPERF_LW_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_LwEthAdt.json")
+SAVE_PATH_IPERF_UP_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_UpEthAdt.json")
 
 # Global variable
 message = ""
