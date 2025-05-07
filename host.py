@@ -5,7 +5,6 @@ import socket
 import os
 import threading
 import subprocess
-from http.server import SimpleHTTPRequestHandler, HTTPServer
 from flask import Flask, request, jsonify, send_from_directory, send_file  # type: ignore
 from flask_cors import CORS  # type: ignore
 
@@ -63,7 +62,7 @@ app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
 def handle_image_process_server():
-    global message, cphd_file_list, cphd_file_properties, tif_file_properties, flag_get_image
+    global cphd_file_list, cphd_file_properties, tif_file_properties, flag_get_image
     imageSaved = False
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
         server_socket.bind((HOST_IP, IMAGE_PORT))
@@ -84,6 +83,7 @@ def handle_image_process_server():
                     # Receive the actual data
                     received_data = b""
                     while len(received_data) < file_size:
+                        # expect an image so can take the binary directly
                         chunk = conn.recv(4096)
                         if not chunk:
                             break
@@ -98,6 +98,7 @@ def handle_image_process_server():
                 else:
                     save_path = None
                     imageSaved = False
+                    # expect text so binary data have to be decoded
                     data = conn.recv(4096).decode()
                     try:
                         received_data = json.loads(data)
@@ -126,7 +127,8 @@ def handle_image_process_server():
                 print(f"Current save path: {save_path}")
 
 def handle_net_test_server():
-    global message, cphd_file_list, cphd_file_properties, tif_file_properties
+    global cphd_file_list, cphd_file_properties, tif_file_properties
+    save_path = None
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
         server_socket.bind((HOST_IP, NETTEST_PORT))
         server_socket.listen(1)
@@ -135,33 +137,42 @@ def handle_net_test_server():
             conn, addr = server_socket.accept()
             with conn:
                 print(f"Receiving data from {addr}")
-                if message.startswith("NETRUN:"):
-                    if "LwEthAdt" in message:
-                        save_path = SAVE_PATH_IPERF_LW_ETH_ADT
-                    elif "UpEthAdt" in message:
-                        save_path = SAVE_PATH_IPERF_UP_ETH_ADT
+                try:
+                    json_data = b""
+                    while True:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        json_data += chunk
+                    if json_data:
+                        try:
+                            received_dict = json.loads(json_data.decode())
+                            if "NETDONE" in received_dict:
+                                net_iface = received_dict["NETDONE"]
+                                if net_iface == "LwEthAdt":
+                                    save_path = SAVE_PATH_IPERF_LW_ETH_ADT
+                                elif net_iface == "UpEthAdt":
+                                    save_path = SAVE_PATH_IPERF_UP_ETH_ADT
+                                else:
+                                    save_path = None
+                                    print(f"Unknown interface: {net_iface}")
+                                print(f"Received NETDONE for {net_iface}")
+                            elif "data" in received_dict:
+                                # This is the actual iperf result data
+                                if save_path:
+                                    with open(save_path, "w") as f:
+                                        json.dump(received_dict["data"], f, indent=4)
+                                    print(f"Saved net test JSON to: {save_path}")
+                                else:
+                                    print("Warning: data received but no save_path set (NETDONE must arrive first)")
+                            else:
+                                print("Unknown message format:", received_dict)
+                        except json.JSONDecodeError as e:
+                            print(f"Error decoding received JSON: {e}")
                     else:
-                        save_path = None
-                    try:
-                        # Read the incoming JSON data until the client closes the connection
-                        received_data = b""
-                        while True:
-                            chunk = conn.recv(4096)
-                            if not chunk:
-                                break  # Connection closed by client
-                            received_data += chunk
-                        # Decode and save
-                        if received_data:
-                            json_text = received_data.decode()
-                            with open(save_path, "w") as f:
-                                f.write(json_text)
-                            print(f"JSON file saved to: {save_path} ({len(received_data)} bytes)")
-                        else:
-                            print("No data received.")
-                    except Exception as e:
-                        print(f"Error receiving JSON file: {e}")
-                else:
-                    save_path = None
+                        print("No data received.")
+                except Exception as e:
+                    print(f"Error receiving net test JSON data: {e}")
                 print(f"Current save path: {save_path}")
 
 # Function to receive system metrics and store them in InfluxDB
@@ -257,8 +268,8 @@ def send_message():
         return delete_all_files()
     elif message.startswith("RUN:"):
         global tif_file_properties
-        # clear the database for new data
         flag_get_image = True
+        # clear the database for new data
         tif_file_properties = []
     elif message.startswith("NETRUN:"):
         netTestDuration = message.split(":", 1)[1]
