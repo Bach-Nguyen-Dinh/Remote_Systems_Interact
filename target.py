@@ -14,6 +14,7 @@ DEMO_PATH = "/home/root/Desktop/Bach/"
 
 HOST_IP = "10.42.0.1"
 SYSINFO_PORT = 12345
+NETTEST_PORT = 29102
 IMAGE_PORT = 55555
 
 LISTEN_IP = "0.0.0.0"
@@ -242,9 +243,9 @@ def handle_netrun_test(netTestDuration):
                 json_data = json.load(json_file)
             response = {"data": json_data}
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_sock:
-                data_sock.connect((HOST_IP, IMAGE_PORT))
+                data_sock.connect((HOST_IP, NETTEST_PORT))
                 data_sock.sendall(json.dumps(response).encode())
-            print(f"JSON data sent to {HOST_IP}:{IMAGE_PORT}")
+            print(f"JSON data sent to {HOST_IP}:{NETTEST_PORT}")
         except Exception as e:
             print(f"Error sending JSON data over socket: {e}")
     else:
