@@ -164,34 +164,6 @@ def handle_net_test_server():
                     save_path = None
                 print(f"Current save path: {save_path}")
 
-# # Function to serve images over HTTP
-# def run_http_server():
-#     os.chdir(SAVE_DIR)
-#     httpd = HTTPServer(("0.0.0.0", IMAGE_PORT), SimpleHTTPRequestHandler)
-#     print(f"Serving images on port {IMAGE_PORT}...")
-#     httpd.serve_forever()
-
-# # Override to suppress logging for specific status codes (200 and 404)
-# class CustomHTTPRequestHandler(SimpleHTTPRequestHandler):
-#     def log_message(self, format, *args):
-#         # Extract the status code from the format
-#         status_code = args[-2]  # The second-to-last argument is the status code
-        
-#         # Suppress logs for 404 status code (and 200 if needed)
-#         if status_code == "200" or status_code == "404":
-#             return  # Do not log the message
-        
-#         # Call the original log_message method for other status codes
-#         super().log_message(format, *args)
-
-# def run_http_server():
-#     # Set the working directory to serve files from
-#     os.chdir(SAVE_DIR)
-#     # Start the HTTP server with the custom request handler
-#     httpd = HTTPServer((HOST_IP, IMAGE_PORT), CustomHTTPRequestHandler)
-#     print(f"Serving images on port {IMAGE_PORT}...")
-#     httpd.serve_forever()
-
 # Function to receive system metrics and store them in InfluxDB
 def handle_system_metrics_server():
     client = InfluxDBClient(INFLUXDB_HOST, INFLUXDB_PORT, INFLUXDB_USER, INFLUXDB_PASSWORD, INFLUXDB_DB)
