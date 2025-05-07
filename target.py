@@ -22,14 +22,17 @@ LISTEN_PORT = 54321
 SOCK_TOUT = 3
 
 RDB_IP = "169.254.207.123"
+LW_ETH_ADT_CLIENT_IP = RDB_IP
+UP_ETH_ADT_CLIENT_IP = "123.456.789.123"
 
 LW_ETH_OB_INTERFACE_ID = "enp2s0"
 UP_ETH_OB_INTERFACE_ID = "enp3s0"
 LW_ETH_ADT_INTERFACE_ID = "enp1s0f1"
 UP_ETH_ADT_INTERFACE_ID = "enp1s0f0"
 
-SAVE_PATH_IPERF_LW_ETH_ADT = "/home/root/iperf3_end_result_LwEthAdt.json"
-SAVE_PATH_IPERF_UP_ETH_ADT = "/home/root/iperf3_end_result_UpEthAdt.json"
+CURR_DIR = os.path.dirname(os.path.abspath(__file__))
+SAVE_PATH_IPERF_LW_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_LwEthAdt.json")
+SAVE_PATH_IPERF_UP_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_UpEthAdt.json")
 
 # Global variable
 progress_update = 0.0
@@ -136,10 +139,10 @@ def send_cphd_files_list():
     
 def get_cphd_file_size(filename):
     global cphd_files
-    file_path = cphd_files.get(filename)
+    filePath = cphd_files.get(filename)
 
-    if file_path and os.path.exists(file_path):
-        return os.path.getsize(file_path)
+    if filePath and os.path.exists(filePath):
+        return os.path.getsize(filePath)
     return None
 
 def get_metadata_from_json(directory):
@@ -159,8 +162,8 @@ def get_metadata_from_json(directory):
         print(f"Error reading metadata: {e}")
     return None
 
-def process_cphd_file(file_path):
-    directory = os.path.dirname(file_path)
+def process_cphd_file(filePath):
+    directory = os.path.dirname(filePath)
     tif_files = [f for f in os.listdir(directory) if f.endswith(".tif")]
     # png_files = [f for f in os.listdir(directory) if f.endswith(".png")]
     
@@ -172,7 +175,7 @@ def process_cphd_file(file_path):
         
         # send the properies of the processed image
         tif_size = os.path.getsize(tif_path)
-        cphd_size = os.path.getsize(file_path)
+        cphd_size = os.path.getsize(filePath)
         reduction_scale = round(cphd_size / tif_size, 2)
         size_compared = round((tif_size / cphd_size) * 100, 2) if cphd_size else 0
         reduction_factor = round(100 - size_compared, 2)
@@ -202,11 +205,16 @@ def process_cphd_file(file_path):
         #     # send the furhter processed image
         #     handle_image_sending(png_path)
 
-def handle_netrun_test(netTestDuration):
-    file_path = SAVE_PATH_IPERF_LW_ETH_ADT
+def handle_netrun_test(netTestDuration, netTestInterface):
+    if netTestInterface == "LwEthAdt":
+        filePath = SAVE_PATH_IPERF_LW_ETH_ADT
+        netTest_clientIP = LW_ETH_ADT_CLIENT_IP
+    if netTestInterface == "UpEthAdt":
+        filePath = SAVE_PATH_IPERF_UP_ETH_ADT
+        netTest_clientIP = UP_ETH_ADT_CLIENT_IP
 
     def run_test(reverse=False):
-        command = ["iperf3", "-c", RDB_IP, "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
+        command = ["iperf3", "-c", netTest_clientIP, "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
         if reverse:
             command.append("-R")
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -223,7 +231,7 @@ def handle_netrun_test(netTestDuration):
 
     if down_result or up_result:
         try:
-            with open(file_path, "r") as file:
+            with open(filePath, "r") as file:
                 existing_data = json.load(file)
         except (FileNotFoundError, json.JSONDecodeError):
             existing_data = {}
@@ -233,13 +241,20 @@ def handle_netrun_test(netTestDuration):
         if up_result:
             existing_data["up"] = up_result
 
-        with open(file_path, "w") as json_file:
+        with open(filePath, "w") as json_file:
             json.dump(existing_data, json_file, indent=4)
 
-        print(f"Results saved to {file_path}")
+        print(f"Results saved to {filePath}")
 
         try:
-            with open(file_path, "r") as json_file:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+                client_socket.connect((HOST_IP, NETTEST_PORT))
+                client_socket.sendall(json.dumps({"NETDONE":"LwEthAdt"}).encode())
+        except Exception as e:
+            print(f"Error sending NETDONE signal over socket: {e}")
+
+        try:
+            with open(filePath, "r") as json_file:
                 json_data = json.load(json_file)
             response = {"data": json_data}
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_sock:
@@ -278,11 +293,11 @@ def listen_for_messages():
                 elif message.startswith("SIZE:"):
                     progress_update = 0.0
                     filename = message.split(":", 1)[1]
-                    file_path = cphd_files.get(filename)
+                    filePath = cphd_files.get(filename)
                     
-                    if file_path and os.path.exists(file_path):
-                        file_size = os.path.getsize(file_path)
-                        metadata = get_metadata_from_json(os.path.dirname(file_path))
+                    if filePath and os.path.exists(filePath):
+                        file_size = os.path.getsize(filePath)
+                        metadata = get_metadata_from_json(os.path.dirname(filePath))
                         
                         file_size_str = f"{file_size / 1_000_000:.2f} MB" if file_size >= 1_000_000 else f"{file_size} bytes"
                         
@@ -297,14 +312,14 @@ def listen_for_messages():
                             print(f"Error sending file size and metadata: {e}")
                 elif message.startswith("RUN:"):
                     filename = message.split(":", 1)[1]
-                    file_path = cphd_files.get(filename)
+                    filePath = cphd_files.get(filename)
                     
-                    if file_path and os.path.exists(file_path):
-                        threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
+                    if filePath and os.path.exists(filePath):
+                        threading.Thread(target=process_cphd_file, args=(filePath,), daemon=True).start()
                 elif message.startswith("NETRUN:"):
                     # handle run iperf test in thread to avoid blocking other tasks
-                    netTestDuration = message.split(":", 1)[1]
-                    threading.Thread(target=handle_netrun_test, args=(netTestDuration,), daemon=True).start()
+                    _, netTestDuration, netTestInterface = message.split(":", 2)
+                    threading.Thread(target=handle_netrun_test, args=(netTestDuration, netTestInterface,), daemon=True).start()
 
                 elif message.startswith("BW:"):
                     parts = message.split(":")
