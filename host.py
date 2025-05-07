@@ -12,8 +12,8 @@ from flask_cors import CORS  # type: ignore
 # Configuration
 HOST_IP = '0.0.0.0'
 SYSINFO_PORT = 12345  # Port for system metrics
-DATA_PORT = 55555
-IMAGE_PORT = 8080
+NETTEST_PORT = 29102
+IMAGE_PORT = 55555
 FLASK_PORT = 5000
 
 TARGET_IP = "10.42.0.90"  # Target system IP
@@ -56,52 +56,38 @@ final_results = {
     "receiver_loss": ""
 }
 netTestDuration = 0
+flag_get_image = False
 
 # Initialize Flask
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-def start_server():
-    global message, cphd_file_list, cphd_file_properties, tif_file_properties
+def handle_image_process_server():
+    global message, cphd_file_list, cphd_file_properties, tif_file_properties, flag_get_image
     imageSaved = False
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
-        server_socket.bind((HOST_IP, DATA_PORT))
+        server_socket.bind((HOST_IP, IMAGE_PORT))
         server_socket.listen(1)
-        print(f"Listening for incoming image on {HOST_IP}:{DATA_PORT}...")
-
+        print(f"Listening for incoming image on {HOST_IP}:{IMAGE_PORT}...")
         while True:
             conn, addr = server_socket.accept()
             with conn:
                 print(f"Receiving data from {addr}")
-
-                # Check if message is related to an image
-                if message.startswith("RUN:") and imageSaved == False:
+                # expect receiving an image only if there is no current saved image
+                # if new image is already saved, skip to expect other data
+                if flag_get_image == True and imageSaved == False:
+                    flag_get_image == False
                     save_path = SAVE_PATH_TIF
-                elif message.startswith("NETRUN:"):
-                    if "LwEthAdt" in message:
-                        save_path = SAVE_PATH_IPERF_LW_ETH_ADT
-                    elif "UpEthAdt" in message:
-                        save_path = SAVE_PATH_IPERF_UP_ETH_ADT
-                    else:
-                        save_path = None
-                else:
-                    save_path = None
-                    imageSaved = False
-
-                print(f"Current save path: {save_path}")
-
-                if save_path == SAVE_PATH_TIF:
                     # Receive file size first
                     file_size = int.from_bytes(conn.recv(8), byteorder="big")
                     print(f"Expecting to receive {file_size} bytes...")
-
+                    # Receive the actual data
                     received_data = b""
                     while len(received_data) < file_size:
                         chunk = conn.recv(4096)
                         if not chunk:
                             break
                         received_data += chunk
-
                     if len(received_data) == file_size:
                         with open(save_path, "wb") as f:
                             f.write(received_data)
@@ -109,7 +95,53 @@ def start_server():
                     else:
                         print(f"Error: Received {len(received_data)} bytes, expected {file_size} bytes")
                     imageSaved = True
-                elif save_path is not None and save_path != SAVE_PATH_TIF:
+                else:
+                    save_path = None
+                    imageSaved = False
+                    data = conn.recv(4096).decode()
+                    try:
+                        received_data = json.loads(data)
+                        # Check if it's a list of CPHD files
+                        if "cphd_files" in received_data:
+                            cphd_file_list = received_data["cphd_files"]
+                            print(f"Updated CPHD file list: {cphd_file_list}")
+                        # Check if it's the CPHD file's metrics
+                        elif "filename" in received_data and "size" in received_data:
+                            file_name = received_data["filename"]
+                            file_size_str = received_data["size"]
+                            print(f"File '{file_name}' has a size of '{file_size_str}'.")
+                            # Update the dictionary to store the formatted size
+                            cphd_file_properties = received_data
+                        # Check if it's the TIF file's metrics
+                        elif "tif_filename" in received_data:
+                            file_name = received_data["tif_filename"]
+                            file_size_str = received_data["size"]
+                            print(f"File '{file_name}' has a size of '{file_size_str}'.")
+                            # Update the dictionary to store the formatted size
+                            tif_file_properties = received_data
+                        else:
+                            print(f"Received unknown data: {received_data}")
+                    except json.JSONDecodeError as e:
+                        print(f"Error decoding received data: {e}")
+                print(f"Current save path: {save_path}")
+
+def handle_net_test_server():
+    global message, cphd_file_list, cphd_file_properties, tif_file_properties
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        server_socket.bind((HOST_IP, NETTEST_PORT))
+        server_socket.listen(1)
+        print(f"Listening for incoming net tesk results on {HOST_IP}:{NETTEST_PORT}...")
+        while True:
+            conn, addr = server_socket.accept()
+            with conn:
+                print(f"Receiving data from {addr}")
+                if message.startswith("NETRUN:"):
+                    if "LwEthAdt" in message:
+                        save_path = SAVE_PATH_IPERF_LW_ETH_ADT
+                    elif "UpEthAdt" in message:
+                        save_path = SAVE_PATH_IPERF_UP_ETH_ADT
+                    else:
+                        save_path = None
                     try:
                         # Read the incoming JSON data until the client closes the connection
                         received_data = b""
@@ -118,88 +150,27 @@ def start_server():
                             if not chunk:
                                 break  # Connection closed by client
                             received_data += chunk
-
                         # Decode and save
                         if received_data:
                             json_text = received_data.decode()
                             with open(save_path, "w") as f:
                                 f.write(json_text)
                             print(f"JSON file saved to: {save_path} ({len(received_data)} bytes)")
-
                         else:
                             print("No data received.")
-
                     except Exception as e:
                         print(f"Error receiving JSON file: {e}")
                 else:
-                    data = conn.recv(4096).decode()
-                    try:
-                        received_data = json.loads(data)
-
-                        # Check if it's a file size response
-                        if "filename" in received_data and "size" in received_data:
-                            file_name = received_data["filename"]
-                            file_size_str = received_data["size"]
-                            print(f"File '{file_name}' has a size of '{file_size_str}'.")
-                            # Update the dictionary to store the formatted size
-                            cphd_file_properties = received_data
-
-                        # Check if it's a list of CPHD files
-                        elif "cphd_files" in received_data:
-                            cphd_file_list = received_data["cphd_files"]
-                            print(f"Updated CPHD file list: {cphd_file_list}")
-
-                        elif "tif_filename" in received_data:
-                            file_name = received_data["tif_filename"]
-                            file_size_str = received_data["size"]
-                            print(f"File '{file_name}' has a size of '{file_size_str}'.")
-                            # Update the dictionary to store the formatted size
-                            tif_file_properties = received_data
-
-                        else:
-                            print(f"Received unknown data: {received_data}")
-
-                    except json.JSONDecodeError as e:
-                        print(f"Error decoding received data: {e}")
-
-
-# # Function to serve images over HTTP
-# def run_http_server():
-#     os.chdir(SAVE_DIR)
-#     httpd = HTTPServer(("0.0.0.0", IMAGE_PORT), SimpleHTTPRequestHandler)
-#     print(f"Serving images on port {IMAGE_PORT}...")
-#     httpd.serve_forever()
-
-# Override to suppress logging for specific status codes (200 and 404)
-class CustomHTTPRequestHandler(SimpleHTTPRequestHandler):
-    def log_message(self, format, *args):
-        # Extract the status code from the format
-        status_code = args[-2]  # The second-to-last argument is the status code
-        
-        # Suppress logs for 404 status code (and 200 if needed)
-        if status_code == "200" or status_code == "404":
-            return  # Do not log the message
-        
-        # Call the original log_message method for other status codes
-        super().log_message(format, *args)
-
-def run_http_server():
-    # Set the working directory to serve files from
-    os.chdir(SAVE_DIR)
-    # Start the HTTP server with the custom request handler
-    httpd = HTTPServer((HOST_IP, IMAGE_PORT), CustomHTTPRequestHandler)
-    print(f"Serving images on port {IMAGE_PORT}...")
-    httpd.serve_forever()
+                    save_path = None
+                print(f"Current save path: {save_path}")
 
 # Function to receive system metrics and store them in InfluxDB
-def receive_metrics():
+def handle_system_metrics_server():
     client = InfluxDBClient(INFLUXDB_HOST, INFLUXDB_PORT, INFLUXDB_USER, INFLUXDB_PASSWORD, INFLUXDB_DB)
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((HOST_IP, SYSINFO_PORT))
     server_socket.listen(1)
-
-    print("System metrics server listening for connections...")
-    
+    print(f"Listening for incoming system metrics on {HOST_IP}:{SYSINFO_PORT}...")
     while True:
         client_socket, client_address = server_socket.accept()
         print(f"Connection established with {client_address}")
@@ -277,7 +248,7 @@ def receive_metrics():
 # Flask route to send messages to target system
 @app.route('/send_message', methods=['POST'])
 def send_message():
-    global message, netTestDuration
+    global message, netTestDuration, flag_get_image
     data = request.get_json()
     message = data.get("message", "Default message from host")
     print(message)
@@ -287,6 +258,7 @@ def send_message():
     elif message.startswith("RUN:"):
         global tif_file_properties
         # clear the database for new data
+        flag_get_image = True
         tif_file_properties = []
     elif message.startswith("NETRUN:"):
         netTestDuration = message.split(":", 1)[1]
@@ -448,12 +420,13 @@ def iperf_up_eth_adt_results():
 
 # Function to run Flask server
 def run_flask_server():
-    app.run(host="0.0.0.0", port=FLASK_PORT, debug=True, use_reloader=False)
+    print(f"Running FLASK server on {HOST_IP}:{FLASK_PORT}...")
+    app.run(host=HOST_IP, port=FLASK_PORT, debug=True, use_reloader=False)
 
 # Start all services in separate threads
-threading.Thread(target=start_server, daemon=True).start()
-threading.Thread(target=run_http_server, daemon=True).start()
-threading.Thread(target=receive_metrics, daemon=True).start()
+threading.Thread(target=handle_image_process_server, daemon=True).start()
+threading.Thread(target=handle_net_test_server, daemon=True).start()
+threading.Thread(target=handle_system_metrics_server, daemon=True).start()
 threading.Thread(target=run_flask_server, daemon=True).start()
 
 # Keep main thread alive
