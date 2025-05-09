@@ -321,7 +321,7 @@ def send_message():
             _, bwValue, target = parts  # bwValue = "1000", target = "LwEthOnb"
             target = COMP_ETH_PORT_INTERFACE_ID
             # Construct the ethtool command
-            command = ["sudo", "ethtool", "-s", target, "speed", bwValue, "autoneg", "on"]
+            command = ["sudo", "ethtool", "-s", target, "speed", bwValue, "autoneg", "off"]
             print(f"Executing command: {' '.join(command)}")
             # Run the command and capture stdout and stderr
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
