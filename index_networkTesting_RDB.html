@@ -134,19 +134,16 @@
                 <!-- test duration -->
                 <div class="box-container no-border-background">
                     <h2>10G Copper Ethernet port</h2>
-                    <p>Select test duration</p>
-                    <select id="durationDropdown_LwEthOnb" 
-                        onfocus="populateDurationDropdownLwEthOnb()" 
+                    <p>Test Duration</p>
+                    <select id="durationDropdown_LwEthOnb"
                         onchange="setTestDurationLwEthOnb()">
                     </select>
                     <div class="status-container">
                         <p id="statusNet_LwEthOnb">&nbsp;</p>
                     </div>
-                    <p>Select Bandwidth</p>
+                    <p>Interface Bandwidth</p>
                     <select id="bwDropdown_LwEthOnb"
-                        onfocus="populateBwDropdownLwEthOnb()"
-                        onchange="setBwLwEthOnb()"
-                        onblur="resetBwDropdownToDefaultLwEthOnb()">
+                        onchange="setBwLwEthOnb()">
                     </select>
                     <div class="status-container">
                         <p id="statusNet_LwEthOnbBw">&nbsp;</p>
@@ -347,10 +344,15 @@
         LOCAL_INTERFACE_ID = "lo"
         VIRTUAL_INTERFACE_ID = "virbr0"
 
+        FLASK_PORT = 5001
+        
         let testDurationLwEthOnb = null; // Variable to store selected duration
         let testDurationUpEthOnb = null;
         let testDurationLwEthAdt = null;
         let testDurationUpEthAdt = null;
+
+        populateDurationDropdownLwEthOnb();
+        populateBwDropdownLwEthOnb();
         
         // ================================================================================================================
         // ========================================= Lower Ethernet Port on board =========================================
@@ -384,57 +386,51 @@
                 return;
             }
             // Send the NETRUN message via POST request
-            await fetch("http://localhost:5000/send_message", {
+            await fetch(`http://localhost:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:${FM_INTERFACE_ID}` })
             });
             statusNetElement.textContent = "Waiting for results...";
+            console.log('Wating for results...');
             
             await new Promise(resolve => setTimeout(resolve, testDurationLwEthOnb*1000*2+5000));
 
-            fetch('http://localhost:5000/iperf3/lw_eth_onb_results')
+            fetch(`http://localhost:${FLASK_PORT}/iperf3/lw_eth_onb_results`)
                 .then(response => response.json())
                 .then(data => {
+                    console.log('Wating for results... Done');
                     // Extract the relevant data from the JSON response
-                    stream = data.down.sum;
+                    console.log('get net test down result')
+                    stream = data.down.sum_received;
+                    console.log(stream);
 
                     // Convert bits_per_second to Mbit/sec (divide by 1e6)
                     bitsPerSecondMbit = stream.bits_per_second / 1e6;
-                    jitterMs = stream.jitter_ms;
-                    lostPackets = stream.lost_packets;
-                    totalPackets = stream.packets;
-                    lostPercent = stream.lost_percent;
+                    // jitterMs = stream.jitter_ms;
+                    // lostPackets = stream.lost_packets;
+                    // totalPackets = stream.packets;
+                    // lostPercent = stream.lost_percent;
 
-                    // Function to format the lostPercent to 2 non-zero decimal points
-                    function formatLostPercent(percent) {
-                        // Round the number to 2 non-zero digits after the decimal
-                        return parseFloat(percent.toFixed(4)); // This keeps 2 decimal digits, removing unnecessary zeros
-                    }
-
-                    document.getElementById('downBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbit/sec`;
-                    document.getElementById('downLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
-                    document.getElementById('downLostTotal_LwEthOnb').textContent = `${lostPackets}/${totalPackets} (${formatLostPercent(lostPercent)}%)`;
+                    document.getElementById('downBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                    // document.getElementById('downLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
+                    // document.getElementById('downLostTotal_LwEthOnb').textContent = `${lostPackets}/${totalPackets} (${lostPercent.toFixed(4)}%)`;
                     
-                    stream = data.up.sum;
+                    console.log('get net test up result')
+                    stream = data.up.sum_sent;
+                    console.log(stream);
 
                     // Convert bits_per_second to Mbit/sec (divide by 1e6)
                     bitsPerSecondMbit = stream.bits_per_second / 1e6;
-                    jitterMs = stream.jitter_ms;
-                    lostPackets = stream.lost_packets;
-                    totalPackets = stream.packets;
-                    lostPercent = stream.lost_percent;
-
-                    // Function to format the lostPercent to 2 non-zero decimal points
-                    function formatLostPercent(percent) {
-                        // Round the number to 2 non-zero digits after the decimal
-                        return parseFloat(percent.toFixed(4)); // This keeps 2 decimal digits, removing unnecessary zeros
-                    }
+                    // jitterMs = stream.jitter_ms;
+                    // lostPackets = stream.lost_packets;
+                    // totalPackets = stream.packets;
+                    // lostPercent = stream.lost_percent;
 
                     // Display the extracted information on the page
-                    document.getElementById('upBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbit/sec`;
-                    document.getElementById('upLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
-                    document.getElementById('upLostTotal_LwEthOnb').textContent = `${lostPackets}/${totalPackets} (${formatLostPercent(lostPercent)}%)`;
+                    document.getElementById('upBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                    // document.getElementById('upLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
+                    // document.getElementById('upLostTotal_LwEthOnb').textContent = `${lostPackets}/${totalPackets} (${lostPercent.toFixed(4)}%)`;
          
                     statusNetElement.textContent = "Waiting for results... Done";
                 })
@@ -446,10 +442,19 @@
         
         function btnLwEthOnbResetClick() {
             testDurationLwEthOnb = null;
-            document.getElementById("durationDropdown_LwEthOnb").innerHTML = '<option value="" disabled selected></option>';
+
+            // Reset dropdowns to default option (index 0)
+            const durationDropdown = document.getElementById("durationDropdown_LwEthOnb");
+            const bwDropdown = document.getElementById("bwDropdown_LwEthOnb");
+
+            durationDropdown.selectedIndex = 0;
+            bwDropdown.selectedIndex = 0;
+
+            // Clear any status messages
             document.getElementById("statusNet_LwEthOnb").textContent = "";
-            document.getElementById("bwDropdown_LwEthOnb").innerHTML = '<option value="" disabled selected></option>';
             document.getElementById("statusNet_LwEthOnbBw").textContent = "";
+
+            // Reset result displays
             document.getElementById("upBW_LwEthOnb").textContent = "N/A";
             document.getElementById("upLat_LwEthOnb").textContent = "N/A";
             document.getElementById("upLostTotal_LwEthOnb").textContent = "N/A";
@@ -512,7 +517,10 @@
             const bandwidthOptions = [
                 { value: "10", text: "10 Mbits/sec" },
                 { value: "100", text: "100 Mbits/sec" },
-                { value: "1000", text: "1000 Mbits/sec" }
+                { value: "1000", text: "1000 Mbits/sec" },
+                { value: "2500", text: "2500 Mbits/sec" },
+                { value: "5000", text: "5000 Mbits/sec" },
+                { value: "10000", text: "10000 Mbits/sec" }
             ];
 
             bandwidthOptions.forEach(optionData => {
@@ -541,7 +549,7 @@
             // Display the status (optional)
             document.getElementById("statusNet_LwEthOnbBw").innerText = "Configuring...";
 
-            fetch("http://localhost:5000/send_message", {
+            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
