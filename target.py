@@ -334,7 +334,7 @@ def listen_for_messages():
                         interface_id = LW_ETH_OB_INTERFACE_ID
                     elif target == "UpEthOnb":
                         interface_id = UP_ETH_OB_INTERFACE_ID
-                    elif target == "LwEthAdt":
+                    elif target == "LwEthAdt" or "fm1-mac9":
                         interface_id = LW_ETH_ADT_INTERFACE_ID
                     elif target == "UpEthAdt":
                         interface_id = UP_ETH_ADT_INTERFACE_ID
