@@ -127,7 +127,6 @@ def handle_image_process_server():
                 print(f"Current save path: {save_path}")
 
 def handle_net_test_server():
-    global cphd_file_list, cphd_file_properties, tif_file_properties
     save_path = None
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
         server_socket.bind((HOST_IP, NETTEST_PORT))
@@ -225,7 +224,10 @@ def handle_system_metrics_server():
                     json_body = [
                         {
                             "measurement": "system_metrics",
-                            "tags": {"host": client_address[0]},
+                            "tags": {
+                                "host": "HPC",
+                                "source": client_address[0]
+                            },
                             "fields": {
                                 "cpu_usage": float(system_info["cpu_usage"]),
                                 "memory_usage": float(system_info["memory_usage"]),
@@ -259,12 +261,13 @@ def handle_system_metrics_server():
 # Flask route to send messages to target system
 @app.route('/send_message', methods=['POST'])
 def send_message():
-    global message, netTestDuration, flag_get_image
+    global message, flag_get_image
     data = request.get_json()
     message = data.get("message", "Default message from host")
     print(message)
 
     if message == "3":
+        flag_get_image = False
         return delete_all_files()
     elif message.startswith("RUN:"):
         global tif_file_properties
@@ -272,14 +275,13 @@ def send_message():
         # clear the database for new data
         tif_file_properties = []
     elif message.startswith("NETRUN:"):
-        netTestDuration = message.split(":", 1)[1]
         if "LwEthOnb" in message:
             # Start iperf3 in a separate thread
-            start_iperf_thread(SAVE_PATH_IPERF_LW_ETH_OB)
+            start_iperf_thread(SAVE_PATH_IPERF_LW_ETH_OB, message)
             return jsonify({"status": "iperf3 test started"}), 200
         elif "UpEthOnb" in message:
             # Start iperf3 in a separate thread
-            start_iperf_thread(SAVE_PATH_IPERF_UP_ETH_OB)
+            start_iperf_thread(SAVE_PATH_IPERF_UP_ETH_OB, message)
             return jsonify({"status": "iperf3 test started"}), 200
         elif "EthAdt" in message:
             return forward_message_to_target(message)
@@ -339,8 +341,8 @@ def serve_image(filename):
     return send_from_directory(SAVE_DIR, filename)
 
 # Function to run iperf3 and capture the results
-def run_iperf3(file_path):
-    global netTestDuration
+def run_iperf3(file_path, message):
+    netTestDuration = message.split(":", 1)[1]
 
     def run_test(reverse=False):
         # Define the command with or without reverse mode
@@ -392,8 +394,8 @@ def run_iperf3(file_path):
 
 
 # Function to start the iperf3 test in a background thread
-def start_iperf_thread(file_path):
-    iperf_thread = threading.Thread(target=run_iperf3, args=(file_path,), daemon=True)
+def start_iperf_thread(file_path, message):
+    iperf_thread = threading.Thread(target=run_iperf3, args=(file_path, message, ), daemon=True)
     iperf_thread.start()
 
 # Flask route to fetch and stream the iperf3_end_result.json file
