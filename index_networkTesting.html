@@ -136,7 +136,6 @@
                     <h2>Lower Ethernet port on Board</h2>
                     <p>Select test duration</p>
                     <select id="durationDropdown_LwEthOnb" 
-                        onfocus="populateDurationDropdownLwEthOnb()" 
                         onchange="setTestDurationLwEthOnb()">
                     </select>
                     <div class="status-container">
@@ -144,9 +143,7 @@
                     </div>
                     <p>Select Bandwidth</p>
                     <select id="bwDropdown_LwEthOnb"
-                        onfocus="populateBwDropdownLwEthOnb()"
-                        onchange="setBwLwEthOnb()"
-                        onblur="resetBwDropdownToDefaultLwEthOnb()">
+                        onchange="setBwLwEthOnb()">
                     </select>
                     <div class="status-container">
                         <p id="statusNet_LwEthOnbBw">&nbsp;</p>
@@ -192,7 +189,6 @@
                     <h2>Upper Ethernet port on Board</h2>
                     <p>Select test duration</p>
                     <select id="durationDropdown_UpEthOnb" 
-                        onfocus="populateDurationDropdownUpEthOnb()" 
                         onchange="setTestDurationUpEthOnb()">
                     </select>
                     <div class="status-container">
@@ -200,9 +196,7 @@
                     </div>
                     <p>Select Bandwidth</p>
                     <select id="bwDropdown_UpEthOnb"
-                        onfocus="populateBwDropdownUpEthOnb()"
-                        onchange="setBwUpEthOnb()"
-                        onblur="resetBwDropdownToDefaultUpEthOnb()">
+                        onchange="setBwUpEthOnb()">
                     </select>
                     <div class="status-container">
                         <p id="statusNet_UpEthOnbBw">&nbsp;</p>
@@ -248,7 +242,6 @@
                     <h2>Lower Ethernet port on NIC</h2>
                     <p>Select test duration</p>
                     <select id="durationDropdown_LwEthAdt" 
-                        onfocus="populateDurationDropdownLwEthAdt()" 
                         onchange="setTestDurationLwEthAdt()">
                     </select>
                     <div class="status-container">
@@ -256,9 +249,7 @@
                     </div>
                     <p>Select Bandwidth</p>
                     <select id="bwDropdown_LwEthAdt" 
-                        onfocus="populateBwDropdownLwEthAdt()" 
                         onchange="setBwLwEthAdt()">
-                        onblur="resetBwDropdownToDefaultLwEthAdt()">
                     </select>
                     <div class="status-container">
                         <p id="statusNet_LwEthAdtBw">&nbsp;</p>
@@ -304,7 +295,6 @@
                     <h2>Upper Ethernet port on NIC</h2>
                     <p>Select test duration</p>
                     <select id="durationDropdown_UpEthAdt" 
-                        onfocus="populateDurationDropdownUpEthAdt()" 
                         onchange="setTestDurationUpEthAdt()">
                     </select>
                     <div class="status-container">
@@ -312,9 +302,7 @@
                     </div>
                     <p>Select Bandwidth</p>
                     <select id="bwDropdown_UpEthAdt" 
-                        onfocus="populateBwDropdownUpEthAdt()" 
                         onchange="setBwUpEthAdt()">
-                        onblur="resetBwDropdownToDefaultUpEthAdt()">
                     </select>
                     <div class="status-container">
                         <p id="statusNet_UpEthAdtBw">&nbsp;</p>
@@ -361,6 +349,21 @@
         let testDurationUpEthOnb = null;
         let testDurationLwEthAdt = null;
         let testDurationUpEthAdt = null;
+
+        document.addEventListener("DOMContentLoaded", function () {
+            // populate test parameters for the lower ethernet port on board
+            populateDurationDropdownLwEthOnb();
+            populateBwDropdownLwEthOnb();
+            // populate test parameters for the upper ethernet port on board
+            populateDurationDropdownUpEthOnb();
+            populateBwDropdownUpEthOnb();
+            // populate test parameters for the lower ethernet port on NIC
+            populateDurationDropdownLwEthAdt();
+            populateBwDropdownLwEthAdt();
+            // populate test parameters for the upper ethernet port on NIC
+            populateDurationDropdownUpEthAdt();
+            populateBwDropdownUpEthAdt();
+        });
         
         // ================================================================================================================
         // ========================================= Lower Ethernet Port on board =========================================
@@ -575,14 +578,6 @@
                 document.getElementById("statusNet_LwEthOnbBw").innerText = "Error sending";
             });
         }
-
-        function resetBwDropdownToDefaultLwEthOnb() {
-            const dropdown = document.getElementById("bwDropdown_LwEthOnb");
-            // If user leaves dropdown without selecting a valid option, reset
-            if (!dropdown.value) {
-                dropdown.selectedIndex = 0; // fallback to "Select Bandwidth"
-            }
-        }
         
         // ================================================================================================================
         // ========================================= Upper Ethernet Port on board =========================================
@@ -796,14 +791,6 @@
                 console.error('Error:', error);
                 document.getElementById("statusNet_UpEthOnbBw").innerText = "Error sending";
             });
-        }
-
-        function resetBwDropdownToDefaultUpEthOnb() {
-            const dropdown = document.getElementById("bwDropdown_UpEthOnb");
-            // If user leaves dropdown without selecting a valid option, reset
-            if (!dropdown.value) {
-                dropdown.selectedIndex = 0; // fallback to "Select Bandwidth"
-            }
         }
 
         // ================================================================================================================
@@ -1022,14 +1009,6 @@
             });
         }
 
-        function resetBwDropdownToDefaultLwEthAdt() {
-            const dropdown = document.getElementById("bwDropdown_LwEthAdt");
-            // If user leaves dropdown without selecting a valid option, reset
-            if (!dropdown.value) {
-                dropdown.selectedIndex = 0; // fallback to "Select Bandwidth"
-            }
-        }
-
         // ================================================================================================================
         // ========================================= Upper Ethernet Port on adapter =======================================
         // ================================================================================================================
@@ -1244,14 +1223,6 @@
                 console.error('Error:', error);
                 document.getElementById("statusNet_UpEthAdtBw").innerText = "Error sending";
             });
-        }
-
-        function resetBwDropdownToDefaultUpEthAdt() {
-            const dropdown = document.getElementById("bwDropdown_UpEthAdt");
-            // If user leaves dropdown without selecting a valid option, reset
-            if (!dropdown.value) {
-                dropdown.selectedIndex = 0; // fallback to "Select Bandwidth"
-            }
         }
     </script>
 </body>
