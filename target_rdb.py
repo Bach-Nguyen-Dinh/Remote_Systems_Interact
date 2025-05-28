@@ -14,22 +14,25 @@ RESIZED_IMAGE_PATH = "/home/user/demo/optimized_image.webp"  # Temporary resized
 DEMO_PATH = "/home/user/demo/"
 
 HOST_IP = "10.42.0.1"
-SYSINFO_PORT = 12345
-IMAGE_PORT = 55555
+SYSINFO_PORT = 12346  # Port for system metrics
+NETTEST_PORT = 29103
+IMAGE_PORT = 55556
+FLASK_PORT = 5001
 
 LISTEN_IP = "0.0.0.0"
-LISTEN_PORT = 54321
+LISTEN_PORT = 54322
 SOCK_TOUT = 3
 
-# RDB_IP = "169.254.207.123"
+HPC_IP = "169.254.207.40"
 
 DOCKER_INTERFACE_ID = "docker0"
 FM_INTERFACE_ID = "fm1-mac9"
 LOCAL_INTERFACE_ID = "lo"
 VIRTUAL_INTERFACE_ID = "virbr0"
 
-SAVE_PATH_IPERF_LW_ETH_ADT = "/home/root/iperf3_end_result_LwEthAdt.json"
-SAVE_PATH_IPERF_UP_ETH_ADT = "/home/root/iperf3_end_result_UpEthAdt.json"
+CURR_DIR = os.path.dirname(os.path.abspath(__file__))
+SAVE_PATH_IPERF_LW_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_LwEthAdt.json")
+SAVE_PATH_IPERF_UP_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_UpEthAdt.json")
 
 # # Define the path to your bash script
 bash_script = "./cpu_freq_nonJSON.sh"
@@ -205,15 +208,72 @@ def process_cphd_file(file_path):
         #     # send the furhter processed image
         #     handle_image_sending(png_path)
 
+def handle_netrun_test(netTestDuration, netTestInterface):
+    if netTestInterface == FM_INTERFACE_ID:
+        filePath = SAVE_PATH_IPERF_LW_ETH_ADT
+        netTest_clientIP = HPC_IP
+
+    def run_test(reverse=False):
+        command = ["iperf3", "-c", netTest_clientIP, "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
+        if reverse:
+            command.append("-R")
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode == 0:
+            return json.loads(stdout).get("end", {})
+        else:
+            print(f"Error running iperf3 ({'upload' if reverse else 'download'}): {stderr}")
+            return None
+
+    down_result = run_test(reverse=True)
+    time.sleep(2)
+    up_result = run_test(reverse=False)
+
+    if down_result or up_result:
+        try:
+            with open(filePath, "r") as file:
+                existing_data = json.load(file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            existing_data = {}
+
+        if down_result:
+            existing_data["down"] = down_result
+        if up_result:
+            existing_data["up"] = up_result
+
+        with open(filePath, "w") as json_file:
+            json.dump(existing_data, json_file, indent=4)
+
+        print(f"Results saved to {filePath}")
+
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+                client_socket.connect((HOST_IP, NETTEST_PORT))
+                client_socket.sendall(json.dumps({"NETDONE":netTestInterface}).encode())
+        except Exception as e:
+            print(f"Error sending NETDONE signal over socket: {e}")
+
+        try:
+            with open(filePath, "r") as json_file:
+                json_data = json.load(json_file)
+            response = {"data": json_data}
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_sock:
+                data_sock.connect((HOST_IP, NETTEST_PORT))
+                data_sock.sendall(json.dumps(response).encode())
+            print(f"JSON data sent to {HOST_IP}:{NETTEST_PORT}")
+        except Exception as e:
+            print(f"Error sending JSON data over socket: {e}")
+    else:
+        print("No valid results to save.")
+
 def listen_for_messages():
     global progress_update
-
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((LISTEN_IP, LISTEN_PORT))
     server_socket.listen(1)
     
     print(f"Listening for messages on {LISTEN_IP}:{LISTEN_PORT}...")
-
+    
     while True:
         conn, addr = server_socket.accept()
         with conn:
@@ -255,120 +315,18 @@ def listen_for_messages():
                     
                     if file_path and os.path.exists(file_path):
                         threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
-                # elif message.startswith("NETRUN:"):
-                #     netTestDuration = message.split(":", 1)[1]
-                #     if "LwEthAdt" in message:
-                #         file_path = SAVE_PATH_IPERF_LW_ETH_ADT
-                #     elif "UpEthAdt" in message:
-                #         file_path =SAVE_PATH_IPERF_UP_ETH_ADT
-
-                #     def run_test(reverse=False):
-                #         # Define the command with or without reverse mode
-                #         command = ["iperf3", "-c", RDB_IP, "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
-                #         if reverse:
-                #             command.append("-R")  # Add reverse flag for upload test
-
-                #         # Run the command
-                #         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                #         stdout, stderr = process.communicate()
-
-                #         if process.returncode == 0:
-                #             # Convert JSON output to a Python dictionary
-                #             iperf3_result = json.loads(stdout)
-                #             end_data = iperf3_result.get("end", {})
-
-                #             return end_data
-                #         else:
-                #             print(f"Error running iperf3 ({'upload' if reverse else 'download'}): {stderr}")
-                #             return None
-
-                #     # Run download test
-                #     down_result = run_test(reverse=True)
-                #     # Wait for 2 seconds before running the upload test
-                #     time.sleep(2)
-                #     # Run upload test
-                #     up_result = run_test(reverse=False)
-
-                #     if down_result or up_result:
-                #         # Load existing results if the file exists
-                #         try:
-                #             with open(file_path, "r") as file:
-                #                 existing_data = json.load(file)
-                #         except (FileNotFoundError, json.JSONDecodeError):
-                #             existing_data = {}
-
-                #         # Add results with appropriate tags
-                #         if down_result:
-                #             existing_data["down"] = down_result
-                #         if up_result:
-                #             existing_data["up"] = up_result
-
-                #         # Save the updated results back to the file
-                #         with open(file_path, "w") as json_file:
-                #             json.dump(existing_data, json_file, indent=4)
-
-                #         print(f"Results saved to {file_path}")
-
-                #         # Send the JSON file over the socket
-                #         try:
-                #             with open(file_path, "r") as json_file:
-                #                 json_data = json.load(json_file)  # Load the contents of the JSON file
-                                
-                #             # Create a response dictionary (you can add any metadata or extra info)
-                #             response = {"data": json_data}
-                            
-                #             # Send the JSON data over the socket
-                #             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_sock:
-                #                 data_sock.connect((HOST_IP, IMAGE_PORT))  # Use an appropriate port for this purpose
-                #                 data_sock.sendall(json.dumps(response).encode())  # Send the JSON data
-                            
-                #             print(f"JSON data sent to {HOST_IP}:{IMAGE_PORT}")
-                #         except Exception as e:
-                #             print(f"Error sending JSON data over socket: {e}")
-                #     else:
-                #         print("No valid results to save.")
-                # elif message.startswith("BW:"):
-                #     parts = message.split(":")
-                #     if len(parts) != 3:
-                #         print("Invalid BW message format")
-                #         return
-
-                #     _, bwValue, target = parts  # bwValue = "1000", target = "LwEthOnb"
-
-                #     # # Determine the correct interface ID
-                #     # if target == "LwEthOnb":
-                #     #     interface_id = DOCKER_INTERFACE_ID
-                #     # elif target == "UpEthOnb":
-                #     #     interface_id = FM_INTERFACE_ID
-                #     # elif target == "LwEthAdt":
-                #     #     interface_id = LOCAL_INTERFACE_ID
-                #     # elif target == "UpEthAdt":
-                #     #     interface_id = VIRTUAL_INTERFACE_ID
-                #     # else:
-                #     #     print(f"Unknown interface identifier: {target}")
-                #     #     return
-
-                #     # Construct the ethtool command
-                #     command = ["ethtool", "-s", target, "speed", bwValue, "autoneg", "on"]
-                #     print(f"Executing command: {' '.join(command)}")
-
-                #     # Run the command and capture stdout and stderr
-                #     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-                #     # Capture output and error streams
-                #     stdout, stderr = process.communicate()
-
-                #     # Check the return code
-                #     if process.returncode == 0:
-                #         print("Command executed successfully.")
-                #         if stdout:
-                #             print("Output:", stdout)
-                #         else:
-                #             print("No output from the command.")
-                #     else:
-                #         print(f"Error executing command. Return code: {process.returncode}")
-                #         if stderr:
-                #             print("Error message:", stderr)
+                elif message.startswith("NETRUN:"):
+                    try:
+                        print("Run net test")  # Debug print
+                        parts = message.strip().split(":", 2)
+                        if len(parts) != 3:
+                            raise ValueError(f"Unexpected NETRUN format: {message}")
+                        
+                        _, netTestDuration, netTestInterface = parts
+                        print(f"Parsed: duration={netTestDuration}, interface={netTestInterface}")  # More debug info
+                        threading.Thread(target=handle_netrun_test, args=(netTestDuration, netTestInterface,), daemon=True).start()
+                    except Exception as e:
+                        print(f"Error in NETRUN handler: {e}")
 
 # Function to run the iperf3 server
 def run_iperf3_server():
