@@ -162,6 +162,8 @@
     </div>
 
     <script>
+        FLASK_PORT = 5000
+
         let lastTifFilename = "lastFile"; // Store the last processed tif_filename
         let testDurationLwEthOnb = null; // Variable to store selected duration
         let testDurationUpEthOnb = null;
@@ -172,14 +174,14 @@
             const statusElement = document.getElementById("status");
             statusElement.textContent = "Fetching file list..."; // Show status message
 
-            fetch("http://localhost:5000/send_message", {
+            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: "4" })  
             })
             .then(() => {
                 setTimeout(() => {
-                    fetch("http://localhost:5000/get_cphd_files")
+                    fetch(`http://localhost:${FLASK_PORT}/get_cphd_files`)
                         .then(response => response.json())
                         .then(data => {
                             console.log("Fetched CPHD files:", data.files);
@@ -218,7 +220,7 @@
             const selectedFile = document.getElementById("menuDropdown").value;
             if (!selectedFile) return;
 
-            fetch("http://localhost:5000/get_cphd_file_properties")
+            fetch(`http://localhost:${FLASK_PORT}/get_cphd_file_properties`)
                 .then(response => response.json())
                 .then(data => {
                     if (data.files.filename === selectedFile) {
@@ -242,7 +244,7 @@
         }
 
         function fetchProcessedFile() {
-            fetch("http://localhost:5000/images/tif_image.webp")
+            fetch(`http://localhost:${FLASK_PORT}/images/tif_image.webp`)
                 .then(response => {
                     if (!response.ok) {
                         throw new Error("Failed to fetch image.");
@@ -272,7 +274,7 @@
                 return;
             }
 
-            fetch("http://localhost:5000/send_message", {
+            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: `SIZE:${selectedOption}` })
@@ -296,25 +298,26 @@
         }
 
         async function sendRun() {
-            lastTifFilename = null; // <== Add this line to force re-fetch and update
+            lastTifFilename = null; // Force re-fetch and update
             
             const selectedOption = document.getElementById("menuDropdown").value;
             const statusElement = document.getElementById("status");
-
+        
             if (!selectedOption) {
                 statusElement.textContent = "Please select a file first.";
                 return;
             }
-
+        
             try {
                 // Send the "RUN" command
-                await fetch("http://localhost:5000/send_message", {
+                await fetch(`http://localhost:${FLASK_PORT}/send_message`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ message: `RUN:${selectedOption}` })
                 });
-
+        
                 statusElement.textContent = "Command sent... Run";
+        
                 // Reset images
                 document.getElementById("processedImage1").src = "";
                 document.getElementById("processedImage2").src = "";
@@ -322,38 +325,44 @@
                 document.getElementById("outFileSize").textContent = "N/A";
                 document.getElementById("reductionFactor").textContent = "N/A";
                 document.getElementById("sizeCompared").textContent = "N/A";
-
-                // Wait a bit for processing
+        
+                // Set timeout
+                const startTime = Date.now();
+                const timeout = 30 * 1000; // 25 seconds
                 let fileUpdated = false;
-
-                while (!fileUpdated) {
+        
+                while (!fileUpdated && (Date.now() - startTime < timeout)) {
                     // Fetch the output file properties
-                    const response = await fetch("http://localhost:5000/get_tif_file_properties");
+                    const response = await fetch(`http://localhost:${FLASK_PORT}/get_tif_file_properties`);
                     const data = await response.json();
-
+        
                     // Check if tif_filename has changed
                     if (data.files.tif_filename && data.files.tif_filename !== lastTifFilename) {
                         statusElement.textContent = "Getting output properties ... Data Fetched.";
-
+        
                         // Update output file properties
                         document.getElementById("outFileSize").textContent = data.files.size;
                         document.getElementById("reductionFactor").textContent = "x" + data.files.reduction_scale + " or " + data.files.reduction_factor + "%";
                         document.getElementById("sizeCompared").textContent = data.files.size_compared + "%";
-
+        
                         // Fetch the image after properties are updated
                         fetchProcessedFile();
-
+        
                         // Update the last processed filename
                         lastTifFilename = data.files.tif_filename;
-
+        
                         fileUpdated = true;
                     } else {
                         statusElement.textContent = "Waiting for processed file...";
                         await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for 2 seconds before retrying
                     }
                 }
-
-                statusElement.textContent = "Getting output properties ... Done.";
+        
+                if (!fileUpdated) {
+                    statusElement.textContent = "Getting output properties ... Timeout.";
+                } else {
+                    statusElement.textContent = "Getting output properties ... Done.";
+                }
             } catch (error) {
                 console.error("Error:", error);
                 statusElement.textContent = "Error sending command.";
@@ -363,7 +372,7 @@
         function resetMenu() {
             lastTifFilename = "lastFile";
 
-            fetch("http://localhost:5000/send_message", {
+            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: "3"})
@@ -423,7 +432,7 @@
                 return;
             }
             // Send the NETRUN message via POST request
-            await fetch("http://localhost:5000/send_message", {
+            await fetch(`http://localhost:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:LwEthOnb` })
@@ -432,7 +441,7 @@
             
             await new Promise(resolve => setTimeout(resolve, testDurationLwEthOnb*1000*2+5000));
 
-            fetch('http://localhost:5000/iperf3/lw_eth_onb_results')
+            fetch(`http://localhost:${FLASK_PORT}/iperf3/lw_eth_onb_results`)
                 .then(response => response.json())
                 .then(data => {
                     // Extract the relevant data from the JSON response
@@ -577,7 +586,7 @@
             // Display the status (optional)
             document.getElementById("statusNet_LwEthOnbBw").innerText = "Configuring...";
 
-            fetch("http://localhost:5000/send_message", {
+            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -634,7 +643,7 @@
                 return;
             }
             // Send the NETRUN message via POST request
-            await fetch("http://localhost:5000/send_message", {
+            await fetch(`http://localhost:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:UpEthOnb` })
@@ -643,7 +652,7 @@
             
             await new Promise(resolve => setTimeout(resolve, testDurationUpEthOnb*1000*2+5000));
 
-            fetch('http://localhost:5000/iperf3/up_eth_onb_results')
+            fetch(`http://localhost:${FLASK_PORT}/iperf3/up_eth_onb_results`)
                 .then(response => response.json())
                 .then(data => {
                     // Extract the relevant data from the JSON response
@@ -800,7 +809,7 @@
             // Display the status (optional)
             document.getElementById("statusNet_UpEthOnbBw").innerText = "Configuring...";
 
-            fetch("http://localhost:5000/send_message", {
+            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -857,7 +866,7 @@
                 return;
             }
             // Send the NETRUN message via POST request
-            await fetch("http://localhost:5000/send_message", {
+            await fetch(`http://localhost:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:LwEthAdt` })
@@ -866,7 +875,7 @@
             
             await new Promise(resolve => setTimeout(resolve, testDurationLwEthAdt*1000*2+5000));
 
-            fetch('http://localhost:5000/iperf3/lw_eth_adt_results')
+            fetch(`http://localhost:${FLASK_PORT}/iperf3/lw_eth_adt_results`)
                 .then(response => response.json())
                 .then(data => {
                     // Extract the relevant data from the JSON response
@@ -1025,7 +1034,7 @@
             // Display the status (optional)
             document.getElementById("statusNet_LwEthAdtBw").innerText = "Configuring...";
 
-            fetch("http://localhost:5000/send_message", {
+            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1082,7 +1091,7 @@
                 return;
             }
             // Send the NETRUN message via POST request
-            await fetch("http://localhost:5000/send_message", {
+            await fetch(`http://localhost:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:UpEthAdt` })
@@ -1091,7 +1100,7 @@
             
             await new Promise(resolve => setTimeout(resolve, testDurationUpEthAdt*1000*2+5000));
 
-            fetch('http://localhost:5000/iperf3/up_eth_adt_results')
+            fetch(`http://localhost:${FLASK_PORT}/iperf3/up_eth_adt_results`)
                 .then(response => response.json())
                 .then(data => {
                     // Extract the relevant data from the JSON response
@@ -1250,7 +1259,7 @@
             // Display the status (optional)
             document.getElementById("statusNet_UpEthAdtBw").innerText = "Configuring...";
 
-            fetch("http://localhost:5000/send_message", {
+            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
