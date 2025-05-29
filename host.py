@@ -268,7 +268,7 @@ def send_message():
 
     if message == "3":
         flag_get_image = False
-        return delete_all_files()
+        delete_all_files()
     elif message.startswith("RUN:"):
         global tif_file_properties
         flag_get_image = True
