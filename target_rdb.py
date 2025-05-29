@@ -40,6 +40,7 @@ bash_script = "./cpu_freq_nonJSON.sh"
 # Global variable
 progress_update = 0.0
 cphd_files = {}
+BW = 10000
 
 def optimize_tif(image_path, output_path, format="webp", max_size=(800, 800), quality=85):
     """
@@ -209,12 +210,16 @@ def process_cphd_file(file_path):
         #     handle_image_sending(png_path)
 
 def handle_netrun_test(netTestDuration, netTestInterface):
+    global BW
     if netTestInterface == FM_INTERFACE_ID:
         filePath = SAVE_PATH_IPERF_LW_ETH_ADT
         netTest_clientIP = HPC_IP
 
     def run_test(reverse=False):
-        command = ["iperf3", "-c", netTest_clientIP, "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
+        if BW == 10000:
+            command = ["iperf3", "-c", netTest_clientIP, "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
+        else:
+            command = ["iperf3", "-c", netTest_clientIP, "-u", "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
         if reverse:
             command.append("-R")
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -267,7 +272,7 @@ def handle_netrun_test(netTestDuration, netTestInterface):
         print("No valid results to save.")
 
 def listen_for_messages():
-    global progress_update
+    global progress_update, BW
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((LISTEN_IP, LISTEN_PORT))
     server_socket.listen(1)
@@ -315,18 +320,23 @@ def listen_for_messages():
                     
                     if file_path and os.path.exists(file_path):
                         threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
-                elif message.startswith("NETRUN:"):
-                    try:
-                        print("Run net test")  # Debug print
-                        parts = message.strip().split(":", 2)
-                        if len(parts) != 3:
-                            raise ValueError(f"Unexpected NETRUN format: {message}")
+                # elif message.startswith("NETRUN:"):
+                #     try:
+                #         print("Run net test")  # Debug print
+                #         parts = message.strip().split(":", 2)
+                #         if len(parts) != 3:
+                #             raise ValueError(f"Unexpected NETRUN format: {message}")
                         
-                        _, netTestDuration, netTestInterface = parts
-                        print(f"Parsed: duration={netTestDuration}, interface={netTestInterface}")  # More debug info
-                        threading.Thread(target=handle_netrun_test, args=(netTestDuration, netTestInterface,), daemon=True).start()
-                    except Exception as e:
-                        print(f"Error in NETRUN handler: {e}")
+                #         _, netTestDuration, netTestInterface = parts
+                #         print(f"Parsed: duration={netTestDuration}, interface={netTestInterface}")  # More debug info
+                #         threading.Thread(target=handle_netrun_test, args=(netTestDuration, netTestInterface,), daemon=True).start()
+                #     except Exception as e:
+                #         print(f"Error in NETRUN handler: {e}")
+                elif message.startswith("BW"):
+                    try:
+                        BW = int(message.split(":")[1])
+                    except ValueError:
+                        print("Invalid BW format, expected integer after BW:")
 
 # Function to run the iperf3 server
 def run_iperf3_server():
