@@ -37,6 +37,7 @@ SAVE_PATH_IPERF_UP_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_UpEthAdt.
 # Global variable
 progress_update = 0.0
 cphd_files = {}
+bwValue = 0
 
 def optimize_tif(image_path, output_path, format="webp", max_size=(800, 800), quality=85):
     """
@@ -206,6 +207,9 @@ def process_cphd_file(filePath):
         #     handle_image_sending(png_path)
 
 def handle_netrun_test(netTestDuration, netTestInterface):
+    global bwValue
+    bwValue = int(bwValue)
+
     if netTestInterface == "LwEthAdt":
         filePath = SAVE_PATH_IPERF_LW_ETH_ADT
         netTest_clientIP = LW_ETH_ADT_CLIENT_IP
@@ -214,7 +218,12 @@ def handle_netrun_test(netTestDuration, netTestInterface):
         netTest_clientIP = UP_ETH_ADT_CLIENT_IP
 
     def run_test(reverse=False):
-        command = ["iperf3", "-c", netTest_clientIP, "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
+        if bwValue == 10000:
+            print("run tcp net test")
+            command = ["iperf3", "-c", netTest_clientIP, "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
+        else:
+            print("run udp net test")
+            command = ["iperf3", "-c", netTest_clientIP, "-u", "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
         if reverse:
             command.append("-R")
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -267,7 +276,7 @@ def handle_netrun_test(netTestDuration, netTestInterface):
         print("No valid results to save.")
 
 def listen_for_messages():
-    global progress_update
+    global progress_update, bwValue
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((LISTEN_IP, LISTEN_PORT))
