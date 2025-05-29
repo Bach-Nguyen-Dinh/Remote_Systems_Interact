@@ -287,7 +287,7 @@ def send_message():
 
     if message == "3":
         flag_get_image = False
-        return delete_all_files()
+        delete_all_files()
     elif message.startswith("RUN:"):
         global tif_file_properties
         flag_get_image = True
@@ -318,22 +318,46 @@ def delete_all_files():
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
     
-def forward_message_to_target(message):
-    if message.startswith("BW:"):
-        fwdIP = HPC_IP
-        fwdPort = HPC_PORT
-    else:
-        fwdIP = RDB_IP
-        fwdPort = RDB_PORT
+from flask import jsonify
+import socket
 
-    """Sends a message to the target system via a socket."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
-            client_socket.connect((fwdIP, fwdPort))
-            client_socket.sendall(message.encode())
-        return jsonify({"status": "success", "message": message})
-    except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
+def forward_message_to_target(message):
+    # define our send‐targets
+    targets = [
+        ("RDB", RDB_IP, RDB_PORT)
+    ]
+    if message.startswith("BW:"):
+        targets.append(("HPC", HPC_IP, HPC_PORT))
+    elif message.startswith("NETRUN:"):
+        targets = [
+            ("HPC", HPC_IP, HPC_PORT)
+        ]
+
+    results = {}
+    # send to each target and capture success/error
+    for name, ip, port in targets:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+                client_socket.connect((ip, port))
+                client_socket.sendall(message.encode())
+            results[name] = "success"
+        except Exception as e:
+            results[name] = f"error: {e}"
+
+    # if all succeeded, 200; otherwise 500
+    if all(status == "success" for status in results.values()):
+        return jsonify({
+            "status": "success",
+            "message": message,
+            "results": results
+        })
+    else:
+        return jsonify({
+            "status": "error",
+            "message": message,
+            "results": results
+        }), 500
+
     
 @app.route('/get_cphd_files', methods=['GET'])
 def get_cphd_files():
