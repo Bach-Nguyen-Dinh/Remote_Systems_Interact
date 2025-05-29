@@ -402,6 +402,7 @@
             const selectedTestDuration = testDurationLwEthOnb; // Use the global testDuration variable
             const statusNetElement = document.getElementById("statusNet_LwEthOnb");
             const bwDropdown = document.getElementById("bwDropdown_LwEthOnb");
+            const selectedBwValue = bwDropdown.value;
 
             document.getElementById("upBW_LwEthOnb").textContent = "N/A";
             document.getElementById("upLat_LwEthOnb").textContent = "N/A";
@@ -412,13 +413,13 @@
 
             if (!selectedTestDuration) {
                 statusNetElement.textContent = "Please select a duration";
-                if (!bwDropdown || !bwDropdown.value || bwDropdown.value === "default") {
+                if (!bwDropdown || !selectedBwValue || selectedBwValue === "default") {
                     document.getElementById("statusNet_LwEthOnbBw").textContent = "Please select a bandwidth";
                     return;
                 }
                 return;
             }
-            if (!bwDropdown || !bwDropdown.value || bwDropdown.value === "default") {
+            if (!bwDropdown || !selectedBwValue || selectedBwValue === "default") {
                 document.getElementById("statusNet_LwEthOnbBw").textContent = "Please select a bandwidth";
                 if (!selectedTestDuration) {
                     statusNetElement.textContent = "Please select a duration";
@@ -443,35 +444,44 @@
                     console.log('Wating for results... Done');
                     // Extract the relevant data from the JSON response
                     console.log('get net test down result')
-                    stream = data.down.sum_received;
-                    console.log(stream);
-
-                    // Convert bits_per_second to Mbit/sec (divide by 1e6)
-                    bitsPerSecondMbit = stream.bits_per_second / 1e6;
-                    // jitterMs = stream.jitter_ms;
-                    // lostPackets = stream.lost_packets;
-                    // totalPackets = stream.packets;
-                    // lostPercent = stream.lost_percent;
-
-                    document.getElementById('downBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
-                    // document.getElementById('downLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
-                    // document.getElementById('downLostTotal_LwEthOnb').textContent = `${lostPackets}/${totalPackets} (${lostPercent.toFixed(4)}%)`;
-                    
-                    console.log('get net test up result')
                     stream = data.up.sum_sent;
                     console.log(stream);
 
-                    // Convert bits_per_second to Mbit/sec (divide by 1e6)
-                    bitsPerSecondMbit = stream.bits_per_second / 1e6;
-                    // jitterMs = stream.jitter_ms;
-                    // lostPackets = stream.lost_packets;
-                    // totalPackets = stream.packets;
-                    // lostPercent = stream.lost_percent;
+                    if (selectedBwValue == 10000) {
+                        bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                        document.getElementById('downBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                    }
+                    else {
+                        bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                        jitterMs = stream.jitter_ms;
+                        lostPackets = stream.lost_packets * 11584 / 1000000000;
+                        totalPackets = stream.packets * 11584 / 1000000000;
+                        lostPercent = stream.lost_percent;
 
-                    // Display the extracted information on the page
-                    document.getElementById('upBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
-                    // document.getElementById('upLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
-                    // document.getElementById('upLostTotal_LwEthOnb').textContent = `${lostPackets}/${totalPackets} (${lostPercent.toFixed(4)}%)`;
+                        document.getElementById('downBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                        document.getElementById('downLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
+                        document.getElementById('downLostTotal_LwEthOnb').textContent = `${lostPackets.toFixed(4)}/${totalPackets.toFixed(4)} Gbits (${lostPercent.toFixed(2)}%)`;
+                    }
+                    
+                    console.log('get net test up result')
+                    stream = data.down.sum_received;
+                    console.log(stream);
+
+                    if (selectedBwValue == 10000) {
+                        bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                        document.getElementById('upBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                    }
+                    else {
+                        bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                        jitterMs = stream.jitter_ms;
+                        lostPackets = stream.lost_packets * 11584 / 1000000000;
+                        totalPackets = stream.packets * 11584 / 1000000000;
+                        lostPercent = stream.lost_percent;
+
+                        document.getElementById('upBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                        document.getElementById('upLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
+                        document.getElementById('upLostTotal_LwEthOnb').textContent = `${lostPackets.toFixed(4)}/${totalPackets.toFixed(4)} Gbits (${lostPercent.toFixed(2)}%)`;
+                    }
          
                     statusNetElement.textContent = "Waiting for results... Done";
                 })
@@ -556,8 +566,8 @@
 
             // Add real options
             const bandwidthOptions = [
-                { value: "10", text: "10 Mbits/sec" },
-                { value: "100", text: "100 Mbits/sec" },
+                // { value: "10", text: "10 Mbits/sec" },
+                // { value: "100", text: "100 Mbits/sec" },
                 { value: "1000", text: "1000 Mbits/sec" },
                 { value: "2500", text: "2500 Mbits/sec" },
                 { value: "5000", text: "5000 Mbits/sec" },

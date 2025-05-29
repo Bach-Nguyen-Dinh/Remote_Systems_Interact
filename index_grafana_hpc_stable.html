@@ -841,6 +841,7 @@
             const selectedTestDuration = testDurationLwEthAdt; // Use the global testDuration variable
             const statusNetElement = document.getElementById("statusNet_LwEthAdt");
             const bwDropdown = document.getElementById("bwDropdown_LwEthAdt");
+            const selectedBwValue = bwDropdown.value;
 
             document.getElementById("upBW_LwEthAdt").textContent = "N/A";
             document.getElementById("upLat_LwEthAdt").textContent = "N/A";
@@ -851,13 +852,13 @@
 
             if (!selectedTestDuration) {
                 statusNetElement.textContent = "Please select a duration";
-                if (!bwDropdown || !bwDropdown.value || bwDropdown.value === "default") {
+                if (!bwDropdown || !selectedBwValue || selectedBwValue === "default") {
                     document.getElementById("statusNet_LwEthAdtBw").textContent = "Please select a bandwidth";
                     return;
                 }
                 return;
             }
-            if (!bwDropdown || !bwDropdown.value || bwDropdown.value === "default") {
+            if (!bwDropdown || !selectedBwValue || selectedBwValue === "default") {
                 document.getElementById("statusNet_LwEthAdtBw").textContent = "Please select a bandwidth";
                 if (!selectedTestDuration) {
                     statusNetElement.textContent = "Please select a duration";
@@ -880,44 +881,37 @@
                 .then(data => {
                     // Extract the relevant data from the JSON response
                     stream = data.down.sum_sent;
-
-                    // Convert bits_per_second to Mbits/sec (divide by 1e6)
-                    bitsPerSecondMbit = stream.bits_per_second / 1e6;
-                    // jitterMs = stream.jitter_ms;
-                    // lostPackets = stream.lost_packets;
-                    // totalPackets = stream.packets;
-                    // lostPercent = stream.lost_percent;
-
-                    // Function to format the lostPercent to 2 non-zero decimal points
-                    function formatLostPercent(percent) {
-                        // Round the number to 2 non-zero digits after the decimal
-                        return parseFloat(percent.toFixed(4)); // This keeps 2 decimal digits, removing unnecessary zeros
+                    if (selectedBwValue == 10000) {
+                        bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                        document.getElementById('downBW_LwEthAdt').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
                     }
+                    else {
+                        bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                        jitterMs = stream.jitter_ms;
+                        lostPackets = stream.lost_packets * 11584 / 1000000000;
+                        totalPackets = stream.packets * 11584 / 1000000000;
+                        lostPercent = stream.lost_percent;
 
-                    document.getElementById('downBW_LwEthAdt').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
-                    // document.getElementById('downLat_LwEthAdt').textContent = `${jitterMs.toFixed(4)} ms`;
-                    // document.getElementById('downLostTotal_LwEthAdt').textContent = `${lostPackets}/${totalPackets} (${formatLostPercent(lostPercent)}%)`;
-                    
+                        document.getElementById('upBW_LwEthAdt').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                        document.getElementById('upLat_LwEthAdt').textContent = `${jitterMs.toFixed(4)} ms`;
+                        document.getElementById('upLostTotal_LwEthAdt').textContent = `${lostPackets.toFixed(4)}/${totalPackets.toFixed(4)} Gbits (${lostPercent.toFixed(2)}%)`;
+                    }
                     stream = data.up.sum_sent;
-
-                    // Convert bits_per_second to Mbits/sec (divide by 1e6)
-                    bitsPerSecondMbit = stream.bits_per_second / 1e6;
-                    // jitterMs = stream.jitter_ms;
-                    // lostPackets = stream.lost_packets;
-                    // totalPackets = stream.packets;
-                    // lostPercent = stream.lost_percent;
-
-                    // Function to format the lostPercent to 2 non-zero decimal points
-                    function formatLostPercent(percent) {
-                        // Round the number to 2 non-zero digits after the decimal
-                        return parseFloat(percent.toFixed(4)); // This keeps 2 decimal digits, removing unnecessary zeros
+                    if (selectedBwValue == 10000) {
+                        bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                        document.getElementById('upBW_LwEthAdt').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
                     }
+                    else {
+                        bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                        jitterMs = stream.jitter_ms;
+                        lostPackets = stream.lost_packets * 11584 / 1000000000;
+                        totalPackets = stream.packets * 11584 / 1000000000;
+                        lostPercent = stream.lost_percent;
 
-                    // Display the extracted information on the page
-                    document.getElementById('upBW_LwEthAdt').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
-                    // document.getElementById('upLat_LwEthAdt').textContent = `${jitterMs.toFixed(4)} ms`;
-                    // document.getElementById('upLostTotal_LwEthAdt').textContent = `${lostPackets}/${totalPackets} (${formatLostPercent(lostPercent)}%)`;
-         
+                        document.getElementById('downBW_LwEthAdt').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                        document.getElementById('downLat_LwEthAdt').textContent = `${jitterMs.toFixed(4)} ms`;
+                        document.getElementById('downLostTotal_LwEthAdt').textContent = `${lostPackets.toFixed(4)}/${totalPackets.toFixed(4)} Gbits (${lostPercent.toFixed(2)}%)`;
+                    }
                     statusNetElement.textContent = "Waiting for results... Done";
                 })
                 .catch(error => {
