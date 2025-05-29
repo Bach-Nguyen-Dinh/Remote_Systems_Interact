@@ -15,6 +15,7 @@ DEMO_PATH = "/home/root/Desktop/Bach/"
 HOST_IP = "10.42.0.1"
 SYSINFO_PORT = 12345
 NETTEST_PORT = 29102
+NETTEST_PORT_RDB = 29103
 IMAGE_PORT = 55555
 
 LISTEN_IP = "0.0.0.0"
@@ -210,7 +211,7 @@ def handle_netrun_test(netTestDuration, netTestInterface):
     global bwValue
     bwValue = int(bwValue)
 
-    if netTestInterface == "LwEthAdt":
+    if netTestInterface == "LwEthAdt" or netTestInterface == "fm1-mac9":
         filePath = SAVE_PATH_IPERF_LW_ETH_ADT
         netTest_clientIP = LW_ETH_ADT_CLIENT_IP
     if netTestInterface == "UpEthAdt":
@@ -255,23 +256,44 @@ def handle_netrun_test(netTestDuration, netTestInterface):
 
         print(f"Results saved to {filePath}")
 
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
-                client_socket.connect((HOST_IP, NETTEST_PORT))
-                client_socket.sendall(json.dumps({"NETDONE":"LwEthAdt"}).encode())
-        except Exception as e:
-            print(f"Error sending NETDONE signal over socket: {e}")
 
-        try:
-            with open(filePath, "r") as json_file:
-                json_data = json.load(json_file)
-            response = {"data": json_data}
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_sock:
-                data_sock.connect((HOST_IP, NETTEST_PORT))
-                data_sock.sendall(json.dumps(response).encode())
-            print(f"JSON data sent to {HOST_IP}:{NETTEST_PORT}")
-        except Exception as e:
-            print(f"Error sending JSON data over socket: {e}")
+        if netTestInterface == "fm1-mac9":
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+                    client_socket.connect((HOST_IP, NETTEST_PORT_RDB))
+                    client_socket.sendall(json.dumps({"NETDONE":"fm1-mac9"}).encode())
+            except Exception as e:
+                print(f"Error sending NETDONE signal over socket: {e}")
+
+            try:
+                with open(filePath, "r") as json_file:
+                    json_data = json.load(json_file)
+                response = {"data": json_data}
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_sock:
+                    data_sock.connect((HOST_IP, NETTEST_PORT_RDB))
+                    data_sock.sendall(json.dumps(response).encode())
+                print(f"JSON data sent to {HOST_IP}:{NETTEST_PORT_RDB}")
+            except Exception as e:
+                print(f"Error sending JSON data over socket: {e}")
+        else:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+                    client_socket.connect((HOST_IP, NETTEST_PORT))
+                    client_socket.sendall(json.dumps({"NETDONE":"LwEthAdt"}).encode())
+            except Exception as e:
+                print(f"Error sending NETDONE signal over socket: {e}")
+
+            try:
+                with open(filePath, "r") as json_file:
+                    json_data = json.load(json_file)
+                response = {"data": json_data}
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_sock:
+                    data_sock.connect((HOST_IP, NETTEST_PORT))
+                    data_sock.sendall(json.dumps(response).encode())
+                print(f"JSON data sent to {HOST_IP}:{NETTEST_PORT}")
+            except Exception as e:
+                print(f"Error sending JSON data over socket: {e}")
+
     else:
         print("No valid results to save.")
 
