@@ -398,7 +398,7 @@
         // ================================================================================================================
         // ========================================= Lower Ethernet Port on board =========================================
         // ================================================================================================================
-        async function btnLwEthOnbRunClick() {
+        async function btnLwEthOnbRunClick(triggeredBySync = false) {
             const selectedTestDuration = testDurationLwEthOnb; // Use the global testDuration variable
             const statusNetElement = document.getElementById("statusNet_LwEthOnb");
             const bwDropdown = document.getElementById("bwDropdown_LwEthOnb");
@@ -427,71 +427,121 @@
                 }
                 return;
             }
-            // Send the NETRUN message via POST request
-            await fetch(`http://localhost:${FLASK_PORT}/send_message`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:${FM_INTERFACE_ID}` })
-            });
-            statusNetElement.textContent = "Waiting for results...";
-            console.log('Wating for results...');
-            
-            await new Promise(resolve => setTimeout(resolve, testDurationLwEthOnb*1000*2+5000));
+            if (!triggeredBySync) {
+                localStorage.setItem("panelSync", JSON.stringify({
+                    type: "run"
+                }));
+                // Send the NETRUN message via POST request
+                await fetch(`http://localhost:${FLASK_PORT}/send_message`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:${FM_INTERFACE_ID}` })
+                });
+                statusNetElement.textContent = "Waiting for results...";
+                
+                await new Promise(resolve => setTimeout(resolve, testDurationLwEthOnb*1000*2+5000));
 
-            fetch(`http://localhost:${FLASK_PORT}/iperf3/lw_eth_onb_results`)
+                fetch(`http://localhost:${FLASK_PORT}/iperf3/lw_eth_onb_results`)
                 .then(response => response.json())
                 .then(data => {
-                    console.log('Wating for results... Done');
-                    // Extract the relevant data from the JSON response
-                    console.log('get net test down result')
-                    stream = data.up.sum_sent;
-                    console.log(stream);
+                    // console.log('Wating for results... Done');
+                    // console.log('get net test down result')
+                    // stream = data.up.sum_sent;
+                    // console.log(stream);
 
-                    if (selectedBwValue == 10000) {
-                        bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
-                        document.getElementById('downBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
-                    }
-                    else {
-                        bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
-                        jitterMs = stream.jitter_ms;
-                        lostPackets = stream.lost_packets * 11584 / 1000000000;
-                        totalPackets = stream.packets * 11584 / 1000000000;
-                        lostPercent = stream.lost_percent;
+                    // if (selectedBwValue == 10000) {
+                    //     bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                    //     document.getElementById('downBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                    // }
+                    // else {
+                    //     bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                    //     jitterMs = stream.jitter_ms;
+                    //     lostPackets = stream.lost_packets * 11584 / 1000000000;
+                    //     totalPackets = stream.packets * 11584 / 1000000000;
+                    //     lostPercent = stream.lost_percent;
 
-                        document.getElementById('downBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
-                        document.getElementById('downLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
-                        document.getElementById('downLostTotal_LwEthOnb').textContent = `${lostPackets.toFixed(4)}/${totalPackets.toFixed(4)} Gbits (${lostPercent.toFixed(2)}%)`;
-                    }
+                    //     document.getElementById('downBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                    //     document.getElementById('downLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
+                    //     document.getElementById('downLostTotal_LwEthOnb').textContent = `${lostPackets.toFixed(4)}/${totalPackets.toFixed(4)} Gbits (${lostPercent.toFixed(2)}%)`;
+                    // }
                     
-                    console.log('get net test up result')
-                    stream = data.down.sum_received;
-                    console.log(stream);
+                    // console.log('get net test up result')
+                    // stream = data.down.sum_received;
+                    // console.log(stream);
 
-                    if (selectedBwValue == 10000) {
-                        bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
-                        document.getElementById('upBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
-                    }
-                    else {
-                        bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
-                        jitterMs = stream.jitter_ms;
-                        lostPackets = stream.lost_packets * 11584 / 1000000000;
-                        totalPackets = stream.packets * 11584 / 1000000000;
-                        lostPercent = stream.lost_percent;
+                    // if (selectedBwValue == 10000) {
+                    //     bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                    //     document.getElementById('upBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                    // }
+                    // else {
+                    //     bitsPerSecondMbit = stream.bits_per_second / 1e6;   // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                    //     jitterMs = stream.jitter_ms;
+                    //     lostPackets = stream.lost_packets * 11584 / 1000000000;
+                    //     totalPackets = stream.packets * 11584 / 1000000000;
+                    //     lostPercent = stream.lost_percent;
 
-                        document.getElementById('upBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
-                        document.getElementById('upLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
-                        document.getElementById('upLostTotal_LwEthOnb').textContent = `${lostPackets.toFixed(4)}/${totalPackets.toFixed(4)} Gbits (${lostPercent.toFixed(2)}%)`;
-                    }
-         
-                    statusNetElement.textContent = "Waiting for results... Done";
+                    //     document.getElementById('upBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                    //     document.getElementById('upLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
+                    //     document.getElementById('upLostTotal_LwEthOnb').textContent = `${lostPackets.toFixed(4)}/${totalPackets.toFixed(4)} Gbits (${lostPercent.toFixed(2)}%)`;
+                    // }
+
+                    updateResultsLwEthOnb(data);
+                    localStorage.setItem("panelResults", JSON.stringify({
+                        interface: "LwEth10GbE",
+                        data: data
+                    }));
                 })
                 .catch(error => {
                     statusNetElement.textContent = "Test run error";
                     console.error('Error fetching the data:', error);
                 });
+            }
+            else {
+                statusNetElement.textContent = "Waiting for results...";
+            }
+        }
+
+        function updateResultsLwEthOnb(data) {
+            // Extract the relevant data from the JSON response
+            const streamUp = data.down.sum_received;
+            const streamDown = data.up.sum_sent;
+
+            const bwDropdown = document.getElementById("bwDropdown_LwEthOnb");
+            const selectedBwValue = bwDropdown.value;
+
+            if (selectedBwValue == 10000) {
+                const downBW = (streamDown.bits_per_second / 1e6).toFixed(2);   // Convert bits_per_second to Mbit/sec (divide by 1e6)
+                const upBW = (streamUp.bits_per_second / 1e6).toFixed(2);
+                document.getElementById('downBW_LwEthOnb').textContent = `${downBW} Mbits/sec`;
+                document.getElementById('upBW_LwEthOnb').textContent = `${upBW} Mbits/sec`;
+            } 
+            else {
+                let bitsPerSecondMbit, jitterMs, lostPackets, totalPackets, lostPercent;
+
+                bitsPerSecondMbit = streamDown.bits_per_second / 1e6;
+                jitterMs = streamDown.jitter_ms;
+                lostPackets = streamDown.lost_packets * 11584 / 1000000000;
+                totalPackets = streamDown.packets * 11584 / 1000000000;
+                lostPercent = streamDown.lost_percent;
+
+                document.getElementById('downBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                document.getElementById('downLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
+                document.getElementById('downLostTotal_LwEthOnb').textContent = `${lostPackets.toFixed(4)}/${totalPackets.toFixed(4)} Gbits (${lostPercent.toFixed(2)}%)`;
+
+                bitsPerSecondMbit = streamUp.bits_per_second / 1e6;
+                jitterMs = streamUp.jitter_ms;
+                lostPackets = streamUp.lost_packets * 11584 / 1000000000;
+                totalPackets = streamUp.packets * 11584 / 1000000000;
+                lostPercent = streamUp.lost_percent;
+
+                document.getElementById('upBW_LwEthOnb').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                document.getElementById('upLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
+                document.getElementById('upLostTotal_LwEthOnb').textContent = `${lostPackets.toFixed(4)}/${totalPackets.toFixed(4)} Gbits (${lostPercent.toFixed(2)}%)`;
+            }
+            document.getElementById("statusNet_LwEthOnb").textContent = "Waiting for results... Done";
         }
         
-        function btnLwEthOnbResetClick() {
+        function btnLwEthOnbResetClick(triggeredBySync = false) {
             testDurationLwEthOnb = null;
 
             // Reset dropdowns to default option (index 0)
@@ -512,6 +562,12 @@
             document.getElementById("downBW_LwEthOnb").textContent = "N/A";
             document.getElementById("downLat_LwEthOnb").textContent = "N/A";
             document.getElementById("downLostTotal_LwEthOnb").textContent = "N/A";
+
+            if (!triggeredBySync) {
+                localStorage.setItem("panelSync", JSON.stringify({
+                    type: "reset"
+                }));
+            }
         }
 
         // Function to populate the dropdown for the lower ethernet port on the board
@@ -548,6 +604,12 @@
 
             const dropdown = document.getElementById("durationDropdown_LwEthOnb");
             testDurationLwEthOnb = parseInt(dropdown.value, 10);
+            
+            // write to the local storage for synchonization 
+            localStorage.setItem("panelSync", JSON.stringify({
+                type: "duration",
+                value: dropdown.value
+            }));
         }
 
         function populateBwDropdownLwEthOnb() {
@@ -582,7 +644,7 @@
             });
         }
 
-        function setBwLwEthOnb() {
+        function setBwLwEthOnb(triggeredBySync = false) {
             const dropdown = document.getElementById("bwDropdown_LwEthOnb");
             const selectedBwValue = dropdown.value;
 
@@ -597,32 +659,42 @@
             document.getElementById("downBW_LwEthOnb").textContent = "N/A";
             document.getElementById("downLat_LwEthOnb").textContent = "N/A";
             document.getElementById("downLostTotal_LwEthOnb").textContent = "N/A";
-            // Display the status (optional)
             document.getElementById("statusNet_LwEthOnbBw").innerText = "Configuring...";
 
-            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ message: `BW:${selectedBwValue}:${FM_INTERFACE_ID}` })
-            })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error("Configuring... Failed");
-                }
-                // Wait for 5 seconds before updating status
-                return new Promise(resolve => {
-                    setTimeout(() => resolve("Configuring... Done"), 5000);
+            if (triggeredBySync) {
+                setTimeout(() => {
+                    document.getElementById("statusNet_LwEthOnbBw").innerText = "Configuring... Done";
+                }, 5000);
+            }
+            if (!triggeredBySync) {
+                localStorage.setItem("panelSync", JSON.stringify({
+                    type: "bandwidth",
+                    value: selectedBwValue
+                }));
+                fetch(`http://localhost:${FLASK_PORT}/send_message`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ message: `BW:${selectedBwValue}:${FM_INTERFACE_ID}` })
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error("Configuring... Failed");
+                    }
+                    // Wait for 5 seconds before updating status
+                    return new Promise(resolve => {
+                        setTimeout(() => resolve("Configuring... Done"), 5000);
+                    });
+                })
+                .then(status => {
+                    document.getElementById("statusNet_LwEthOnbBw").innerText = status;
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    document.getElementById("statusNet_LwEthOnbBw").innerText = "Error sending";
                 });
-            })
-            .then(status => {
-                document.getElementById("statusNet_LwEthOnbBw").innerText = status;
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                document.getElementById("statusNet_LwEthOnbBw").innerText = "Error sending";
-            });
+            }
         }
 
         function resetBwDropdownToDefaultLwEthOnb() {
@@ -632,6 +704,34 @@
                 dropdown.selectedIndex = 0; // fallback to "Select Bandwidth"
             }
         }
+
+        window.addEventListener("storage", (e) => {
+            if (e.key === "panelSync" && e.newValue) {
+                const data = JSON.parse(e.newValue);
+                if (data.type === "duration") {
+                    const dropdown = document.getElementById("durationDropdown_LwEthOnb");
+                    dropdown.value = data.value;
+                    testDurationLwEthOnb = parseInt(data.value, 10);
+                }
+                if (data.type === "bandwidth") {
+                    const dropdown = document.getElementById("bwDropdown_LwEthOnb");
+                    dropdown.value = data.value;
+                    setBwLwEthOnb(true);
+                }
+                if (data.type === "run") {
+                    btnLwEthOnbRunClick(true);
+                }
+                if (data.type === "reset") {
+                    btnLwEthOnbResetClick(true);
+                }
+            }
+            if (e.key === "panelResults" && e.newValue) {
+                const payload = JSON.parse(e.newValue);
+                if (payload.interface === "LwEth10GbE") {
+                    updateResultsLwEthOnb(payload.data);
+                }
+            }
+        });
     </script>
 </body>
 </html>
