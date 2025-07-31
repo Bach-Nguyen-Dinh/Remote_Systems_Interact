@@ -92,12 +92,21 @@ def optimize_tif(image_path, output_path, format="webp", max_size=(800, 800), qu
         print(f"Error optimizing image: {e}")
 
 def send_image_to_pc(image_path):
-    """Send optimized image to PC"""
+    """Send optimized image to PC and save locally for web serving"""
+    # Create optimized image
     optimize_tif(image_path, RESIZED_IMAGE_PATH, format="webp", max_size=(800, 800), quality=80)
     
     if not os.path.exists(RESIZED_IMAGE_PATH):
         print(f"Error: Image file {RESIZED_IMAGE_PATH} not found!")
         return
+
+    # Copy the optimized image to the pictures directory for local serving
+    import shutil
+    try:
+        shutil.copy2(RESIZED_IMAGE_PATH, SAVE_PATH_TIF)
+        print(f"Image saved locally at {SAVE_PATH_TIF} for web serving")
+    except Exception as e:
+        print(f"Error saving image locally: {e}")
 
     file_size = os.path.getsize(RESIZED_IMAGE_PATH)
     print(f"Sending image {RESIZED_IMAGE_PATH} to PC, size: {file_size} bytes...")
@@ -670,7 +679,7 @@ def run_iperf3_server():
     """Run iperf3 server for network tests"""
     try:
         print("Starting iperf3 server...")
-        subprocess.run(["iperf3", "-s"], check=True)
+        subprocess.run(["iperf3", "-s", "-p", "5222"], check=True)
     except subprocess.CalledProcessError as e:
         print(f"Error running iperf3 server: {e}")
     except FileNotFoundError:
