@@ -97,18 +97,15 @@ def send_image(image_path):
 def handle_image_sending(image_path):
     timestamps = {
         0: 0.0,
-        1: 6.67,
-        2: 13.33,
-        3: 20.0,
-        4: 26.67,
-        5: 33.33,
-        6: 40.0,
-        10: 66.67,
-        11: 73.33,
-        12: 80.0,
-        15: 100.0
+        1: 10,
+        2: 20,
+        3: 30,
+        5: 50,
+        6: 60,
+        8: 80,
+        10: 100
     }
-    for second in range(16):
+    for second in range(11):
         time.sleep(1)
         if second in timestamps:
             global progress_update
