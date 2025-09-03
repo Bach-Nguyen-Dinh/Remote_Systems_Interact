@@ -16,7 +16,7 @@ DATA_PORT = 55555
 IMAGE_PORT = 8080
 FLASK_PORT = 5000
 
-TARGET_IP = "10.42.0.123"  # Target system IP
+TARGET_IP = "10.42.0.7"  # Target system IP
 TARGET_PORT = 54321       # Target system port
 
 INFLUXDB_HOST = "localhost"
@@ -26,11 +26,11 @@ INFLUXDB_USER = "root"
 INFLUXDB_PASSWORD = "root"
 
 DOCKER_INTERFACE_ID = "docker0"
-FM_INTERFACE_ID = "fm1-mac9"
+FM_INTERFACE_ID = "fm1-mac3"
 LOCAL_INTERFACE_ID = "lo"
 VIRTUAL_INTERFACE_ID = "virbr0"
 
-COMP_ETH_PORT_INTERFACE_ID = "enp3s0"
+COMP_ETH_PORT_INTERFACE_ID = "enx98fc84e12360"
 
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 SAVE_DIR = os.path.join(CURR_DIR, "pictures")
