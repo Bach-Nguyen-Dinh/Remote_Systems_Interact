@@ -7,6 +7,7 @@ import time
 import json
 import os
 import re
+import glob
 
 # IMAGE_PATH_2 = "/home/root/Desktop/Bach/backprojection_result_small.png"  
 # IMAGE_PATH_1 = "/home/root/Desktop/Bach/backprojection_histogram.png"
@@ -400,48 +401,67 @@ def get_cpu_power():
     power_watts = (energy_end - energy_start) / 1_000_000 / 0.1  # Convert µJ to W
     return power_watts
 
-def run_bash_script():
-    try:
-        result = subprocess.run(
-            ["sudo", bash_script],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        return result.stdout
-    except subprocess.CalledProcessError as e:
-        print(f"Script failed with return code {e.returncode}")
-        print(f"stderr: {e.stderr}")
-        return None
-    except Exception as e:
-        print(f"Error running bash script: {e}")
-        return None
+# def run_bash_script():
+#     try:
+#         result = subprocess.run(
+#             ["sudo", bash_script],
+#             capture_output=True,
+#             text=True,
+#             check=True
+#         )
+#         return result.stdout
+#     except subprocess.CalledProcessError as e:
+#         print(f"Script failed with return code {e.returncode}")
+#         print(f"stderr: {e.stderr}")
+#         return None
+#     except Exception as e:
+#         print(f"Error running bash script: {e}")
+#         return None
     
-def parse_to_json(output):
-    core_freq_data = {}
-    for line in output.strip().splitlines():
-        match = re.match(r"core_(\d+)_frequency: ([\d.]+)", line.strip())
-        if match:
-            core_id = f"core_{match.group(1)}_frequency"  # <- change here
-            frequency = float(match.group(2))
-            core_freq_data[core_id] = frequency
-    return core_freq_data
+# def parse_to_json(output):
+#     core_freq_data = {}
+#     for line in output.strip().splitlines():
+#         match = re.match(r"core_(\d+)_frequency: ([\d.]+)", line.strip())
+#         if match:
+#             core_id = f"core_{match.group(1)}_frequency"  # <- change here
+#             frequency = float(match.group(2))
+#             core_freq_data[core_id] = frequency
+#     return core_freq_data
 
-def read_cpu_frequencies():
-    try:
-        result = run_bash_script()
-        if result:
-            parsed_json = parse_to_json(result)
-            # print(json.dumps(parsed_json, indent=2))  # Pretty print JSON
-        return parsed_json
-    except Exception as e:
-        print(f"Error running bash script: {e}")
-        return {}
+# def read_cpu_frequencies():
+#     try:
+#         result = run_bash_script()
+#         if result:
+#             parsed_json = parse_to_json(result)
+#             # print(json.dumps(parsed_json, indent=2))  # Pretty print JSON
+#         return parsed_json
+#     except Exception as e:
+#         print(f"Error running bash script: {e}")
+#         return {}
 
 def get_system_info():
     per_core_usage = psutil.cpu_percent(interval=0.1, percpu=True)
     core_usage = {f"core_{i}_usage": usage for i, usage in enumerate(per_core_usage)}
-    core_frequencies = read_cpu_frequencies()
+    # core_frequencies = read_cpu_frequencies()
+    # --- Per-core CPU frequencies ---
+    core_frequencies = {}
+
+    # Try reading from sysfs first (Linux only)
+    sysfs_paths = sorted(glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq"))
+    if sysfs_paths:
+        for i, path in enumerate(sysfs_paths):
+            try:
+                with open(path) as f:
+                    # scaling_cur_freq is in kHz, convert to MHz
+                    core_frequencies[f"core_{i}_frequency"] = int(f.read().strip()) / 1000
+            except Exception:
+                core_frequencies[f"core_{i}_frequency"] = None
+    elif hasattr(psutil, "cpu_freq"):
+        # Fall back to psutil (may only return one object)
+        freq_info = psutil.cpu_freq(percpu=True)
+        if freq_info:
+            for i, freq in enumerate(freq_info):
+                core_frequencies[f"core_{i}_frequency"] = freq.current
 
     sys_temp = None
     temps = {}
@@ -501,6 +521,7 @@ def get_system_info():
         "total_disk_size": total_disk_size,
         "progress_update": progress_update
     }
+    # print(f"System Info: {system_info}")
     
     return system_info
 
