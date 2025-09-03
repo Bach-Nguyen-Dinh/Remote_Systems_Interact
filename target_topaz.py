@@ -32,9 +32,6 @@ VIRTUAL_INTERFACE_ID = "virbr0"
 SAVE_PATH_IPERF_LW_ETH_ADT = "/home/root/iperf3_end_result_LwEthAdt.json"
 SAVE_PATH_IPERF_UP_ETH_ADT = "/home/root/iperf3_end_result_UpEthAdt.json"
 
-# # Define the path to your bash script
-bash_script = "./cpu_freq_nonJSON.sh"
-
 # Global variable
 progress_update = 0.0
 cphd_files = {}
@@ -381,63 +378,26 @@ def run_iperf3_server():
     except FileNotFoundError:
         print("iperf3 command not found. Please ensure iperf3 is installed.")
 
-def read_rapl_energy():
+def get_power_from_sensor(sensor_name="ina220-i2c-0-40"):
     try:
-        with open("/sys/class/powercap/intel-rapl:0/energy_uj", "r") as f:
-            return int(f.read().strip())  # Energy in microjoules
-    except FileNotFoundError:
+        # Run the sensors command
+        output = subprocess.check_output(["sensors"], text=True)
+
+        # Split into blocks (each sensor section is separated by blank lines)
+        blocks = output.strip().split("\n\n")
+
+        for block in blocks:
+            if block.startswith(sensor_name):
+                # Look for the power1 line inside the block
+                match = re.search(r"power1:\s+([\d\.]+)\s*W", block)
+                if match:
+                    return float(match.group(1))
+                else:
+                    return None  # No power line found
+        return None  # Sensor not found
+    except subprocess.CalledProcessError as e:
+        print("Error running sensors:", e)
         return None
-
-def get_cpu_power():
-    energy_start = read_rapl_energy()
-    if energy_start is None:
-        return None  # Intel RAPL not available
-    
-    time.sleep(0.1)  # Wait for a second to measure power
-    energy_end = read_rapl_energy()
-    if energy_end is None:
-        return None
-    
-    power_watts = (energy_end - energy_start) / 1_000_000 / 0.1  # Convert µJ to W
-    return power_watts
-
-# def run_bash_script():
-#     try:
-#         result = subprocess.run(
-#             ["sudo", bash_script],
-#             capture_output=True,
-#             text=True,
-#             check=True
-#         )
-#         return result.stdout
-#     except subprocess.CalledProcessError as e:
-#         print(f"Script failed with return code {e.returncode}")
-#         print(f"stderr: {e.stderr}")
-#         return None
-#     except Exception as e:
-#         print(f"Error running bash script: {e}")
-#         return None
-    
-# def parse_to_json(output):
-#     core_freq_data = {}
-#     for line in output.strip().splitlines():
-#         match = re.match(r"core_(\d+)_frequency: ([\d.]+)", line.strip())
-#         if match:
-#             core_id = f"core_{match.group(1)}_frequency"  # <- change here
-#             frequency = float(match.group(2))
-#             core_freq_data[core_id] = frequency
-#     return core_freq_data
-
-# def read_cpu_frequencies():
-#     try:
-#         result = run_bash_script()
-#         if result:
-#             parsed_json = parse_to_json(result)
-#             # print(json.dumps(parsed_json, indent=2))  # Pretty print JSON
-#         return parsed_json
-#     except Exception as e:
-#         print(f"Error running bash script: {e}")
-#         return {}
 
 def get_system_info():
     per_core_usage = psutil.cpu_percent(interval=0.1, percpu=True)
@@ -502,7 +462,8 @@ def get_system_info():
                 "packets_recv": net_a.packets_recv,
             }
     
-    # cpu_power = get_cpu_power()
+    cpu_power = get_power_from_sensor("ina220-i2c-0-40")
+    # print(f"CPU Power: {cpu_power} W" if cpu_power is not None else "CPU Power: N/A")
     
     system_info = {
         "memory_usage": memory_usage,
@@ -516,7 +477,7 @@ def get_system_info():
         "per_core_freq": core_frequencies,
         "sys_temp": sys_temp,
         "network": network_stats,
-        # "cpu_power": cpu_power,
+        "cpu_power": cpu_power,
         "total_disk_usage": total_disk_usage,
         "total_disk_size": total_disk_size,
         "progress_update": progress_update
