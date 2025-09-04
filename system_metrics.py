@@ -6,7 +6,7 @@ import os
 import atexit
 from datetime import datetime
 
-# ---------- Your existing get_system_info function ----------
+# ---------- Get System Metrics ----------
 def read_rapl_energy():
     try:
         with open("/sys/class/powercap/intel-rapl:0/energy_uj", "r") as f:
@@ -108,20 +108,19 @@ class SystemMetricsLogger:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
             metrics = get_system_info()
 
-            # Flatten per-core dictionaries
-            flat_metrics = {}
+            # Flatten per-core dictionaries, timestamp first
+            flat_metrics = {"Timestamp": timestamp}
             for k, v in metrics.items():
                 if isinstance(v, dict):
                     flat_metrics.update(v)
                 else:
                     flat_metrics[k] = v
-            flat_metrics["Timestamp"] = timestamp
 
             # Append to buffer thread-safely
             with self._lock:
                 self._buffer.append(flat_metrics)
 
-            # Check if it's time to flush buffer to CSV
+            # Flush to CSV if needed
             if self._csv_write_interval:
                 now = time.time()
                 if now - self._last_csv_write >= self._csv_write_interval:
