@@ -14,7 +14,7 @@ HOST_IP = '0.0.0.0'
 SYSINFO_PORT = 12345  # Port for system metrics
 DATA_PORT = 55555
 IMAGE_PORT = 8080
-FLASK_PORT = 5000
+FLASK_PORT = 5001
 
 TARGET_IP = "10.42.0.7"  # Target system IP
 TARGET_PORT = 54321       # Target system port
@@ -265,7 +265,7 @@ def receive_metrics():
                                 "total_memory": float(system_info["total_memory"]),
                                 "total_swap": float(system_info["total_swap"]),
                                 "num_threads": int(system_info["num_threads"]),
-                                # "cpu_power": float(system_info.get("cpu_power", 0.0)),
+                                "cpu_power": float(system_info.get("cpu_power", 0.0)),
                                 "total_disk_usage": float(system_info.get("total_disk_usage", 0.0)),
                                 "total_disk_size": float(system_info.get("total_disk_size", 0.0)),
                                 "progress_update": float(system_info.get("progress_update", 0.0)),
