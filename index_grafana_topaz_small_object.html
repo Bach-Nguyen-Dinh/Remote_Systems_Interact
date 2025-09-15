@@ -21,9 +21,16 @@
 
         function run_small_obj_detect() {
             try {
-                await fetch('http://${FLASH_HOST}:${FLASK_PORT}/send_message', {
-                    method: "POST";
+                fetch('http://${FLASH_HOST}:${FLASK_PORT}/send_message', {
+                    method: "POST",
+                    header: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({"message": "run_small_obj_detect"})
                 })
+            }
+            catch (error) {
+                console.error("Error:", error);
             }
         }
     </script>
