@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Option Selector</title>
+    <style>
+        
+    </style>
+</head>
+<body>
+    
+    <div class="button-container">
+        <button onclick="run_small_obj_detect()">Run</button>
+        <button onclick="clear_small_obj_detect()">Clear</button>
+    </div>
+
+    <script>
+        FLASK_HOST = "192.168.0.32";
+        FLASK_PORT = 5001;
+
+        function run_small_obj_detect() {
+            try {
+                await fetch('http://${FLASH_HOST}:${FLASK_PORT}/send_message', {
+                    method: "POST";
+                })
+            }
+        }
+    </script>
+</body>
+</html>
