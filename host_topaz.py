@@ -403,10 +403,11 @@ def run_iperf3(file_path):
 
     def run_test(reverse=False):
         # Define the command with or without reverse mode
-        command = ["iperf3", "-c", TARGET_IP, "-u", "-b", "100G", "-t", netTestDuration, "-i", "1", "-J"]
+        command = ["iperf3", "-c", TARGET_IP, "-u", "-b", "100G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
         if reverse:
             command.append("-R")  # Add reverse flag for upload test
 
+        print(f"Executing command: {' '.join(command)}")
         # Run the command
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         stdout, stderr = process.communicate()
