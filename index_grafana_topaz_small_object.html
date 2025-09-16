@@ -21,17 +21,23 @@
 
         function run_small_obj_detect() {
             try {
-                fetch('http://${FLASH_HOST}:${FLASK_PORT}/send_message', {
+                fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
                     method: "POST",
-                    header: {
+                    headers: {
                         "Content-Type": "application/json"
                     },
-                    body: JSON.stringify({"message": "run_small_obj_detect"})
+                    body: JSON.stringify({ message: "run_small_obj_detect" })
                 })
+                .then(response => response.json())
+                .then(data => console.log("Success:", data))
+                .catch(error => console.error("Error:", error));
             }
             catch (error) {
                 console.error("Error:", error);
             }
+        }
+
+        function clear_small_obj_detect() {
         }
     </script>
 </body>
