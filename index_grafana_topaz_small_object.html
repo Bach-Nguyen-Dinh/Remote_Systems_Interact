@@ -134,7 +134,6 @@
 </head>
 <body>
     <div class="container">
-        <h1>Small Object Detection Processing</h1>
         
         <div class="button-container">
             <button id="runBtn" onclick="run_small_obj_detect()">Run Detection</button>
@@ -186,38 +185,118 @@
         window.addEventListener('load', function() {
             preloadImages();
         });
+
+        function clearImages() {
+            document.getElementById('inputImageContainer').innerHTML = '<div class="image-placeholder">No image loaded</div>';
+            document.getElementById('outputImageContainer').innerHTML = '<div class="image-placeholder">Processing will start when you click Run</div>';
+            document.getElementById('inputImageInfo').textContent = '-';
+            document.getElementById('outputImageInfo').textContent = '-';
+        }
+
+        function updateStatus(message, type = '') {
+            const statusBar = document.getElementById('statusBar');
+            statusBar.textContent = message;
+            statusBar.className = `status-bar ${type}`;
+        }
+
+        function updateButtons() {
+            const runBtn = document.getElementById('runBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            
+            runBtn.disabled = isRunning;
+            runBtn.textContent = isRunning ? 'Processing...' : 'Run Detection';
+        }
+
+        function updateProcessingTime() {
+            if (startTime) {
+                const elapsed = Math.floor((new Date() - startTime) / 1000);
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
+                document.getElementById('processingTime').textContent = 
+                    `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            }
+        }
         
         async function preloadImages() {
             try {
                 console.log('Starting image preload...');
+                updateStatus('Loading image list...', 'running');
+                
                 const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/image_list`);
                 const data = await response.json();
                 
                 console.log('Image list received:', data);
+                updateStatus('Preloading images...', 'running');
                 
-                // Preload input images - CHANGE FROM .png TO .webp
+                // Function to create a promise for image loading with timeout
+                function loadImage(src, cacheKey, timeout = 10000) {
+                    return new Promise((resolve, reject) => {
+                        const img = new Image();
+                        let timeoutId;
+                        
+                        img.onload = () => {
+                            clearTimeout(timeoutId);
+                            console.log(`✓ Loaded: ${cacheKey}`);
+                            resolve();
+                        };
+                        
+                        img.onerror = () => {
+                            clearTimeout(timeoutId);
+                            console.error(`✗ Failed to load: ${cacheKey}`);
+                            reject(new Error(`Failed to load ${cacheKey}`));
+                        };
+                        
+                        // Set timeout for image loading
+                        timeoutId = setTimeout(() => {
+                            console.warn(`⚠ Timeout loading: ${cacheKey}`);
+                            reject(new Error(`Timeout loading ${cacheKey}`));
+                        }, timeout);
+                        
+                        img.src = src;
+                        imageCache[cacheKey] = img;
+                    });
+                }
+                
+                const loadPromises = [];
+                
+                // Preload input images
                 for (const filename of data.input_images) {
-                    const img = new Image();
-                    img.src = `http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/images/input/${filename}`;
-                    imageCache[`input_${filename}`] = img;
+                    const src = `http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/images/input/${filename}`;
+                    const cacheKey = `input_${filename}`;
+                    loadPromises.push(loadImage(src, cacheKey));
                 }
                 
-                // Preload output images - CHANGE FROM .png TO .webp  
+                // Preload output images
                 for (const filename of data.output_images) {
-                    const img = new Image();
-                    img.src = `http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/images/output/${filename}`;
-                    imageCache[`output_${filename}`] = img;
+                    const src = `http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/images/output/${filename}`;
+                    const cacheKey = `output_${filename}`;
+                    loadPromises.push(loadImage(src, cacheKey));
                 }
                 
-                updateStatus('Images preloaded successfully', 'ready');
-                console.log('Image preload completed');
+                console.log(`Starting to preload ${loadPromises.length} images...`);
+                
+                // Wait for all images with results tracking
+                const results = await Promise.allSettled(loadPromises);
+                
+                const successful = results.filter(r => r.status === 'fulfilled').length;
+                const failed = results.filter(r => r.status === 'rejected').length;
+                
+                console.log(`Preload completed: ${successful} successful, ${failed} failed`);
+                
+                if (failed > 0) {
+                    console.warn('Some images failed to load:', 
+                        results.filter(r => r.status === 'rejected').map(r => r.reason.message));
+                }
+                
+                updateStatus(`Images preloaded (${successful}/${loadPromises.length} loaded)`, 'ready');
+                console.log('Image preload completed - ready for display');
                 
             } catch (error) {
                 console.error('Error preloading images:', error);
-                updateStatus('Error preloading images', 'error');
+                updateStatus('Error preloading images - check console', 'error');
             }
         }
-        
+
         function run_small_obj_detect() {
             if (isRunning) return;
             
@@ -295,7 +374,7 @@
                 } catch (error) {
                     console.error('Error polling progress:', error);
                 }
-            }, 500); // Poll every 500ms
+            }, 10); // Poll every 500ms
         }
         
         function stopProgressPolling() {
@@ -315,9 +394,27 @@
                     break;
                     
                 case 'small_obj_detect_progress':
+                    // Log what we're trying to display
+                    // console.log(`Attempting1111 input=${data.input_image}, output=${data.output_image}`);
+                    
+                    // Check if images exist in cache before displaying
+                    const inputKey = `input_${data.input_image}`;
+                    const outputKey = `output_${data.output_image}`;
+
+                    if (!imageCache[inputKey]) {
+                        console.warn(`Input image ${data.input_image} not found in cache`);
+                    }
+                    if (!imageCache[outputKey]) {
+                        console.warn(`Output image ${data.output_image} not found in cache`);
+                    }
+                    
                     displayImagePair(data.input_image, data.output_image);
+                    // console.log(`Attempting2222 input=${data.input_image}, output=${data.output_image}`);
                     document.getElementById('latestOutput').textContent = data.output_image;
+
                     updateProcessingTime();
+                    // console.log(`Attempting3333 input=${data.input_image}, output=${data.output_image}`);
+
                     break;
                     
                 case 'small_obj_detect_complete':
@@ -339,56 +436,58 @@
         }
         
         function displayImagePair(inputFilename, outputFilename) {
+            // console.log(`Displaying images555: input=${inputFilename}, output=${outputFilename}`);
             const inputContainer = document.getElementById('inputImageContainer');
             const outputContainer = document.getElementById('outputImageContainer');
             const inputInfo = document.getElementById('inputImageInfo');
             const outputInfo = document.getElementById('outputImageInfo');
             
-            // Display input image
+            // Display input image - Remove strict complete check
             const inputImg = imageCache[`input_${inputFilename}`];
-            if (inputImg && inputImg.complete) {
+            if (inputImg) {
+                // Create a new image element to avoid any caching issues
+                const displayInputImg = new Image();
+                displayInputImg.src = inputImg.src;
+                // displayInputImg.style.maxWidth = '100%';
+                // displayInputImg.style.maxHeight = '400px';
+                // displayInputImg.style.borderRadius = '4px';
+                
                 inputContainer.innerHTML = '';
-                inputContainer.appendChild(inputImg.cloneNode());
+                inputContainer.appendChild(displayInputImg);
                 inputInfo.textContent = `Input: ${inputFilename}`;
+                
+                // Add error handling
+                displayInputImg.onerror = () => {
+                    console.error(`Failed to load input image: ${inputFilename}`);
+                    inputContainer.innerHTML = '<div class="image-placeholder">Failed to load input image</div>';
+                };
+            } else {
+                console.warn(`Input image not found in cache: ${inputFilename}`);
+                inputContainer.innerHTML = '<div class="image-placeholder">Input image not available</div>';
             }
             
-            // Display output image
+            // Display output image - Remove strict complete check
             const outputImg = imageCache[`output_${outputFilename}`];
-            if (outputImg && outputImg.complete) {
+            if (outputImg) {
+                // Create a new image element to avoid any caching issues
+                const displayOutputImg = new Image();
+                displayOutputImg.src = outputImg.src;
+                // displayOutputImg.style.maxWidth = '100%';
+                // displayOutputImg.style.maxHeight = '400px';
+                // displayOutputImg.style.borderRadius = '4px';
+                
                 outputContainer.innerHTML = '';
-                outputContainer.appendChild(outputImg.cloneNode());
+                outputContainer.appendChild(displayOutputImg);
                 outputInfo.textContent = `Output: ${outputFilename}`;
-            }
-        }
-        
-        function clearImages() {
-            document.getElementById('inputImageContainer').innerHTML = '<div class="image-placeholder">No image loaded</div>';
-            document.getElementById('outputImageContainer').innerHTML = '<div class="image-placeholder">Processing will start when you click Run</div>';
-            document.getElementById('inputImageInfo').textContent = '-';
-            document.getElementById('outputImageInfo').textContent = '-';
-        }
-        
-        function updateStatus(message, type = '') {
-            const statusBar = document.getElementById('statusBar');
-            statusBar.textContent = message;
-            statusBar.className = `status-bar ${type}`;
-        }
-        
-        function updateButtons() {
-            const runBtn = document.getElementById('runBtn');
-            const clearBtn = document.getElementById('clearBtn');
-            
-            runBtn.disabled = isRunning;
-            runBtn.textContent = isRunning ? 'Processing...' : 'Run Detection';
-        }
-        
-        function updateProcessingTime() {
-            if (startTime) {
-                const elapsed = Math.floor((new Date() - startTime) / 1000);
-                const minutes = Math.floor(elapsed / 60);
-                const seconds = elapsed % 60;
-                document.getElementById('processingTime').textContent = 
-                    `${minutes}:${seconds.toString().padStart(2, '0')}`;
+                
+                // Add error handling
+                displayOutputImg.onerror = () => {
+                    console.error(`Failed to load output image: ${outputFilename}`);
+                    outputContainer.innerHTML = '<div class="image-placeholder">Failed to load output image</div>';
+                };
+            } else {
+                console.warn(`Output image not found in cache: ${outputFilename}`);
+                outputContainer.innerHTML = '<div class="image-placeholder">Output image not available</div>';
             }
         }
     </script>
