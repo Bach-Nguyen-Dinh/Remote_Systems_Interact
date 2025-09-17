@@ -49,6 +49,12 @@ SAVE_PATH_IPERF_LOCAL = os.path.join(CURR_DIR, "iperf3_end_result_local.json")
 SAVE_PATH_IPERF_DOCKER = os.path.join(CURR_DIR, "iperf3_end_result_docker.json")
 SAVE_PATH_IPERF_VIRTUAL = os.path.join(CURR_DIR, "iperf3_end_result_virtual.json")
 
+SMALL_OBJ_INPUT_DIR = "/home/matthew/Remote_Systems_Interact/small_obj_detect/data1/image"
+SMALL_OBJ_OUTPUT_DIR = "/home/matthew/Remote_Systems_Interact/small_obj_detect/data1/predictions"
+
+connected_clients = []
+latest_small_obj_progress = {}
+
 # Global variable
 message = ""
 cphd_file_list = []  # Global list to store CPHD file names
@@ -69,6 +75,13 @@ netTestDuration = 0
 # Initialize Flask
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
+
+def broadcast_to_clients(data):
+    """Broadcast data to all connected clients"""
+    # This could be implemented with WebSockets or Server-Sent Events
+    # For simplicity, we'll store the latest update and serve it via HTTP
+    global latest_small_obj_progress
+    latest_small_obj_progress = data
 
 def start_server():
     global message, cphd_file_list, cphd_file_properties, tif_file_properties
@@ -167,6 +180,11 @@ def start_server():
 
                         else:
                             print(f"Received unknown data: {received_data}")
+
+                        if "type" in received_data and received_data["type"].startswith("small_obj_detect"):
+                            print(f"Small object detection update: {received_data}")
+                            # Broadcast to all connected clients (like index grafana)
+                            broadcast_to_clients(received_data)
 
                     except json.JSONDecodeError as e:
                         print(f"Error decoding received data: {e}")
@@ -288,6 +306,8 @@ def receive_metrics():
 @app.route('/send_message', methods=['POST'])
 def send_message():
     global message, netTestDuration
+    global latest_small_obj_progress
+
     data = request.get_json()
     message = data.get("message", "Default message from host")
     print(message)
@@ -341,6 +361,14 @@ def send_message():
                 if stderr:
                     print("Error message:", stderr)
                 return jsonify({"status": "error", "message": stderr.strip()}), 500
+            
+    if message == "run_small_obj_detect":
+        # Clear previous progress
+        latest_small_obj_progress = {}
+        return forward_message_to_target(message)
+    elif message == "clear_small_obj_detect":
+        latest_small_obj_progress = {}
+        return jsonify({"status": "cleared"})
 
     return forward_message_to_target(message)   
     
@@ -488,6 +516,40 @@ def iperf_up_eth_adt_results():
         return send_file(file_path, mimetype='application/json', as_attachment=False)
     except FileNotFoundError:
         return "File not found", 404
+    
+@app.route('/small_obj_detect/images/input/<filename>')
+def serve_input_image(filename):
+    """Serve input images for small object detection"""
+    return send_from_directory(SMALL_OBJ_INPUT_DIR, filename)
+
+@app.route('/small_obj_detect/images/output/<filename>')
+def serve_output_image(filename):
+    """Serve output images for small object detection"""
+    return send_from_directory(SMALL_OBJ_OUTPUT_DIR, filename)
+
+@app.route('/small_obj_detect/progress', methods=['GET'])
+def get_small_obj_progress():
+    """Get the latest small object detection progress"""
+    return jsonify(latest_small_obj_progress)
+
+@app.route('/small_obj_detect/image_list', methods=['GET'])
+def get_image_list():
+    """Get list of all input and output images"""
+    input_images = []
+    output_images = []
+    
+    if os.path.exists(SMALL_OBJ_INPUT_DIR):
+        input_images = [f for f in os.listdir(SMALL_OBJ_INPUT_DIR) if f.endswith('.png')]
+        input_images.sort(key=lambda x: int(x.replace('.png', '')))
+    
+    if os.path.exists(SMALL_OBJ_OUTPUT_DIR):
+        output_images = [f for f in os.listdir(SMALL_OBJ_OUTPUT_DIR) if f.endswith('.png')]
+        output_images.sort(key=lambda x: int(x.replace('.png', '')))
+    
+    return jsonify({
+        "input_images": input_images,
+        "output_images": output_images
+    })
 
 # Function to run Flask server
 def run_flask_server():

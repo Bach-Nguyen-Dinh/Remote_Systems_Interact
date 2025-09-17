@@ -3,23 +3,233 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Option Selector</title>
+    <title>Small Object Detection Interface</title>
     <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
         
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .button-container {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        
+        .button-container button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            margin: 0 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        
+        .button-container button:hover {
+            background-color: #0056b3;
+        }
+        
+        .button-container button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        
+        .status-bar {
+            background-color: #e9ecef;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            text-align: center;
+            font-weight: bold;
+        }
+        
+        .status-bar.running {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        
+        .status-bar.error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        
+        .image-display {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        
+        .image-panel {
+            flex: 1;
+            max-width: 500px;
+            text-align: center;
+        }
+        
+        .image-panel h3 {
+            margin-bottom: 10px;
+            color: #333;
+        }
+        
+        .image-container {
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 10px;
+            background-color: #fafafa;
+            min-height: 300px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .image-container img {
+            max-width: 100%;
+            max-height: 400px;
+            border-radius: 4px;
+        }
+        
+        .image-placeholder {
+            color: #666;
+            font-style: italic;
+        }
+        
+        .progress-info {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 20px;
+        }
+        
+        .progress-info h4 {
+            margin-top: 0;
+            color: #495057;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
-    
-    <div class="button-container">
-        <button onclick="run_small_obj_detect()">Run</button>
-        <button onclick="clear_small_obj_detect()">Clear</button>
+    <div class="container">
+        <h1>Small Object Detection Processing</h1>
+        
+        <div class="button-container">
+            <button id="runBtn" onclick="run_small_obj_detect()">Run Detection</button>
+            <button id="clearBtn" onclick="clear_small_obj_detect()">Clear</button>
+        </div>
+        
+        <div id="statusBar" class="status-bar">Ready to start processing</div>
+        
+        <div class="image-display">
+            <div class="image-panel">
+                <h3>Input Image</h3>
+                <div class="image-container">
+                    <div id="inputImageContainer" class="image-placeholder">
+                        No image loaded
+                    </div>
+                </div>
+                <p id="inputImageInfo">-</p>
+            </div>
+            
+            <div class="image-panel">
+                <h3>Output Image</h3>
+                <div class="image-container">
+                    <div id="outputImageContainer" class="image-placeholder">
+                        Processing will start when you click Run
+                    </div>
+                </div>
+                <p id="outputImageInfo">-</p>
+            </div>
+        </div>
+        
+        <div class="progress-info">
+            <h4>Processing Information</h4>
+            <p><strong>Current Status:</strong> <span id="processStatus">Idle</span></p>
+            <p><strong>Latest Output:</strong> <span id="latestOutput">None</span></p>
+            <p><strong>Processing Time:</strong> <span id="processingTime">-</span></p>
+        </div>
     </div>
 
     <script>
-        FLASK_HOST = "192.168.0.32";
-        FLASK_PORT = 5001;
-
+        const FLASK_HOST = "192.168.0.32";
+        const FLASK_PORT = 5001;
+        
+        let imageCache = {};
+        let isRunning = false;
+        let startTime = null;
+        let pollInterval = null;
+        
+        // Preload all images when page loads
+        window.addEventListener('load', function() {
+            preloadImages();
+        });
+        
+        async function preloadImages() {
+            try {
+                console.log('Starting image preload...');
+                const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/image_list`);
+                const data = await response.json();
+                
+                console.log('Image list received:', data);
+                
+                // Preload input images
+                for (const filename of data.input_images) {
+                    const img = new Image();
+                    img.src = `http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/images/input/${filename}`;
+                    imageCache[`input_${filename}`] = img;
+                }
+                
+                // Preload output images
+                for (const filename of data.output_images) {
+                    const img = new Image();
+                    img.src = `http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/images/output/${filename}`;
+                    imageCache[`output_${filename}`] = img;
+                }
+                
+                updateStatus('Images preloaded successfully', 'ready');
+                console.log('Image preload completed');
+                
+            } catch (error) {
+                console.error('Error preloading images:', error);
+                updateStatus('Error preloading images', 'error');
+            }
+        }
+        
         function run_small_obj_detect() {
+            if (isRunning) return;
+            
+            isRunning = true;
+            startTime = new Date();
+            
+            updateStatus('Starting small object detection...', 'running');
+            updateButtons();
+            
+            // Clear previous images
+            clearImages();
+            
             try {
                 fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
                     method: "POST",
@@ -29,15 +239,157 @@
                     body: JSON.stringify({ message: "run_small_obj_detect" })
                 })
                 .then(response => response.json())
-                .then(data => console.log("Success:", data))
-                .catch(error => console.error("Error:", error));
-            }
-            catch (error) {
+                .then(data => {
+                    console.log("Command sent successfully:", data);
+                    startProgressPolling();
+                })
+                .catch(error => {
+                    console.error("Error sending command:", error);
+                    updateStatus('Error starting detection', 'error');
+                    isRunning = false;
+                    updateButtons();
+                });
+            } catch (error) {
                 console.error("Error:", error);
+                updateStatus('Error starting detection', 'error');
+                isRunning = false;
+                updateButtons();
             }
         }
-
+        
         function clear_small_obj_detect() {
+            stopProgressPolling();
+            isRunning = false;
+            startTime = null;
+            
+            clearImages();
+            updateStatus('Cleared', 'ready');
+            updateButtons();
+            
+            document.getElementById('processStatus').textContent = 'Idle';
+            document.getElementById('latestOutput').textContent = 'None';
+            document.getElementById('processingTime').textContent = '-';
+            
+            // Send clear command to server
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ message: "clear_small_obj_detect" })
+            })
+            .catch(error => console.error("Error sending clear command:", error));
+        }
+        
+        function startProgressPolling() {
+            if (pollInterval) clearInterval(pollInterval);
+            
+            pollInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/progress`);
+                    const data = await response.json();
+                    
+                    if (data.type) {
+                        handleProgressUpdate(data);
+                    }
+                } catch (error) {
+                    console.error('Error polling progress:', error);
+                }
+            }, 500); // Poll every 500ms
+        }
+        
+        function stopProgressPolling() {
+            if (pollInterval) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+            }
+        }
+        
+        function handleProgressUpdate(data) {
+            console.log('Progress update:', data);
+            
+            switch (data.type) {
+                case 'small_obj_detect_start':
+                    updateStatus('Detection started', 'running');
+                    document.getElementById('processStatus').textContent = 'Running';
+                    break;
+                    
+                case 'small_obj_detect_progress':
+                    displayImagePair(data.input_image, data.output_image);
+                    document.getElementById('latestOutput').textContent = data.output_image;
+                    updateProcessingTime();
+                    break;
+                    
+                case 'small_obj_detect_complete':
+                    updateStatus('Detection completed successfully', 'ready');
+                    document.getElementById('processStatus').textContent = 'Completed';
+                    isRunning = false;
+                    updateButtons();
+                    stopProgressPolling();
+                    break;
+                    
+                case 'small_obj_detect_error':
+                    updateStatus(`Error: ${data.error}`, 'error');
+                    document.getElementById('processStatus').textContent = 'Error';
+                    isRunning = false;
+                    updateButtons();
+                    stopProgressPolling();
+                    break;
+            }
+        }
+        
+        function displayImagePair(inputFilename, outputFilename) {
+            const inputContainer = document.getElementById('inputImageContainer');
+            const outputContainer = document.getElementById('outputImageContainer');
+            const inputInfo = document.getElementById('inputImageInfo');
+            const outputInfo = document.getElementById('outputImageInfo');
+            
+            // Display input image
+            const inputImg = imageCache[`input_${inputFilename}`];
+            if (inputImg && inputImg.complete) {
+                inputContainer.innerHTML = '';
+                inputContainer.appendChild(inputImg.cloneNode());
+                inputInfo.textContent = `Input: ${inputFilename}`;
+            }
+            
+            // Display output image
+            const outputImg = imageCache[`output_${outputFilename}`];
+            if (outputImg && outputImg.complete) {
+                outputContainer.innerHTML = '';
+                outputContainer.appendChild(outputImg.cloneNode());
+                outputInfo.textContent = `Output: ${outputFilename}`;
+            }
+        }
+        
+        function clearImages() {
+            document.getElementById('inputImageContainer').innerHTML = '<div class="image-placeholder">No image loaded</div>';
+            document.getElementById('outputImageContainer').innerHTML = '<div class="image-placeholder">Processing will start when you click Run</div>';
+            document.getElementById('inputImageInfo').textContent = '-';
+            document.getElementById('outputImageInfo').textContent = '-';
+        }
+        
+        function updateStatus(message, type = '') {
+            const statusBar = document.getElementById('statusBar');
+            statusBar.textContent = message;
+            statusBar.className = `status-bar ${type}`;
+        }
+        
+        function updateButtons() {
+            const runBtn = document.getElementById('runBtn');
+            const clearBtn = document.getElementById('clearBtn');
+            
+            runBtn.disabled = isRunning;
+            runBtn.textContent = isRunning ? 'Processing...' : 'Run Detection';
+        }
+        
+        function updateProcessingTime() {
+            if (startTime) {
+                const elapsed = Math.floor((new Date() - startTime) / 1000);
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
+                document.getElementById('processingTime').textContent = 
+                    `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            }
         }
     </script>
 </body>
