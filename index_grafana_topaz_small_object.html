@@ -195,14 +195,14 @@
                 
                 console.log('Image list received:', data);
                 
-                // Preload input images
+                // Preload input images - CHANGE FROM .png TO .webp
                 for (const filename of data.input_images) {
                     const img = new Image();
                     img.src = `http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/images/input/${filename}`;
                     imageCache[`input_${filename}`] = img;
                 }
                 
-                // Preload output images
+                // Preload output images - CHANGE FROM .png TO .webp  
                 for (const filename of data.output_images) {
                     const img = new Image();
                     img.src = `http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/images/output/${filename}`;

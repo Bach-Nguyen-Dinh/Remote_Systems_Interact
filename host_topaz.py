@@ -539,12 +539,14 @@ def get_image_list():
     output_images = []
     
     if os.path.exists(SMALL_OBJ_INPUT_DIR):
-        input_images = [f for f in os.listdir(SMALL_OBJ_INPUT_DIR) if f.endswith('.png')]
-        input_images.sort(key=lambda x: int(x.replace('.png', '')))
+        # CHANGE FROM .png TO .webp
+        input_images = [f for f in os.listdir(SMALL_OBJ_INPUT_DIR) if f.endswith('.webp')]
+        input_images.sort(key=lambda x: int(x.replace('.webp', '')))
     
     if os.path.exists(SMALL_OBJ_OUTPUT_DIR):
-        output_images = [f for f in os.listdir(SMALL_OBJ_OUTPUT_DIR) if f.endswith('.png')]
-        output_images.sort(key=lambda x: int(x.replace('.png', '')))
+        # CHANGE FROM .png TO .webp
+        output_images = [f for f in os.listdir(SMALL_OBJ_OUTPUT_DIR) if f.endswith('.webp')]
+        output_images.sort(key=lambda x: int(x.replace('.webp', '')))
     
     return jsonify({
         "input_images": input_images,
