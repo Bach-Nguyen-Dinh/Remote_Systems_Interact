@@ -8,6 +8,12 @@ import json
 import os
 import re
 import glob
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+RSS_EXECUTABLE_PATH = "/home/user/Small-Object-Detection/Utils/RSS"
+INPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Image"
+OUTPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Predictions"
 
 # IMAGE_PATH_2 = "/home/root/Desktop/Bach/backprojection_result_small.png"  
 # IMAGE_PATH_1 = "/home/root/Desktop/Bach/backprojection_histogram.png"
@@ -35,6 +41,94 @@ SAVE_PATH_IPERF_UP_ETH_ADT = "/home/root/iperf3_end_result_UpEthAdt.json"
 # Global variable
 progress_update = 0.0
 cphd_files = {}
+
+small_obj_detect_running = False
+current_output_count = 0
+
+def send_progress_update(data):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.connect((HOST_IP, IMAGE_PORT))
+            sock.sendall(json.dumps(data).encode())
+        print(f"Progress update sent: {data}")
+    except Exception as e:
+        print(f"Error sending progress update: {e}")
+
+def run_small_object_detection():
+    global small_obj_detect_running, current_output_count
+    
+    if small_obj_detect_running:
+        print("Small object detection already running")
+        return
+    
+    small_obj_detect_running = True
+    current_output_count = 0
+    
+    # Clear output directory
+    if os.path.exists(OUTPUT_IMAGE_DIR):
+        for file in glob.glob(os.path.join(OUTPUT_IMAGE_DIR, "*.png")):
+            os.remove(file)
+    else:
+        os.makedirs(OUTPUT_IMAGE_DIR)
+    
+    # Set up file system watcher
+    event_handler = OutputImageHandler()
+    observer = Observer()
+    observer.schedule(event_handler, OUTPUT_IMAGE_DIR, recursive=False)
+    observer.start()
+    
+    try:
+        # Send start notification
+        start_data = {
+            "type": "small_obj_detect_start",
+            "status": "started"
+        }
+        send_progress_update(start_data)
+        
+        # Run the RSS executable
+        print(f"Starting RSS executable: {RSS_EXECUTABLE_PATH}")
+        process = subprocess.Popen([RSS_EXECUTABLE_PATH], 
+                                 cwd="/home/user/Small-Object-Detection")
+        
+        # Wait for process to complete
+        process.wait()
+        
+        # Send completion notification
+        completion_data = {
+            "type": "small_obj_detect_complete",
+            "status": "completed"
+        }
+        send_progress_update(completion_data)
+        
+    except Exception as e:
+        error_data = {
+            "type": "small_obj_detect_error", 
+            "error": str(e)
+        }
+        send_progress_update(error_data)
+        print(f"Error running small object detection: {e}")
+    finally:
+        observer.stop()
+        observer.join()
+        small_obj_detect_running = False
+
+class OutputImageHandler(FileSystemEventHandler):
+    def on_created(self, event):
+        if not event.is_directory and event.src_path.endswith('.png'):
+            filename = os.path.basename(event.src_path)
+            if filename.replace('.png', '').isdigit():
+                output_index = int(filename.replace('.png', ''))
+                input_index = output_index + 1  # Input is always 1 index ahead
+                
+                progress_data = {
+                    "type": "small_obj_detect_progress",
+                    "output_image": filename,
+                    "input_image": f"{input_index}.png",
+                    "output_index": output_index,
+                    "input_index": input_index
+                }
+                
+                send_progress_update(progress_data)
 
 def optimize_tif(image_path, output_path, format="webp", max_size=(800, 800), quality=85):
     """
@@ -253,6 +347,10 @@ def listen_for_messages():
                     
                     if file_path and os.path.exists(file_path):
                         threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
+
+                elif message == "run_small_obj_detect":
+                    threading.Thread(target=run_small_object_detection, daemon=True).start()
+
                 # elif message.startswith("NETRUN:"):
                 #     netTestDuration = message.split(":", 1)[1]
                 #     if "LwEthAdt" in message:
