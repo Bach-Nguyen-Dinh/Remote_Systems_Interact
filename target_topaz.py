@@ -119,11 +119,11 @@ class OutputImageHandler(FileSystemEventHandler):
             if filename.replace('.png', '').isdigit():
                 output_index = int(filename.replace('.png', ''))
                 input_index = output_index + 1  # Input is always 1 index ahead
-                
+                # track the progress of the png file but tell the host to use the webp version for updating progress
                 progress_data = {
                     "type": "small_obj_detect_progress",
-                    "output_image": filename,
-                    "input_image": f"{input_index}.png",
+                    "output_image": f"{output_index}.webp", # tell the host to take the webp version
+                    "input_image": f"{input_index}.webp", # tell the host to take the webp version
                     "output_index": output_index,
                     "input_index": input_index
                 }
