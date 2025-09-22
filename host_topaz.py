@@ -534,24 +534,78 @@ def get_small_obj_progress():
 
 @app.route('/small_obj_detect/image_list', methods=['GET'])
 def get_image_list():
-    """Get list of all input and output images"""
+    """Get list of all input and output images with validation"""
     input_images = []
     output_images = []
     
-    if os.path.exists(SMALL_OBJ_INPUT_DIR):
-        # CHANGE FROM .png TO .webp
-        input_images = [f for f in os.listdir(SMALL_OBJ_INPUT_DIR) if f.endswith('.webp')]
-        input_images.sort(key=lambda x: int(x.replace('.webp', '')))
+    # Helper function to validate and get image info
+    def get_valid_images(directory, image_type):
+        images = []
+        if os.path.exists(directory):
+            for filename in os.listdir(directory):
+                if filename.endswith('.webp'):
+                    filepath = os.path.join(directory, filename)
+                    try:
+                        # Verify file exists and is readable
+                        if os.path.isfile(filepath) and os.access(filepath, os.R_OK):
+                            file_size = os.path.getsize(filepath)
+                            # Only include files that have content
+                            if file_size > 0:
+                                images.append({
+                                    'filename': filename,
+                                    'size': file_size,
+                                    'type': image_type
+                                })
+                            else:
+                                print(f"Warning: Empty file {filepath}")
+                        else:
+                            print(f"Warning: Cannot read file {filepath}")
+                    except Exception as e:
+                        print(f"Error checking file {filepath}: {e}")
+            
+            # Sort by numerical order
+            images.sort(key=lambda x: int(x['filename'].replace('.webp', '')))
+        
+        return images
     
-    if os.path.exists(SMALL_OBJ_OUTPUT_DIR):
-        # CHANGE FROM .png TO .webp
-        output_images = [f for f in os.listdir(SMALL_OBJ_OUTPUT_DIR) if f.endswith('.webp')]
-        output_images.sort(key=lambda x: int(x.replace('.webp', '')))
+    input_images = get_valid_images(SMALL_OBJ_INPUT_DIR, 'input')
+    output_images = get_valid_images(SMALL_OBJ_OUTPUT_DIR, 'output')
     
     return jsonify({
-        "input_images": input_images,
-        "output_images": output_images
+        "input_images": [img['filename'] for img in input_images],
+        "output_images": [img['filename'] for img in output_images],
+        "input_images_info": input_images,
+        "output_images_info": output_images,
+        "total_input": len(input_images),
+        "total_output": len(output_images)
     })
+
+@app.route('/small_obj_detect/validate_image/<image_type>/<filename>')
+def validate_image(image_type, filename):
+    """Validate that a specific image exists and is accessible"""
+    try:
+        if image_type == 'input':
+            directory = SMALL_OBJ_INPUT_DIR
+        elif image_type == 'output':
+            directory = SMALL_OBJ_OUTPUT_DIR
+        else:
+            return jsonify({"valid": False, "error": "Invalid image type"}), 400
+        
+        filepath = os.path.join(directory, filename)
+        
+        if os.path.isfile(filepath) and os.access(filepath, os.R_OK):
+            file_size = os.path.getsize(filepath)
+            return jsonify({
+                "valid": True,
+                "filename": filename,
+                "size": file_size,
+                "path": filepath
+            })
+        else:
+            return jsonify({"valid": False, "error": "File not accessible"}), 404
+            
+    except Exception as e:
+        return jsonify({"valid": False, "error": str(e)}), 500
 
 # Function to run Flask server
 def run_flask_server():
