@@ -38,6 +38,8 @@ VIRTUAL_INTERFACE_ID = "virbr0"
 SAVE_PATH_IPERF_LW_ETH_ADT = "/home/root/iperf3_end_result_LwEthAdt.json"
 SAVE_PATH_IPERF_UP_ETH_ADT = "/home/root/iperf3_end_result_UpEthAdt.json"
 
+AI_METRIC_PATH = "/home/user/ai_tool/status"
+
 # Global variable
 progress_update = 0.0
 cphd_files = {}
@@ -476,7 +478,7 @@ def run_iperf3_server():
     except FileNotFoundError:
         print("iperf3 command not found. Please ensure iperf3 is installed.")
 
-def get_power_from_sensor(sensor_name="ina220-i2c-0-40"):
+def get_power_from_sensor(sensor_name):
     try:
         # Run the sensors command
         output = subprocess.check_output(["sensors"], text=True)
@@ -486,16 +488,63 @@ def get_power_from_sensor(sensor_name="ina220-i2c-0-40"):
 
         for block in blocks:
             if block.startswith(sensor_name):
-                # Look for the power1 line inside the block
-                match = re.search(r"power1:\s+([\d\.]+)\s*W", block)
-                if match:
-                    return float(match.group(1))
-                else:
-                    return None  # No power line found
+                # Look for power1 line with watts (W)
+                watt_match = re.search(r"power1:\s+([\d\.]+)\s*W", block)
+                if watt_match:
+                    return float(watt_match.group(1))
+                
+                # Look for power1 line with milliwatts (mW) 
+                milliwatt_match = re.search(r"power1:\s+([\d\.]+)\s*mW", block)
+                if milliwatt_match:
+                    # Convert milliwatts to watts
+                    return float(milliwatt_match.group(1)) / 1000.0
+                
+                # If power1 line exists but no unit match, return None
+                if "power1:" in block:
+                    print(f"Warning: Found power1 in {sensor_name} but couldn't parse unit")
+                    return None
+                    
         return None  # Sensor not found
     except subprocess.CalledProcessError as e:
         print("Error running sensors:", e)
         return None
+
+def get_ai_metrics():
+    ai_temp = {};
+    ai_freq = {};
+
+    try:
+        process = subprocess.Popen([AI_METRIC_PATH],
+                                   stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE,
+                                   text=True)
+        time.sleep(0.6)
+        process.terminate()
+        stdout, stderr= process.communicate(timeout=1)
+
+        if stdout:
+            lines = stdout.strip().split('\n')
+            
+            for line in lines:
+                temp_match = re.search(r"AI core (\d+) temp: ([\d\.]+)", line)
+                if temp_match:
+                    core_id = int(temp_match.group(1))
+                    temp = float(temp_match.group(2))
+                    ai_temp[f"ai_core_{core_id}_temp"] = temp
+    
+                freq_match = re.search(r"AI core (\d+) frequency: ([\d\.]+)", line)
+                if freq_match:
+                    core_id = int(freq_match.group(1))
+                    freq = int(freq_match.group(2))
+                    ai_freq[f"ai_core_{core_id}_freq"] = freq
+            
+    except subprocess.TimeoutExpired:
+        process.kill();
+        print("AI metrics timeout")
+    except Exception as e:
+        print(f"Error getting AI metrics: {e}")
+
+    return ai_temp, ai_freq
 
 def get_system_info():
     per_core_usage = psutil.cpu_percent(interval=0.1, percpu=True)
@@ -562,7 +611,11 @@ def get_system_info():
     
     cpu_power = get_power_from_sensor("ina220-i2c-0-40")
     # print(f"CPU Power: {cpu_power} W" if cpu_power is not None else "CPU Power: N/A")
-    
+
+    ai_total_pwr = get_power_from_sensor("ina220-i2c-0-44")
+
+    ai_temps, ai_freqs = get_ai_metrics()
+
     system_info = {
         "memory_usage": memory_usage,
         "total_memory": total_memory,
@@ -578,7 +631,10 @@ def get_system_info():
         "cpu_power": cpu_power,
         "total_disk_usage": total_disk_usage,
         "total_disk_size": total_disk_size,
-        "progress_update": progress_update
+        "progress_update": progress_update,
+        "ai_temps": ai_temps,
+        "ai_freqs": ai_freqs,
+        "ai_total_pwr": ai_total_pwr
     }
     # print(f"System Info: {system_info}")
     
