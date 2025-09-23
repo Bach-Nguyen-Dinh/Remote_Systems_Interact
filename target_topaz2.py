@@ -379,49 +379,57 @@ def listen_for_messages():
         print(f"Listening for messages on {LISTEN_IP}:{LISTEN_PORT}...")
 
         while not stop_event.is_set():
-            conn, addr = server_socket.accept()
-            with conn:
-                print(f"Connection received from {addr}")
-                message = conn.recv(1024).decode().strip()
-                if message:
-                    print(f"Message from host: {message}")
-                    # if message == "2":
-                    #     threading.Thread(target=handle_image_sending, args=(IMAGE_PATH_1,), daemon=True).start()
-                    # elif message == "1":
-                    #     send_image(IMAGE_PATH_2)
-                    if message == "3":
-                        progress_update = 0.0
-                    elif message == "4":
-                        send_cphd_files_list()  # Send CPHD files back to host
-                    elif message.startswith("SIZE:"):
-                        progress_update = 0.0
-                        filename = message.split(":", 1)[1]
-                        file_path = cphd_files.get(filename)
-                        
-                        if file_path and os.path.exists(file_path):
-                            file_size = os.path.getsize(file_path)
-                            metadata = get_metadata_from_json(os.path.dirname(file_path))
+            try:
+                conn, addr = server_socket.accept()  # This can timeout
+                conn.settimeout(2.0)  # Add timeout for recv()
+                with conn:
+                    print(f"Connection received from {addr}")
+                    message = conn.recv(1024).decode().strip()
+                    if message:
+                        print(f"Message from host: {message}")
+                        # Your existing message handling code...
+                        if message == "3":
+                            progress_update = 0.0
+                        elif message == "4":
+                            send_cphd_files_list()  # Send CPHD files back to host
+                        elif message.startswith("SIZE:"):
+                            progress_update = 0.0
+                            filename = message.split(":", 1)[1]
+                            file_path = cphd_files.get(filename)
                             
-                            file_size_str = f"{file_size / 1_000_000:.2f} MB" if file_size >= 1_000_000 else f"{file_size} bytes"
+                            if file_path and os.path.exists(file_path):
+                                file_size = os.path.getsize(file_path)
+                                metadata = get_metadata_from_json(os.path.dirname(file_path))
+                                
+                                file_size_str = f"{file_size / 1_000_000:.2f} MB" if file_size >= 1_000_000 else f"{file_size} bytes"
+                                
+                                response = {"filename": filename, "size": file_size_str, "metadata": metadata}
+                                print(f"Response: {response}")
+                                
+                                try:
+                                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as size_sock:
+                                        size_sock.connect((HOST_IP, IMAGE_PORT))
+                                        size_sock.sendall(json.dumps(response).encode())
+                                except Exception as e:
+                                    print(f"Error sending file size and metadata: {e}")
+                        elif message.startswith("RUN:"):
+                            filename = message.split(":", 1)[1]
+                            file_path = cphd_files.get(filename)
                             
-                            response = {"filename": filename, "size": file_size_str, "metadata": metadata}
-                            print(f"Response: {response}")
-                            
-                            try:
-                                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as size_sock:
-                                    size_sock.connect((HOST_IP, IMAGE_PORT))
-                                    size_sock.sendall(json.dumps(response).encode())
-                            except Exception as e:
-                                print(f"Error sending file size and metadata: {e}")
-                    elif message.startswith("RUN:"):
-                        filename = message.split(":", 1)[1]
-                        file_path = cphd_files.get(filename)
-                        
-                        if file_path and os.path.exists(file_path):
-                            threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
+                            if file_path and os.path.exists(file_path):
+                                threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
 
-                    elif message == "run_small_obj_detect":
-                        threading.Thread(target=run_small_object_detection, daemon=True).start()
+                        elif message == "run_small_obj_detect":
+                            threading.Thread(target=run_small_object_detection, daemon=True).start()
+                            
+            except socket.timeout:
+                # This is expected and allows checking stop_event
+                continue
+            except Exception as e:
+                if not stop_event.is_set():
+                    print(f"Error in message listener: {e}")
+                break
+                
     finally:
         server_socket.close()
         print("Message listener stopped")
