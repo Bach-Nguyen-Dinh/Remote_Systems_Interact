@@ -59,7 +59,6 @@ ai_run_metrics_lock = threading.Lock()  # Add thread safety
 stop_event = threading.Event()
 
 def signal_handler(sig, frame):
-    print("\nStopping listener...")
     stop_event.set()
 
 def listener_ai_run():
@@ -571,6 +570,8 @@ def get_ai_metrics():
     return ai_temp, ai_freq, ai_run_metrics
 
 def get_system_info():
+    global ai_run_metrics_raw
+
     per_core_usage = psutil.cpu_percent(interval=0.1, percpu=True)
     core_usage = {f"core_{i}_usage": usage for i, usage in enumerate(per_core_usage)}
     # core_frequencies = read_cpu_frequencies()
@@ -639,7 +640,9 @@ def get_system_info():
     ai_total_pwr = get_power_from_sensor("ina220-i2c-0-44")
 
     ai_temps, ai_freqs, ai_run_metrics = get_ai_metrics()
-    print(ai_run_metrics)
+    # print(ai_temps)
+    # print(ai_run_metrics)
+    ai_run_metrics_raw = None
 
     system_info = {
         "memory_usage": memory_usage,
