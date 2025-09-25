@@ -9,8 +9,8 @@ import os
 
 # IMAGE_PATH_2 = "/home/root/Desktop/Bach/backprojection_result_small.png"  
 # IMAGE_PATH_1 = "/home/root/Desktop/Bach/backprojection_histogram.png"
-RESIZED_IMAGE_PATH = "/home/bach-ngd/demo-resrc/optimized_image.webp"  # Temporary resized image path
-DEMO_PATH = "/home/bach-ngd/demo-resrc/"
+RESIZED_IMAGE_PATH = "/home/sarthak/demo-resrc/optimized_image.webp"  # Temporary resized image path
+DEMO_PATH = "/home/sarthak/demo-resrc/"
 
 HOST_IP = "10.42.0.1"
 SYSINFO_PORT = 12345
@@ -22,15 +22,15 @@ LISTEN_IP = "0.0.0.0"
 LISTEN_PORT = 54321
 SOCK_TOUT = 3
 
-RDB_IP = "169.254.207.123"
+RDB_IP = "10.42.1.7"
 LW_ETH_ADT_CLIENT_IP = RDB_IP
-UP_ETH_ADT_CLIENT_IP = "123.456.789.123"
+UP_ETH_ADT_CLIENT_IP = "10.42.0.1"
 
-LW_ETH_OB_INTERFACE_ID = "enp2s0"
-UP_ETH_OB_INTERFACE_ID = "enp3s0"
-LW_ETH_ADT_INTERFACE_ID = "enp1s0f1"
-UP_ETH_ADT_INTERFACE_ID = "enp1s0f0"
-WIRELESS_INTERFACE_ID = "wlan0"
+LW_ETH_OB_INTERFACE_ID = "enp6s0"
+UP_ETH_OB_INTERFACE_ID = "enp5s0"
+LW_ETH_ADT_INTERFACE_ID = "enp4s0f0"
+UP_ETH_ADT_INTERFACE_ID = "enp4s0f1"
+WIRELESS_INTERFACE_ID = "wlp3s0"
 
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 SAVE_PATH_IPERF_LW_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_LwEthAdt.json")
