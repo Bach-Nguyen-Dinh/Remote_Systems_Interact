@@ -284,8 +284,12 @@ def receive_metrics():
                         per_ai_core_usage[ai_core_key] = ai_usage
                         total_ai_core_usage += ai_usage*0.25
 
-                    print(total_ai_core_usage)
+                    # print(total_ai_core_usage)
                     # Prepare data for InfluxDB
+                    per_ai_core_pwr ={
+                        f"ai_core_{i}_pwr": float(system_info["per_ai_core_pwrs"].get(f"ai_core_{i}_pwr", 0))
+                        for i in range(4)
+                    }
                     json_body = [
                         {
                             "measurement": "system_metrics",
@@ -310,7 +314,8 @@ def receive_metrics():
                                 **per_ai_core_freq,
                                 "ai_total_pwr": float(system_info["ai_total_pwr"]),
                                 **per_ai_core_usage,
-                                "total_ai_usage": total_ai_core_usage
+                                "total_ai_usage": total_ai_core_usage,
+                                **per_ai_core_pwr
                             },
                             "time": int(time.time() * 1e9)  # Nanoseconds
                         }
