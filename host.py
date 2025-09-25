@@ -15,7 +15,7 @@ NETTEST_PORT = 29102
 IMAGE_PORT = 55555
 FLASK_PORT = 5000
 
-TARGET_IP = "10.42.0.90"  # Target system IP
+TARGET_IP = "10.42.0.102"  # Target system IP
 TARGET_PORT = 54321       # Target system port
 
 INFLUXDB_HOST = "localhost"
@@ -347,6 +347,7 @@ def run_iperf3(file_path, message):
     def run_test(reverse=False):
         # Define the command with or without reverse mode
         command = ["iperf3", "-c", TARGET_IP, "-u", "-b", "100G", "-t", netTestDuration, "-i", "1", "-J"]
+        # command = ["iperf3", "-c", TARGET_IP, "-b", "100G", "-t", netTestDuration, "-i", "1", "-J", "-P", "4"]
         if reverse:
             command.append("-R")  # Add reverse flag for upload test
 
