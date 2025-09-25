@@ -16,7 +16,7 @@ DATA_PORT = 55555
 IMAGE_PORT = 8080
 FLASK_PORT = 5001
 
-TARGET_IP = "10.42.0.7"  # Target system IP
+TARGET_IP = "10.42.0.6"  # Target system IP
 TARGET_PORT = 54321       # Target system port
 
 INFLUXDB_HOST = "localhost"
@@ -268,7 +268,23 @@ def receive_metrics():
                             except (ValueError, TypeError):
                                 # Skip if value is not convertible to float
                                 continue
+                    per_ai_core_temp = {
+                        f"ai_core_{i}_temp": float(system_info["ai_temps"].get(f"ai_core_{i}_temp", 0))
+                        for i in range(4)
+                    }
+                    per_ai_core_freq = {
+                        f"ai_core_{i}_freq": float(system_info["ai_freqs"].get(f"ai_core_{i}_freq", 0))
+                        for i in range(4)
+                    }
+                    total_ai_core_usage = 0
+                    per_ai_core_usage = {}
+                    for i in range(4):
+                        ai_core_key = f"ai_core_{i}_usage"
+                        ai_usage = float(system_info["ai_run_metrics"].get(ai_core_key, 0))
+                        per_ai_core_usage[ai_core_key] = ai_usage
+                        total_ai_core_usage += ai_usage*0.25
 
+                    print(total_ai_core_usage)
                     # Prepare data for InfluxDB
                     json_body = [
                         {
@@ -289,7 +305,12 @@ def receive_metrics():
                                 "progress_update": float(system_info.get("progress_update", 0.0)),
                                 **per_core_usage_data,
                                 **per_core_freq_data,
-                                **network_data
+                                **network_data,
+                                **per_ai_core_temp,
+                                **per_ai_core_freq,
+                                "ai_total_pwr": float(system_info["ai_total_pwr"]),
+                                **per_ai_core_usage,
+                                "total_ai_usage": total_ai_core_usage
                             },
                             "time": int(time.time() * 1e9)  # Nanoseconds
                         }
