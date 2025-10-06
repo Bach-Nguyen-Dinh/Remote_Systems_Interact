@@ -8,16 +8,21 @@ import subprocess
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from flask import Flask, request, jsonify, send_from_directory, send_file  # type: ignore
 from flask_cors import CORS  # type: ignore
+from flask import jsonify
+import socket
 
 # Configuration
-HOST_IP = '0.0.0.0'
-SYSINFO_PORT = 12345  # Port for system metrics
-DATA_PORT = 55555
-IMAGE_PORT = 8080
+HOST_IP = "10.42.0.1"
+SYSINFO_PORT = 12346  # Port for system metrics
+NETTEST_PORT = 29103
+IMAGE_PORT = 55556
 FLASK_PORT = 5001
 
-TARGET_IP = "10.42.0.6"  # Target system IP
-TARGET_PORT = 54321       # Target system port
+RDB_IP = "10.42.1.7"  # Target system IP
+RDB_PORT = 54322       # Target system port
+
+HPC_IP = "10.42.1.1"
+HPC_PORT = 54321
 
 INFLUXDB_HOST = "localhost"
 INFLUXDB_PORT = 8086
@@ -71,59 +76,41 @@ final_results = {
     "receiver_loss": ""
 }
 netTestDuration = 0
+flag_get_image = False
 
 # Initialize Flask
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-def broadcast_to_clients(data):
-    """Broadcast data to all connected clients"""
-    # This could be implemented with WebSockets or Server-Sent Events
-    # For simplicity, we'll store the latest update and serve it via HTTP
-    global latest_small_obj_progress
-    latest_small_obj_progress = data
-
-def start_server():
-    global message, cphd_file_list, cphd_file_properties, tif_file_properties
+def handle_image_process_server():
+    global cphd_file_list, cphd_file_properties, tif_file_properties, flag_get_image
     imageSaved = False
+    save_path = None
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
-        server_socket.bind((HOST_IP, DATA_PORT))
+        server_socket.bind((HOST_IP, IMAGE_PORT))
         server_socket.listen(1)
-        print(f"Listening for incoming image on {HOST_IP}:{DATA_PORT}...")
-
+        print(f"Listening for incoming image on {HOST_IP}:{IMAGE_PORT}...")
         while True:
             conn, addr = server_socket.accept()
             with conn:
                 print(f"Receiving data from {addr}")
-
-                # Check if message is related to an image
-                if message.startswith("RUN:") and imageSaved == False:
+                # expect receiving an image only if there is no current saved image
+                # if new image is already saved, skip to expect other data
+                if flag_get_image == True and imageSaved == False:
+                    flag_get_image == False
                     save_path = SAVE_PATH_TIF
-                elif message.startswith("NETRUN:"):
-                    if DOCKER_INTERFACE_ID in message:
-                        save_path = SAVE_PATH_IPERF_DOCKER
-                    elif VIRTUAL_INTERFACE_ID in message:
-                        save_path = SAVE_PATH_IPERF_VIRTUAL
-                    else:
-                        save_path = None
-                else:
-                    save_path = None
-                    imageSaved = False
-
-                print(f"Current save path: {save_path}")
-
-                if save_path == SAVE_PATH_TIF:
+                    print(f"Current save path: {save_path}")
                     # Receive file size first
                     file_size = int.from_bytes(conn.recv(8), byteorder="big")
                     print(f"Expecting to receive {file_size} bytes...")
-
+                    # Receive the actual data
                     received_data = b""
                     while len(received_data) < file_size:
+                        # expect an image so can take the binary directly
                         chunk = conn.recv(4096)
                         if not chunk:
                             break
                         received_data += chunk
-
                     if len(received_data) == file_size:
                         with open(save_path, "wb") as f:
                             f.write(received_data)
@@ -131,46 +118,28 @@ def start_server():
                     else:
                         print(f"Error: Received {len(received_data)} bytes, expected {file_size} bytes")
                     imageSaved = True
-                elif save_path is not None and save_path != SAVE_PATH_TIF:
-                    try:
-                        # Read the incoming JSON data until the client closes the connection
-                        received_data = b""
-                        while True:
-                            chunk = conn.recv(4096)
-                            if not chunk:
-                                break  # Connection closed by client
-                            received_data += chunk
-
-                        # Decode and save
-                        if received_data:
-                            json_text = received_data.decode()
-                            with open(save_path, "w") as f:
-                                f.write(json_text)
-                            print(f"JSON file saved to: {save_path} ({len(received_data)} bytes)")
-
-                        else:
-                            print("No data received.")
-
-                    except Exception as e:
-                        print(f"Error receiving JSON file: {e}")
                 else:
+                    save_path = None
+                    imageSaved = False
+                    # print(f"Current save path: {save_path}")
+                    # expect text so binary data have to be decoded
                     data = conn.recv(4096).decode()
+                    
                     try:
                         received_data = json.loads(data)
-
-                        # Check if it's a file size response
-                        if "filename" in received_data and "size" in received_data:
+                        # print(received_data)
+                        # Check if it's a list of CPHD files
+                        if "cphd_files" in received_data:
+                            cphd_file_list = received_data["cphd_files"]
+                            print(f"Updated CPHD file list: {cphd_file_list}")
+                        # Check if it's the CPHD file's metrics
+                        elif "filename" in received_data and "size" in received_data:
                             file_name = received_data["filename"]
                             file_size_str = received_data["size"]
                             print(f"File '{file_name}' has a size of '{file_size_str}'.")
                             # Update the dictionary to store the formatted size
                             cphd_file_properties = received_data
-
-                        # Check if it's a list of CPHD files
-                        elif "cphd_files" in received_data:
-                            cphd_file_list = received_data["cphd_files"]
-                            print(f"Updated CPHD file list: {cphd_file_list}")
-
+                        # Check if it's the TIF file's metrics
                         elif "tif_filename" in received_data:
                             file_name = received_data["tif_filename"]
                             file_size_str = received_data["size"]
@@ -178,48 +147,72 @@ def start_server():
                             # Update the dictionary to store the formatted size
                             tif_file_properties = received_data
 
-                        else:
-                            print(f"Received unknown data: {received_data}")
-
-                        if "type" in received_data and received_data["type"].startswith("small_obj_detect"):
-                            print(f"Small object detection update: {received_data}")
+                        elif "type" in received_data and received_data["type"].startswith("small_obj_detect"):
+                            # print(f"Small object detection update: {received_data}")
                             # Broadcast to all connected clients (like index grafana)
                             broadcast_to_clients(received_data)
 
+                        else:
+                            print(f"Received unknown data: {received_data}")
+
                     except json.JSONDecodeError as e:
                         print(f"Error decoding received data: {e}")
+                # print(f"Current save path: {save_path}")
 
-
-# # Function to serve images over HTTP
-# def run_http_server():
-#     os.chdir(SAVE_DIR)
-#     httpd = HTTPServer(("0.0.0.0", IMAGE_PORT), SimpleHTTPRequestHandler)
-#     print(f"Serving images on port {IMAGE_PORT}...")
-#     httpd.serve_forever()
-
-# Override to suppress logging for specific status codes (200 and 404)
-class CustomHTTPRequestHandler(SimpleHTTPRequestHandler):
-    def log_message(self, format, *args):
-        # Extract the status code from the format
-        status_code = args[-2]  # The second-to-last argument is the status code
-        
-        # Suppress logs for 404 status code (and 200 if needed)
-        if status_code == "200" or status_code == "404":
-            return  # Do not log the message
-        
-        # Call the original log_message method for other status codes
-        super().log_message(format, *args)
-
-def run_http_server():
-    # Set the working directory to serve files from
-    os.chdir(SAVE_DIR)
-    # Start the HTTP server with the custom request handler
-    httpd = HTTPServer((HOST_IP, IMAGE_PORT), CustomHTTPRequestHandler)
-    print(f"Serving images on port {IMAGE_PORT}...")
-    httpd.serve_forever()
+def handle_net_test_server():
+    save_path = None
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        server_socket.bind((HOST_IP, NETTEST_PORT))
+        server_socket.listen(1)
+        print(f"Listening for incoming net tesk results on {HOST_IP}:{NETTEST_PORT}...")
+        while True:
+            conn, addr = server_socket.accept()
+            with conn:
+                print(f"Receiving data from {addr}")
+                try:
+                    json_data = b""
+                    while True:
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        json_data += chunk
+                    if json_data:
+                        try:
+                            received_dict = json.loads(json_data.decode())
+                            if "NETDONE" in received_dict:
+                                net_iface = received_dict["NETDONE"]
+                                if net_iface == FM_INTERFACE_ID:
+                                    save_path = SAVE_PATH_IPERF_FM
+                                elif net_iface == LOCAL_INTERFACE_ID:
+                                    save_path = SAVE_PATH_IPERF_LOCAL
+                                elif net_iface == DOCKER_INTERFACE_ID:
+                                    save_path = SAVE_PATH_IPERF_DOCKER
+                                elif net_iface == VIRTUAL_INTERFACE_ID:
+                                    save_path = SAVE_PATH_IPERF_VIRTUAL
+                                else:
+                                    save_path = None
+                                    print(f"Unknown interface: {net_iface}")
+                                print(f"Received NETDONE for {net_iface}")
+                            elif "data" in received_dict:
+                                # This is the actual iperf result data
+                                if save_path:
+                                    with open(save_path, "w") as f:
+                                        json.dump(received_dict["data"], f, indent=4)
+                                    print(f"Saved net test JSON to: {save_path}")
+                                else:
+                                    print("Warning: data received but no save_path set (NETDONE must arrive first)")
+                            else:
+                                print("Unknown message format:", received_dict)
+                        except json.JSONDecodeError as e:
+                            print(f"Error decoding received JSON: {e}")
+                    else:
+                        print("No data received.")
+                except Exception as e:
+                    print(f"Error receiving net test JSON data: {e}")
+                print(f"Current save path: {save_path}")
 
 # Function to receive system metrics and store them in InfluxDB
-def receive_metrics():
+def handle_system_metrics_server():
     client = InfluxDBClient(INFLUXDB_HOST, INFLUXDB_PORT, INFLUXDB_USER, INFLUXDB_PASSWORD, INFLUXDB_DB)
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((HOST_IP, SYSINFO_PORT))
@@ -249,25 +242,12 @@ def receive_metrics():
                     for i in range(4):
                         core_key = f"core_{i}_usage"
                         usage = float(system_info["per_core_usage"].get(core_key, 0))
-                        per_core_usage_data[f"per_core_usage{i}"] = usage
+                        per_core_usage_data[f"per_core_usage_RDB{i}"] = usage
                         total_cpu_usage += usage*0.25
                     per_core_freq_data = {
-                        f"per_core_freq{i}": float(system_info["per_core_freq"].get(f"core_{i}_frequency", 0))
+                        f"per_core_freq_RDB{i}": float(system_info["per_core_freq"].get(f"core_{i}_frequency", 0))
                         for i in range(4)
                     }
-                    # Network data
-                    network_data = {}
-                    network_info = system_info.get("network", {})
-
-                    for iface_name, iface_stats in network_info.items():
-                        for stat_name, value in iface_stats.items():
-                            # Create a field like enp2s0_upload_speed, enp1s0f1_bytes_recv, etc.
-                            field_key = f"{iface_name}_{stat_name}"
-                            try:
-                                network_data[field_key] = float(value)
-                            except (ValueError, TypeError):
-                                # Skip if value is not convertible to float
-                                continue
                     per_ai_core_temp = {
                         f"ai_core_{i}_temp": float(system_info["ai_temps"].get(f"ai_core_{i}_temp", 0))
                         for i in range(4)
@@ -290,23 +270,41 @@ def receive_metrics():
                         f"ai_core_{i}_pwr": float(system_info["per_ai_core_pwrs"].get(f"ai_core_{i}_pwr", 0))
                         for i in range(4)
                     }
+                    # Network data
+                    network_data = {}
+                    network_info = system_info.get("network", {})
+
+                    for iface_name, iface_stats in network_info.items():
+                        for stat_name, value in iface_stats.items():
+                            # Create a field like enp2s0_upload_speed, enp1s0f1_bytes_recv, etc.
+                            field_key = f"{iface_name}_{stat_name}"
+                            try:
+                                network_data[field_key] = float(value)
+                            except (ValueError, TypeError):
+                                # Skip if value is not convertible to float
+                                continue
+
+                    # Prepare data for InfluxDB
                     json_body = [
                         {
                             "measurement": "system_metrics",
-                            "tags": {"host": client_address[0]},
+                            "tags": {
+                                "host": "RDB",
+                                "source": client_address[0]
+                            },
                             "fields": {
-                                "cpu_usage": total_cpu_usage,
-                                "memory_usage": float(system_info["memory_usage"]),
-                                "swap_usage": float(system_info["swap_usage"]),
-                                "sys_temp": system_info.get("sys_temp", 0.0),
-                                "uptime_seconds": float(system_info["uptime_seconds"]),
-                                "total_memory": float(system_info["total_memory"]),
-                                "total_swap": float(system_info["total_swap"]),
-                                "num_threads": int(system_info["num_threads"]),
-                                "cpu_power": float(system_info.get("cpu_power", 0.0)),
-                                "total_disk_usage": float(system_info.get("total_disk_usage", 0.0)),
-                                "total_disk_size": float(system_info.get("total_disk_size", 0.0)),
-                                "progress_update": float(system_info.get("progress_update", 0.0)),
+                                "cpu_usage_RDB": total_cpu_usage,
+                                "memory_usage_RDB": float(system_info["memory_usage"]),
+                                "swap_usage_RDB": float(system_info["swap_usage"]),
+                                "sys_temp_RDB": system_info.get("sys_temp", 0.0),
+                                "uptime_seconds_RDB": float(system_info["uptime_seconds"]),
+                                "total_memory_RDB": float(system_info["total_memory"]),
+                                "total_swap_RDB": float(system_info["total_swap"]),
+                                "num_threads_RDB": int(system_info["num_threads"]),
+                                "cpu_power_RDB": float(system_info.get("cpu_power", 0.0)),
+                                "total_disk_usage_RDB": float(system_info.get("total_disk_usage", 0.0)),
+                                "total_disk_size_RDB": float(system_info.get("total_disk_size", 0.0)),
+                                "progress_update_RDB": float(system_info.get("progress_update", 0.0)),
                                 **per_core_usage_data,
                                 **per_core_freq_data,
                                 **network_data,
@@ -320,7 +318,6 @@ def receive_metrics():
                             "time": int(time.time() * 1e9)  # Nanoseconds
                         }
                     ]
-
                     # Write data to InfluxDB
                     client.write_points(json_body)
                 except json.JSONDecodeError as e:
@@ -328,66 +325,345 @@ def receive_metrics():
 
         client_socket.close()
 
+def broadcast_to_clients(data):
+    """Broadcast data to all connected clients"""
+    # This could be implemented with WebSockets or Server-Sent Events
+    # For simplicity, we'll store the latest update and serve it via HTTP
+    global latest_small_obj_progress
+    latest_small_obj_progress = data
+
+# def start_server():
+#     global message, cphd_file_list, cphd_file_properties, tif_file_properties
+#     imageSaved = False
+#     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+#         server_socket.bind((HOST_IP, DATA_PORT))
+#         server_socket.listen(1)
+#         print(f"Listening for incoming image on {HOST_IP}:{DATA_PORT}...")
+
+#         while True:
+#             conn, addr = server_socket.accept()
+#             with conn:
+#                 print(f"Receiving data from {addr}")
+
+#                 # Check if message is related to an image
+#                 if message.startswith("RUN:") and imageSaved == False:
+#                     save_path = SAVE_PATH_TIF
+#                 elif message.startswith("NETRUN:"):
+#                     if DOCKER_INTERFACE_ID in message:
+#                         save_path = SAVE_PATH_IPERF_DOCKER
+#                     elif VIRTUAL_INTERFACE_ID in message:
+#                         save_path = SAVE_PATH_IPERF_VIRTUAL
+#                     else:
+#                         save_path = None
+#                 else:
+#                     save_path = None
+#                     imageSaved = False
+
+#                 print(f"Current save path: {save_path}")
+
+#                 if save_path == SAVE_PATH_TIF:
+#                     # Receive file size first
+#                     file_size = int.from_bytes(conn.recv(8), byteorder="big")
+#                     print(f"Expecting to receive {file_size} bytes...")
+
+#                     received_data = b""
+#                     while len(received_data) < file_size:
+#                         chunk = conn.recv(4096)
+#                         if not chunk:
+#                             break
+#                         received_data += chunk
+
+#                     if len(received_data) == file_size:
+#                         with open(save_path, "wb") as f:
+#                             f.write(received_data)
+#                         print(f"Image received and saved as {save_path} ({len(received_data)} bytes)")
+#                     else:
+#                         print(f"Error: Received {len(received_data)} bytes, expected {file_size} bytes")
+#                     imageSaved = True
+#                 elif save_path is not None and save_path != SAVE_PATH_TIF:
+#                     try:
+#                         # Read the incoming JSON data until the client closes the connection
+#                         received_data = b""
+#                         while True:
+#                             chunk = conn.recv(4096)
+#                             if not chunk:
+#                                 break  # Connection closed by client
+#                             received_data += chunk
+
+#                         # Decode and save
+#                         if received_data:
+#                             json_text = received_data.decode()
+#                             with open(save_path, "w") as f:
+#                                 f.write(json_text)
+#                             print(f"JSON file saved to: {save_path} ({len(received_data)} bytes)")
+
+#                         else:
+#                             print("No data received.")
+
+#                     except Exception as e:
+#                         print(f"Error receiving JSON file: {e}")
+#                 else:
+#                     data = conn.recv(4096).decode()
+#                     try:
+#                         received_data = json.loads(data)
+
+#                         # Check if it's a file size response
+#                         if "filename" in received_data and "size" in received_data:
+#                             file_name = received_data["filename"]
+#                             file_size_str = received_data["size"]
+#                             print(f"File '{file_name}' has a size of '{file_size_str}'.")
+#                             # Update the dictionary to store the formatted size
+#                             cphd_file_properties = received_data
+
+#                         # Check if it's a list of CPHD files
+#                         elif "cphd_files" in received_data:
+#                             cphd_file_list = received_data["cphd_files"]
+#                             print(f"Updated CPHD file list: {cphd_file_list}")
+
+#                         elif "tif_filename" in received_data:
+#                             file_name = received_data["tif_filename"]
+#                             file_size_str = received_data["size"]
+#                             print(f"File '{file_name}' has a size of '{file_size_str}'.")
+#                             # Update the dictionary to store the formatted size
+#                             tif_file_properties = received_data
+
+#                         else:
+#                             print(f"Received unknown data: {received_data}")
+
+#                         if "type" in received_data and received_data["type"].startswith("small_obj_detect"):
+#                             print(f"Small object detection update: {received_data}")
+#                             # Broadcast to all connected clients (like index grafana)
+#                             broadcast_to_clients(received_data)
+
+#                     except json.JSONDecodeError as e:
+#                         print(f"Error decoding received data: {e}")
+
+
+# # # Function to serve images over HTTP
+# # def run_http_server():
+# #     os.chdir(SAVE_DIR)
+# #     httpd = HTTPServer(("0.0.0.0", IMAGE_PORT), SimpleHTTPRequestHandler)
+# #     print(f"Serving images on port {IMAGE_PORT}...")
+# #     httpd.serve_forever()
+
+# # Override to suppress logging for specific status codes (200 and 404)
+# class CustomHTTPRequestHandler(SimpleHTTPRequestHandler):
+#     def log_message(self, format, *args):
+#         # Extract the status code from the format
+#         status_code = args[-2]  # The second-to-last argument is the status code
+        
+#         # Suppress logs for 404 status code (and 200 if needed)
+#         if status_code == "200" or status_code == "404":
+#             return  # Do not log the message
+        
+#         # Call the original log_message method for other status codes
+#         super().log_message(format, *args)
+
+# def run_http_server():
+#     # Set the working directory to serve files from
+#     os.chdir(SAVE_DIR)
+#     # Start the HTTP server with the custom request handler
+#     httpd = HTTPServer((HOST_IP, IMAGE_PORT), CustomHTTPRequestHandler)
+#     print(f"Serving images on port {IMAGE_PORT}...")
+#     httpd.serve_forever()
+
+# # Function to receive system metrics and store them in InfluxDB
+# def receive_metrics():
+#     client = InfluxDBClient(INFLUXDB_HOST, INFLUXDB_PORT, INFLUXDB_USER, INFLUXDB_PASSWORD, INFLUXDB_DB)
+#     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+#     server_socket.bind((HOST_IP, SYSINFO_PORT))
+#     server_socket.listen(1)
+
+#     print("System metrics server listening for connections...")
+    
+#     while True:
+#         client_socket, client_address = server_socket.accept()
+#         print(f"Connection established with {client_address}")
+
+#         buffer = ""
+#         while True:
+#             data = client_socket.recv(1024 * 10).decode()
+#             # print(data)
+#             if not data:
+#                 break
+
+#             buffer += data
+#             while "\n" in buffer:
+#                 message, buffer = buffer.split("\n", 1)
+#                 try:
+#                     system_info = json.loads(message)
+#                     total_cpu_usage = 0
+#                     # CPU metrics
+#                     per_core_usage_data = {}
+#                     for i in range(4):
+#                         core_key = f"core_{i}_usage"
+#                         usage = float(system_info["per_core_usage"].get(core_key, 0))
+#                         per_core_usage_data[f"per_core_usage{i}"] = usage
+#                         total_cpu_usage += usage*0.25
+#                     per_core_freq_data = {
+#                         f"per_core_freq{i}": float(system_info["per_core_freq"].get(f"core_{i}_frequency", 0))
+#                         for i in range(4)
+#                     }
+#                     # Network data
+#                     network_data = {}
+#                     network_info = system_info.get("network", {})
+
+#                     for iface_name, iface_stats in network_info.items():
+#                         for stat_name, value in iface_stats.items():
+#                             # Create a field like enp2s0_upload_speed, enp1s0f1_bytes_recv, etc.
+#                             field_key = f"{iface_name}_{stat_name}"
+#                             try:
+#                                 network_data[field_key] = float(value)
+#                             except (ValueError, TypeError):
+#                                 # Skip if value is not convertible to float
+#                                 continue
+#                     per_ai_core_temp = {
+#                         f"ai_core_{i}_temp": float(system_info["ai_temps"].get(f"ai_core_{i}_temp", 0))
+#                         for i in range(4)
+#                     }
+#                     per_ai_core_freq = {
+#                         f"ai_core_{i}_freq": float(system_info["ai_freqs"].get(f"ai_core_{i}_freq", 0))
+#                         for i in range(4)
+#                     }
+#                     total_ai_core_usage = 0
+#                     per_ai_core_usage = {}
+#                     for i in range(4):
+#                         ai_core_key = f"ai_core_{i}_usage"
+#                         ai_usage = float(system_info["ai_run_metrics"].get(ai_core_key, 0))
+#                         per_ai_core_usage[ai_core_key] = ai_usage
+#                         total_ai_core_usage += ai_usage*0.25
+
+#                     # print(total_ai_core_usage)
+#                     # Prepare data for InfluxDB
+#                     per_ai_core_pwr ={
+#                         f"ai_core_{i}_pwr": float(system_info["per_ai_core_pwrs"].get(f"ai_core_{i}_pwr", 0))
+#                         for i in range(4)
+#                     }
+#                     json_body = [
+#                         {
+#                             "measurement": "system_metrics",
+#                             "tags": {"host": client_address[0]},
+#                             "fields": {
+#                                 "cpu_usage": total_cpu_usage,
+#                                 "memory_usage": float(system_info["memory_usage"]),
+#                                 "swap_usage": float(system_info["swap_usage"]),
+#                                 "sys_temp": system_info.get("sys_temp", 0.0),
+#                                 "uptime_seconds": float(system_info["uptime_seconds"]),
+#                                 "total_memory": float(system_info["total_memory"]),
+#                                 "total_swap": float(system_info["total_swap"]),
+#                                 "num_threads": int(system_info["num_threads"]),
+#                                 "cpu_power": float(system_info.get("cpu_power", 0.0)),
+#                                 "total_disk_usage": float(system_info.get("total_disk_usage", 0.0)),
+#                                 "total_disk_size": float(system_info.get("total_disk_size", 0.0)),
+#                                 "progress_update": float(system_info.get("progress_update", 0.0)),
+#                                 **per_core_usage_data,
+#                                 **per_core_freq_data,
+#                                 **network_data,
+#                                 **per_ai_core_temp,
+#                                 **per_ai_core_freq,
+#                                 "ai_total_pwr": float(system_info["ai_total_pwr"]),
+#                                 **per_ai_core_usage,
+#                                 "total_ai_usage": total_ai_core_usage,
+#                                 **per_ai_core_pwr
+#                             },
+#                             "time": int(time.time() * 1e9)  # Nanoseconds
+#                         }
+#                     ]
+
+#                     # Write data to InfluxDB
+#                     client.write_points(json_body)
+#                 except json.JSONDecodeError as e:
+#                     print(f"JSON Decode Error: {e}. Skipping message.")
+
+#         client_socket.close()
+
+# # Flask route to send messages to target system
+# @app.route('/send_message', methods=['POST'])
+# def send_message():
+#     global message, netTestDuration
+#     global latest_small_obj_progress
+
+#     data = request.get_json()
+#     message = data.get("message", "Default message from host")
+#     print(message)
+
+#     if message == "3":
+#         return delete_all_files()
+#     elif message.startswith("RUN:"):
+#         global tif_file_properties
+#         # clear the database for new data
+#         tif_file_properties = []
+#     elif message.startswith("NETRUN:"):
+#         netTestDuration = message.split(":", 1)[1]
+#         if FM_INTERFACE_ID in message:
+#             # Start iperf3 in a separate thread
+#             start_iperf_thread(SAVE_PATH_IPERF_FM)
+#             return jsonify({"status": "iperf3 test started"}), 200
+#         elif LOCAL_INTERFACE_ID in message:
+#             # Start iperf3 in a separate thread
+#             start_iperf_thread(SAVE_PATH_IPERF_LOCAL)
+#             return jsonify({"status": "iperf3 test started"}), 200
+#         elif DOCKER_INTERFACE_ID in message:
+#             return forward_message_to_target(message)
+#         elif VIRTUAL_INTERFACE_ID in message:
+#             return forward_message_to_target(message)
+#     elif message.startswith("BW:"):
+#         if FM_INTERFACE_ID in message:
+#             parts = message.split(":")
+#             if len(parts) != 3:
+#                 print("Invalid BW message format")
+#                 return
+#             _, bwValue, target = parts  # bwValue = "1000", target = "LwEthOnb"
+#             target = COMP_ETH_PORT_INTERFACE_ID
+#             # Construct the ethtool command
+#             command = ["sudo", "ethtool", "-s", target, "speed", bwValue, "autoneg", "off"]
+#             print(f"Executing command: {' '.join(command)}")
+#             # Run the command and capture stdout and stderr
+#             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+#             # Capture output and error streams
+#             stdout, stderr = process.communicate()
+
+#             # Check the return code
+#             if process.returncode == 0:
+#                 print("Command executed successfully.")
+#                 if stdout:
+#                     print("Output:", stdout)
+#                 else:
+#                     print("No output from the command.")
+#                 return jsonify({"status": "success", "message": "Bandwidth updated successfully"}), 200
+#             else:
+#                 print(f"Error executing command. Return code: {process.returncode}")
+#                 if stderr:
+#                     print("Error message:", stderr)
+#                 return jsonify({"status": "error", "message": stderr.strip()}), 500
+            
+#     if message == "run_small_obj_detect":
+#         # Clear previous progress
+#         latest_small_obj_progress = {}
+#         return forward_message_to_target(message)
+#     elif message == "clear_small_obj_detect":
+#         latest_small_obj_progress = {}
+#         return jsonify({"status": "cleared"})
+
+#     return forward_message_to_target(message)   
+
 # Flask route to send messages to target system
 @app.route('/send_message', methods=['POST'])
 def send_message():
-    global message, netTestDuration
-    global latest_small_obj_progress
-
+    global message, netTestDuration, flag_get_image, latest_small_obj_progress
     data = request.get_json()
     message = data.get("message", "Default message from host")
     print(message)
 
     if message == "3":
-        return delete_all_files()
+        flag_get_image = False
+        delete_all_files()
     elif message.startswith("RUN:"):
         global tif_file_properties
+        flag_get_image = True
         # clear the database for new data
         tif_file_properties = []
-    elif message.startswith("NETRUN:"):
-        netTestDuration = message.split(":", 1)[1]
-        if FM_INTERFACE_ID in message:
-            # Start iperf3 in a separate thread
-            start_iperf_thread(SAVE_PATH_IPERF_FM)
-            return jsonify({"status": "iperf3 test started"}), 200
-        elif LOCAL_INTERFACE_ID in message:
-            # Start iperf3 in a separate thread
-            start_iperf_thread(SAVE_PATH_IPERF_LOCAL)
-            return jsonify({"status": "iperf3 test started"}), 200
-        elif DOCKER_INTERFACE_ID in message:
-            return forward_message_to_target(message)
-        elif VIRTUAL_INTERFACE_ID in message:
-            return forward_message_to_target(message)
-    elif message.startswith("BW:"):
-        if FM_INTERFACE_ID in message:
-            parts = message.split(":")
-            if len(parts) != 3:
-                print("Invalid BW message format")
-                return
-            _, bwValue, target = parts  # bwValue = "1000", target = "LwEthOnb"
-            target = COMP_ETH_PORT_INTERFACE_ID
-            # Construct the ethtool command
-            command = ["sudo", "ethtool", "-s", target, "speed", bwValue, "autoneg", "off"]
-            print(f"Executing command: {' '.join(command)}")
-            # Run the command and capture stdout and stderr
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            # Capture output and error streams
-            stdout, stderr = process.communicate()
-
-            # Check the return code
-            if process.returncode == 0:
-                print("Command executed successfully.")
-                if stdout:
-                    print("Output:", stdout)
-                else:
-                    print("No output from the command.")
-                return jsonify({"status": "success", "message": "Bandwidth updated successfully"}), 200
-            else:
-                print(f"Error executing command. Return code: {process.returncode}")
-                if stderr:
-                    print("Error message:", stderr)
-                return jsonify({"status": "error", "message": stderr.strip()}), 500
-            
+    
     if message == "run_small_obj_detect":
         # Clear previous progress
         latest_small_obj_progress = {}
@@ -396,8 +672,8 @@ def send_message():
         latest_small_obj_progress = {}
         return jsonify({"status": "cleared"})
 
-    return forward_message_to_target(message)   
-    
+    return forward_message_to_target(message)  
+
 def delete_all_files():
     """Deletes all files in the SAVE_DIR directory."""
     global cphd_file_list, cphd_file_properties, tif_file_properties
@@ -420,15 +696,52 @@ def delete_all_files():
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
     
+# def forward_message_to_target(message):
+#     """Sends a message to the target system via a socket."""
+#     try:
+#         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+#             client_socket.connect((RDB_IP, RDB_PORT))
+#             client_socket.sendall(message.encode())
+#         return jsonify({"status": "success", "message": message})
+#     except Exception as e:
+#         return jsonify({"status": "error", "error": str(e)}), 500
+
 def forward_message_to_target(message):
-    """Sends a message to the target system via a socket."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
-            client_socket.connect((TARGET_IP, TARGET_PORT))
-            client_socket.sendall(message.encode())
-        return jsonify({"status": "success", "message": message})
-    except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
+    # define our send‐targets
+    targets = [
+        ("RDB", RDB_IP, RDB_PORT)
+    ]
+    if message.startswith("BW:"):
+        targets.append(("HPC", HPC_IP, HPC_PORT))
+    elif message.startswith("NETRUN:"):
+        targets = [
+            ("HPC", HPC_IP, HPC_PORT)
+        ]
+
+    results = {}
+    # send to each target and capture success/error
+    for name, ip, port in targets:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+                client_socket.connect((ip, port))
+                client_socket.sendall(message.encode())
+            results[name] = "success"
+        except Exception as e:
+            results[name] = f"error: {e}"
+
+    # if all succeeded, 200; otherwise 500
+    if all(status == "success" for status in results.values()):
+        return jsonify({
+            "status": "success",
+            "message": message,
+            "results": results
+        })
+    else:
+        return jsonify({
+            "status": "error",
+            "message": message,
+            "results": results
+        }), 500
     
 @app.route('/get_cphd_files', methods=['GET'])
 def get_cphd_files():
@@ -451,64 +764,64 @@ def serve_image(filename):
     """Serve images from the SAVE_DIR directory."""
     return send_from_directory(SAVE_DIR, filename)
 
-# Function to run iperf3 and capture the results
-def run_iperf3(file_path):
-    global netTestDuration
+# # Function to run iperf3 and capture the results
+# def run_iperf3(file_path):
+#     global netTestDuration
 
-    def run_test(reverse=False):
-        # Define the command with or without reverse mode
-        command = ["iperf3", "-c", TARGET_IP, "-u", "-b", "100G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
-        if reverse:
-            command.append("-R")  # Add reverse flag for upload test
+#     def run_test(reverse=False):
+#         # Define the command with or without reverse mode
+#         command = ["iperf3", "-c", RDB_IP, "-u", "-b", "100G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
+#         if reverse:
+#             command.append("-R")  # Add reverse flag for upload test
 
-        print(f"Executing command: {' '.join(command)}")
-        # Run the command
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        stdout, stderr = process.communicate()
+#         print(f"Executing command: {' '.join(command)}")
+#         # Run the command
+#         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+#         stdout, stderr = process.communicate()
 
-        if process.returncode == 0:
-            # Convert JSON output to a Python dictionary
-            iperf3_result = json.loads(stdout)
-            end_data = iperf3_result.get("end", {})
+#         if process.returncode == 0:
+#             # Convert JSON output to a Python dictionary
+#             iperf3_result = json.loads(stdout)
+#             end_data = iperf3_result.get("end", {})
 
-            return end_data
-        else:
-            print(f"Error running iperf3 ({'upload' if reverse else 'download'}): {stderr}")
-            return None
+#             return end_data
+#         else:
+#             print(f"Error running iperf3 ({'upload' if reverse else 'download'}): {stderr}")
+#             return None
 
-    # Run download test
-    down_result = run_test(reverse=False)
-    time.sleep(2)
-    # Run upload test
-    up_result = run_test(reverse=True)
+#     # Run download test
+#     down_result = run_test(reverse=False)
+#     time.sleep(2)
+#     # Run upload test
+#     up_result = run_test(reverse=True)
 
-    if down_result or up_result:
-        # Load existing results if the file exists
-        try:
-            with open(file_path, "r") as file:
-                existing_data = json.load(file)
-        except (FileNotFoundError, json.JSONDecodeError):
-            existing_data = {}
+#     if down_result or up_result:
+#         # Load existing results if the file exists
+#         try:
+#             with open(file_path, "r") as file:
+#                 existing_data = json.load(file)
+#         except (FileNotFoundError, json.JSONDecodeError):
+#             existing_data = {}
 
-        # Add results with appropriate tags
-        if down_result:
-            existing_data["down"] = down_result
-        if up_result:
-            existing_data["up"] = up_result
+#         # Add results with appropriate tags
+#         if down_result:
+#             existing_data["down"] = down_result
+#         if up_result:
+#             existing_data["up"] = up_result
 
-        # Save the updated results back to the file
-        with open(file_path, "w") as json_file:
-            json.dump(existing_data, json_file, indent=4)
+#         # Save the updated results back to the file
+#         with open(file_path, "w") as json_file:
+#             json.dump(existing_data, json_file, indent=4)
 
-        print(f"Results saved to {file_path}")
-    else:
-        print("No valid results to save.")
+#         print(f"Results saved to {file_path}")
+#     else:
+#         print("No valid results to save.")
 
 
-# Function to start the iperf3 test in a background thread
-def start_iperf_thread(file_path):
-    iperf_thread = threading.Thread(target=run_iperf3, args=(file_path,), daemon=True)
-    iperf_thread.start()
+# # Function to start the iperf3 test in a background thread
+# def start_iperf_thread(file_path):
+#     iperf_thread = threading.Thread(target=run_iperf3, args=(file_path,), daemon=True)
+#     iperf_thread.start()
 
 # Flask route to fetch and stream the iperf3_end_result.json file
 @app.route('/iperf3/lw_eth_onb_results', methods=['GET'])
@@ -634,13 +947,17 @@ def validate_image(image_type, filename):
         return jsonify({"valid": False, "error": str(e)}), 500
 
 # Function to run Flask server
+# def run_flask_server():
+#     app.run(host="0.0.0.0", port=FLASK_PORT, debug=True, use_reloader=False)
+
 def run_flask_server():
+    print(f"Running FLASK server on {HOST_IP}:{FLASK_PORT}...")
     app.run(host="0.0.0.0", port=FLASK_PORT, debug=True, use_reloader=False)
 
 # Start all services in separate threads
-threading.Thread(target=start_server, daemon=True).start()
-threading.Thread(target=run_http_server, daemon=True).start()
-threading.Thread(target=receive_metrics, daemon=True).start()
+threading.Thread(target=handle_image_process_server, daemon=True).start()
+threading.Thread(target=handle_net_test_server, daemon=True).start()
+threading.Thread(target=handle_system_metrics_server, daemon=True).start()
 threading.Thread(target=run_flask_server, daemon=True).start()
 
 # Keep main thread alive
