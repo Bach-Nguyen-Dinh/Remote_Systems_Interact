@@ -22,11 +22,13 @@ RESIZED_IMAGE_PATH = "/home/user/demo/optimized_image.webp"  # Temporary resized
 DEMO_PATH = "/home/user/demo/"
 
 HOST_IP = "10.42.0.1"
-SYSINFO_PORT = 12345
-IMAGE_PORT = 55555
+SYSINFO_PORT = 12346  # Port for system metrics
+NETTEST_PORT = 29103
+IMAGE_PORT = 55556
+FLASK_PORT = 5001
 
 LISTEN_IP = "0.0.0.0"
-LISTEN_PORT = 54321
+LISTEN_PORT = 54322
 SOCK_TOUT = 3
 
 AI_IP = "127.0.0.1"
@@ -34,21 +36,27 @@ AI_PORT = 8888
 RECV_BUFFER = 65536    # 64KB, should be enough for typical JSON payloads
 SOCKET_TIMEOUT = 1.0   # seconds - allows clean shutdown checks
 
-# RDB_IP = "169.254.207.123"
+HPC_IP = "10.42.1.1"
 
 DOCKER_INTERFACE_ID = "docker0"
 FM_INTERFACE_ID = "fm1-mac3"
 LOCAL_INTERFACE_ID = "lo"
 VIRTUAL_INTERFACE_ID = "virbr0"
 
-SAVE_PATH_IPERF_LW_ETH_ADT = "/home/root/iperf3_end_result_LwEthAdt.json"
-SAVE_PATH_IPERF_UP_ETH_ADT = "/home/root/iperf3_end_result_UpEthAdt.json"
+# SAVE_PATH_IPERF_LW_ETH_ADT = "/home/root/iperf3_end_result_LwEthAdt.json"
+# SAVE_PATH_IPERF_UP_ETH_ADT = "/home/root/iperf3_end_result_UpEthAdt.json"
+
+CURR_DIR = os.path.dirname(os.path.abspath(__file__))
+SAVE_PATH_IPERF_LW_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_LwEthAdt.json")
+SAVE_PATH_IPERF_UP_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_UpEthAdt.json")
 
 AI_METRIC_PATH = "/home/user/ai_tool/status"
 
 # Global variable
 progress_update = 0.0
+global_pwr_var = 1000
 cphd_files = {}
+BW = 1000
 
 small_obj_detect_running = False
 current_output_count = 0
@@ -90,34 +98,12 @@ def listener_ai_run():
     sock.close()
     print("AI run listener stopped")
 
-# def ai_metrics():
-#     ai_run_metrics = {
-#             "ai_core_1_usage": 0.0,
-#             "ai_core_2_usage": 0.0,
-#             "ai_core_3_usage": 0.0,
-#             "ai_core_4_usage": 0.0
-#         }
-#     if ai_run_metrics_raw:
-#         ai_run_metrics_decode = ai_run_metrics_raw.decode("utf-8")
-#         ai_run_metrics_data = json.load(ai_run_metrics_decode)
-#         ai_run_metrics = {}
-#         if "0" in ai_run_metrics_data:
-#             ai_run_metrics["ai_core_1_usage"] = ai_run_metrics_data["0"]
-#         if "1" in ai_run_metrics_data:
-#             ai_run_metrics["ai_core_2_usage"] = ai_run_metrics_data["1"]
-#         if "2" in ai_run_metrics_data:
-#             ai_run_metrics["ai_core_3_usage"] = ai_run_metrics_data["2"]
-#         if "3" in ai_run_metrics_data:
-#             ai_run_metrics["ai_core_4_usage"] = ai_run_metrics_data["3"]
-    
-#     return ai_run_metrics
-
 def send_progress_update(data):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.connect((HOST_IP, IMAGE_PORT))
             sock.sendall(json.dumps(data).encode())
-        print(f"Progress update sent: {data}")
+        # print(f"Progress update sent: {data}")
     except Exception as e:
         print(f"Error sending progress update: {e}")
 
@@ -341,7 +327,6 @@ def process_cphd_file(file_path):
 
         tif_size_str = f"{tif_size / 1_000_000:.2f} MB" if tif_size >= 1_000_000 else f"{tif_size} bytes"
 
-
         response = {
             "tif_filename": tif_files[0],
             "size": tif_size_str,
@@ -364,102 +349,182 @@ def process_cphd_file(file_path):
         #     # send the furhter processed image
         #     handle_image_sending(png_path)
 
+def handle_netrun_test(netTestDuration, netTestInterface):
+    global BW
+    if netTestInterface == FM_INTERFACE_ID:
+        filePath = SAVE_PATH_IPERF_LW_ETH_ADT
+        netTest_clientIP = HPC_IP
+
+    def run_test(reverse=False):
+        if BW == 10000:
+            command = ["iperf3", "-c", netTest_clientIP, "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
+        else:
+            command = ["iperf3", "-c", netTest_clientIP, "-u", "-b", "20G", "-t", netTestDuration, "-P", "4", "-i", "1", "-J"]
+        if reverse:
+            command.append("-R")
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout, stderr = process.communicate()
+        if process.returncode == 0:
+            return json.loads(stdout).get("end", {})
+        else:
+            print(f"Error running iperf3 ({'upload' if reverse else 'download'}): {stderr}")
+            return None
+
+    down_result = run_test(reverse=True)
+    time.sleep(2)
+    up_result = run_test(reverse=False)
+
+    if down_result or up_result:
+        try:
+            with open(filePath, "r") as file:
+                existing_data = json.load(file)
+        except (FileNotFoundError, json.JSONDecodeError):
+            existing_data = {}
+
+        if down_result:
+            existing_data["down"] = down_result
+        if up_result:
+            existing_data["up"] = up_result
+
+        with open(filePath, "w") as json_file:
+            json.dump(existing_data, json_file, indent=4)
+
+        print(f"Results saved to {filePath}")
+
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+                client_socket.connect((HOST_IP, NETTEST_PORT))
+                client_socket.sendall(json.dumps({"NETDONE":netTestInterface}).encode())
+        except Exception as e:
+            print(f"Error sending NETDONE signal over socket: {e}")
+
+        try:
+            with open(filePath, "r") as json_file:
+                json_data = json.load(json_file)
+            response = {"data": json_data}
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as data_sock:
+                data_sock.connect((HOST_IP, NETTEST_PORT))
+                data_sock.sendall(json.dumps(response).encode())
+            print(f"JSON data sent to {HOST_IP}:{NETTEST_PORT}")
+        except Exception as e:
+            print(f"Error sending JSON data over socket: {e}")
+    else:
+        print("No valid results to save.")
+
 def listen_for_messages():
-    global progress_update
-
+    global progress_update, BW
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Allow reuse
-    server_socket.settimeout(1.0)  # Add timeout for accept()
+    server_socket.bind((LISTEN_IP, LISTEN_PORT))
+    server_socket.listen(1)
     
-    try:
-        server_socket.bind((LISTEN_IP, LISTEN_PORT))
-        server_socket.listen(1)
+    print(f"Listening for messages on {LISTEN_IP}:{LISTEN_PORT}...")
+    
+    while True:
+        conn, addr = server_socket.accept()
+        with conn:
+            print(f"Connection received from {addr}")
+            message = conn.recv(1024).decode().strip()
+            if message:
+                print(f"Message from host: {message}")
+                # if message == "2":
+                #     threading.Thread(target=handle_image_sending, args=(IMAGE_PATH_1,), daemon=True).start()
+                # elif message == "1":
+                #     send_image(IMAGE_PATH_2)
+                if message == "3":
+                    progress_update = 0.0
+                elif message == "4":
+                    send_cphd_files_list()  # Send CPHD files back to host
+                elif message.startswith("SIZE:"):
+                    progress_update = 0.0
+                    filename = message.split(":", 1)[1]
+                    file_path = cphd_files.get(filename)
+                    
+                    if file_path and os.path.exists(file_path):
+                        file_size = os.path.getsize(file_path)
+                        metadata = get_metadata_from_json(os.path.dirname(file_path))
+                        
+                        file_size_str = f"{file_size / 1_000_000:.2f} MB" if file_size >= 1_000_000 else f"{file_size} bytes"
+                        
+                        response = {"filename": filename, "size": file_size_str, "metadata": metadata}
+                        print(f"Response: {response}")
+                        
+                        try:
+                            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as size_sock:
+                                size_sock.connect((HOST_IP, IMAGE_PORT))
+                                size_sock.sendall(json.dumps(response).encode())
+                        except Exception as e:
+                            print(f"Error sending file size and metadata: {e}")
+                elif message.startswith("RUN:"):
+                    filename = message.split(":", 1)[1]
+                    file_path = cphd_files.get(filename)
+                    
+                    if file_path and os.path.exists(file_path):
+                        threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
+                # elif message.startswith("NETRUN:"):
+                #     try:
+                #         print("Run net test")  # Debug print
+                #         parts = message.strip().split(":", 2)
+                #         if len(parts) != 3:
+                #             raise ValueError(f"Unexpected NETRUN format: {message}")
+                        
+                #         _, netTestDuration, netTestInterface = parts
+                #         print(f"Parsed: duration={netTestDuration}, interface={netTestInterface}")  # More debug info
+                #         threading.Thread(target=handle_netrun_test, args=(netTestDuration, netTestInterface,), daemon=True).start()
+                #     except Exception as e:
+                #         print(f"Error in NETRUN handler: {e}")
+                elif message.startswith("BW"):
+                    try:
+                        BW = int(message.split(":")[1])
+                    except ValueError:
+                        print("Invalid BW format, expected integer after BW:")
 
-        print(f"Listening for messages on {LISTEN_IP}:{LISTEN_PORT}...")
+                elif message == "run_small_obj_detect":
+                    threading.Thread(target=run_small_object_detection, daemon=True).start()
 
-        while not stop_event.is_set():
-            try:
-                conn, addr = server_socket.accept()  # This can timeout
-                conn.settimeout(2.0)  # Add timeout for recv()
-                with conn:
-                    print(f"Connection received from {addr}")
-                    message = conn.recv(1024).decode().strip()
-                    if message:
-                        print(f"Message from host: {message}")
-                        # Your existing message handling code...
-                        if message == "3":
-                            progress_update = 0.0
-                        elif message == "4":
-                            send_cphd_files_list()  # Send CPHD files back to host
-                        elif message.startswith("SIZE:"):
-                            progress_update = 0.0
-                            filename = message.split(":", 1)[1]
-                            file_path = cphd_files.get(filename)
-                            
-                            if file_path and os.path.exists(file_path):
-                                file_size = os.path.getsize(file_path)
-                                metadata = get_metadata_from_json(os.path.dirname(file_path))
-                                
-                                file_size_str = f"{file_size / 1_000_000:.2f} MB" if file_size >= 1_000_000 else f"{file_size} bytes"
-                                
-                                response = {"filename": filename, "size": file_size_str, "metadata": metadata}
-                                print(f"Response: {response}")
-                                
-                                try:
-                                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as size_sock:
-                                        size_sock.connect((HOST_IP, IMAGE_PORT))
-                                        size_sock.sendall(json.dumps(response).encode())
-                                except Exception as e:
-                                    print(f"Error sending file size and metadata: {e}")
-                        elif message.startswith("RUN:"):
-                            filename = message.split(":", 1)[1]
-                            file_path = cphd_files.get(filename)
-                            
-                            if file_path and os.path.exists(file_path):
-                                threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
-
-                        elif message == "run_small_obj_detect":
-                            threading.Thread(target=run_small_object_detection, daemon=True).start()
-                            
-            except socket.timeout:
-                # This is expected and allows checking stop_event
-                continue
-            except Exception as e:
-                if not stop_event.is_set():
-                    print(f"Error in message listener: {e}")
-                break
+# # Function to run the iperf3 server
+# def run_iperf3_server():
+#     try:
+#         # Start iperf3 as subprocess instead of blocking call
+#         process = subprocess.Popen(["iperf3", "-s"], 
+#                                  stdout=subprocess.DEVNULL, 
+#                                  stderr=subprocess.DEVNULL)
+        
+#         # Wait for stop event while process runs
+#         while not stop_event.is_set() and process.poll() is None:
+#             time.sleep(0.5)
+            
+#         # Terminate when stopping
+#         if process.poll() is None:
+#             print("Terminating iperf3 server...")
+#             process.terminate()
+#             try:
+#                 process.wait(timeout=5)
+#             except subprocess.TimeoutExpired:
+#                 process.kill()
                 
-    finally:
-        server_socket.close()
-        print("Message listener stopped")
+#     except FileNotFoundError:
+#         print("iperf3 command not found. Please ensure iperf3 is installed.")
+#     except Exception as e:
+#         print(f"Error running iperf3 server: {e}")
+#     finally:
+#         print("iperf3 server stopped")
 
 # Function to run the iperf3 server
 def run_iperf3_server():
     try:
-        # Start iperf3 as subprocess instead of blocking call
-        process = subprocess.Popen(["iperf3", "-s"], 
-                                 stdout=subprocess.DEVNULL, 
-                                 stderr=subprocess.DEVNULL)
-        
-        # Wait for stop event while process runs
-        while not stop_event.is_set() and process.poll() is None:
-            time.sleep(0.5)
-            
-        # Terminate when stopping
-        if process.poll() is None:
-            print("Terminating iperf3 server...")
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                
+        # Start iperf3 server as a subprocess
+        subprocess.run(["iperf3", "-s"], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error running iperf3 server: {e}")
     except FileNotFoundError:
         print("iperf3 command not found. Please ensure iperf3 is installed.")
-    except Exception as e:
-        print(f"Error running iperf3 server: {e}")
-    finally:
-        print("iperf3 server stopped")
+
+def read_rapl_energy():
+    try:
+        with open("/sys/class/powercap/intel-rapl:0/energy_uj", "r") as f:
+            return int(f.read().strip())  # Energy in microjoules
+    except FileNotFoundError:
+        return None
 
 def get_power_from_sensor(sensor_name):
     try:
@@ -500,7 +565,8 @@ def get_ai_metrics():
         "ai_core_1_usage": 0.0,
         "ai_core_2_usage": 0.0,
         "ai_core_3_usage": 0.0,
-        "ai_core_4_usage": 0.0
+        "ai_core_4_usage": 0.0,
+        "active_core": 4,
     }
 
     # Get AI temperature and frequency metrics (your existing code)
@@ -546,21 +612,22 @@ def get_ai_metrics():
                 
                 # Reset the dictionary before updating
                 ai_run_metrics = {
+                    "ai_core_0_usage": 0.0,
                     "ai_core_1_usage": 0.0,
                     "ai_core_2_usage": 0.0,
                     "ai_core_3_usage": 0.0,
-                    "ai_core_4_usage": 0.0
+                    "active_core": 4,
                 }
                 
                 # Update with received data
                 if "0" in ai_run_metrics_data:
-                    ai_run_metrics["ai_core_1_usage"] = ai_run_metrics_data["0"]
+                    ai_run_metrics["ai_core_0_usage"], ai_run_metrics["active_core"] = ai_run_metrics_data["0"], 1
                 if "1" in ai_run_metrics_data:
-                    ai_run_metrics["ai_core_2_usage"] = ai_run_metrics_data["1"]
+                    ai_run_metrics["ai_core_1_usage"], ai_run_metrics["active_core"] = ai_run_metrics_data["1"], 2
                 if "2" in ai_run_metrics_data:
-                    ai_run_metrics["ai_core_3_usage"] = ai_run_metrics_data["2"]
+                    ai_run_metrics["ai_core_2_usage"], ai_run_metrics["active_core"] = ai_run_metrics_data["2"], 3
                 if "3" in ai_run_metrics_data:
-                    ai_run_metrics["ai_core_4_usage"] = ai_run_metrics_data["3"]
+                    ai_run_metrics["ai_core_3_usage"], ai_run_metrics["active_core"] = ai_run_metrics_data["3"], 4
                 
             except (UnicodeDecodeError, json.JSONDecodeError) as e:
                 print(f"Error parsing AI run metrics: {e}")
@@ -570,7 +637,7 @@ def get_ai_metrics():
     return ai_temp, ai_freq, ai_run_metrics
 
 def get_system_info():
-    global ai_run_metrics_raw
+    global ai_run_metrics_raw,  global_pwr_var
 
     per_core_usage = psutil.cpu_percent(interval=0.1, percpu=True)
     core_usage = {f"core_{i}_usage": usage for i, usage in enumerate(per_core_usage)}
@@ -637,11 +704,33 @@ def get_system_info():
     cpu_power = get_power_from_sensor("ina220-i2c-0-40")
     # print(f"CPU Power: {cpu_power} W" if cpu_power is not None else "CPU Power: N/A")
 
+  
     ai_total_pwr = get_power_from_sensor("ina220-i2c-0-44")
+    ai_total_pwr2 = ai_total_pwr
+    ratio_power_p = ai_total_pwr/4
+
+    if ratio_power_p < global_pwr_var:
+        global_pwr_var = ratio_power_p
+
+    ai_total_pwr = ai_total_pwr - global_pwr_var
+
 
     ai_temps, ai_freqs, ai_run_metrics = get_ai_metrics()
     # print(ai_temps)
     # print(ai_run_metrics)
+    
+    ai_core_power = {
+        "ai_core_0_pwr": global_pwr_var,
+        "ai_core_1_pwr": global_pwr_var,
+        "ai_core_2_pwr": global_pwr_var,
+        "ai_core_3_pwr": global_pwr_var,
+    }
+
+    # print(f"ai_run_metrics {ai_run_metrics}")
+    for i in range(ai_run_metrics["active_core"]):
+        index_ =  f"ai_core_{i}_pwr"
+        ai_core_power[index_] = ai_total_pwr/ai_run_metrics["active_core"]
+
     ai_run_metrics_raw = None
 
     system_info = {
@@ -662,8 +751,9 @@ def get_system_info():
         "progress_update": progress_update,
         "ai_temps": ai_temps,
         "ai_freqs": ai_freqs,
-        "ai_total_pwr": ai_total_pwr,
-        "ai_run_metrics": ai_run_metrics
+        "ai_total_pwr": ai_total_pwr2,
+        "ai_run_metrics": ai_run_metrics,
+        "per_ai_core_pwrs": ai_core_power
     }
     # print(f"System Info: {system_info}")
     
