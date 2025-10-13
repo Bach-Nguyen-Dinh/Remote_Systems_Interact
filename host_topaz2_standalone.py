@@ -16,7 +16,7 @@ DATA_PORT = 55555
 IMAGE_PORT = 8080
 FLASK_PORT = 5001
 
-TARGET_IP = "10.42.0.6"  # Target system IP
+TARGET_IP = "10.42.1.7"  # Target system IP
 TARGET_PORT = 54321       # Target system port
 
 INFLUXDB_HOST = "localhost"
@@ -290,6 +290,14 @@ def receive_metrics():
                         f"ai_core_{i}_pwr": float(system_info["per_ai_core_pwrs"].get(f"ai_core_{i}_pwr", 0))
                         for i in range(4)
                     }
+                    imu_data = {
+                        "accel_x": float(system_info["imu_data"].get("accel_x", 0.0) or 0.0),
+                        "accel_y": float(system_info["imu_data"].get("accel_y", 0.0) or 0.0),
+                        "accel_z": float(system_info["imu_data"].get("accel_z", 0.0) or 0.0),
+                        "gyro_x": float(system_info["imu_data"].get("gyro_x", 0.0) or 0.0),
+                        "gyro_y": float(system_info["imu_data"].get("gyro_y", 0.0) or 0.0),
+                        "gyro_z": float(system_info["imu_data"].get("gyro_z", 0.0) or 0.0),
+                    }
                     json_body = [
                         {
                             "measurement": "system_metrics",
@@ -315,7 +323,8 @@ def receive_metrics():
                                 "ai_total_pwr": float(system_info["ai_total_pwr"]),
                                 **per_ai_core_usage,
                                 "total_ai_usage": total_ai_core_usage,
-                                **per_ai_core_pwr
+                                **per_ai_core_pwr,
+                                **imu_data
                             },
                             "time": int(time.time() * 1e9)  # Nanoseconds
                         }

@@ -270,6 +270,17 @@ def handle_system_metrics_server():
                         f"ai_core_{i}_pwr": float(system_info["per_ai_core_pwrs"].get(f"ai_core_{i}_pwr", 0))
                         for i in range(4)
                     }
+
+                    imu_data = {
+                        "accel_x": float(system_info["imu_data"].get("accel_x", 0.0) or 0.0),
+                        "accel_y": float(system_info["imu_data"].get("accel_y", 0.0) or 0.0),
+                        "accel_z": float(system_info["imu_data"].get("accel_z", 0.0) or 0.0),
+                        "gyro_x": float(system_info["imu_data"].get("gyro_x", 0.0) or 0.0),
+                        "gyro_y": float(system_info["imu_data"].get("gyro_y", 0.0) or 0.0),
+                        "gyro_z": float(system_info["imu_data"].get("gyro_z", 0.0) or 0.0),
+                    }
+                    # print(imu_data)
+
                     # Network data
                     network_data = {}
                     network_info = system_info.get("network", {})
@@ -313,7 +324,8 @@ def handle_system_metrics_server():
                                 "ai_total_pwr": float(system_info["ai_total_pwr"]),
                                 **per_ai_core_usage,
                                 "total_ai_usage": total_ai_core_usage,
-                                **per_ai_core_pwr
+                                **per_ai_core_pwr,
+                                **imu_data
                             },
                             "time": int(time.time() * 1e9)  # Nanoseconds
                         }
