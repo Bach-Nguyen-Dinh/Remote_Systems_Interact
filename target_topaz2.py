@@ -526,6 +526,37 @@ def read_rapl_energy():
     except FileNotFoundError:
         return None
 
+IMU_EXECUTABLE_PATH = "/home/user/topaz_imu/iim42652"
+
+def get_imu_data():
+    try:
+        result = subprocess.run(
+            [IMU_EXECUTABLE_PATH],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        imu_data = {
+            "accel_x": 0.0, "accel_y": 0.0, "accel_z": 0.0,
+            "gyro_x": 0.0, "gyro_y": 0.0, "gyro_z": 0.0
+        }
+        for line in result.stdout.strip().splitlines():
+            parts = line.strip().split(':')
+            if len(parts) == 2:
+                key, val = parts[0].strip(), parts[1].strip()
+                key = key.lower().replace(' ', '_')  # e.g. "Accel X" → "accel_x"
+                try:
+                    imu_data[key] = float(val)
+                except ValueError:
+                    pass
+        return imu_data
+    except Exception as e:
+        print(f"IMU read error: {e}")
+        return {
+            "accel_x": 0.0, "accel_y": 0.0, "accel_z": 0.0,
+            "gyro_x": 0.0, "gyro_y": 0.0, "gyro_z": 0.0
+        }
+
 def get_power_from_sensor(sensor_name):
     try:
         # Run the sensors command
@@ -733,6 +764,9 @@ def get_system_info():
 
     ai_run_metrics_raw = None
 
+    imu_data = get_imu_data()
+    # print(imu_data)
+
     system_info = {
         "memory_usage": memory_usage,
         "total_memory": total_memory,
@@ -753,7 +787,8 @@ def get_system_info():
         "ai_freqs": ai_freqs,
         "ai_total_pwr": ai_total_pwr2,
         "ai_run_metrics": ai_run_metrics,
-        "per_ai_core_pwrs": ai_core_power
+        "per_ai_core_pwrs": ai_core_power,
+        "imu_data": imu_data
     }
     # print(f"System Info: {system_info}")
     
