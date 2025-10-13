@@ -21,7 +21,7 @@ OUTPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Predictions"
 RESIZED_IMAGE_PATH = "/home/user/demo/optimized_image.webp"  # Temporary resized image path
 DEMO_PATH = "/home/user/demo/"
 
-HOST_IP = "10.42.0.1"
+HOST_IP = "10.42.1.1"
 SYSINFO_PORT = 12345
 IMAGE_PORT = 55555
 
@@ -45,6 +45,7 @@ SAVE_PATH_IPERF_LW_ETH_ADT = "/home/root/iperf3_end_result_LwEthAdt.json"
 SAVE_PATH_IPERF_UP_ETH_ADT = "/home/root/iperf3_end_result_UpEthAdt.json"
 
 AI_METRIC_PATH = "/home/user/ai_tool/status"
+IMU_EXECUTABLE_PATH = "/home/user/topaz_imu/iim42652"
 
 # Global variable
 progress_update = 0.0
@@ -471,6 +472,35 @@ def get_power_from_sensor(sensor_name):
         print("Error running sensors:", e)
         return None
 
+def get_imu_data():
+    try:
+        result = subprocess.run(
+            [IMU_EXECUTABLE_PATH],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        imu_data = {
+            "accel_x": 0.0, "accel_y": 0.0, "accel_z": 0.0,
+            "gyro_x": 0.0, "gyro_y": 0.0, "gyro_z": 0.0
+        }
+        for line in result.stdout.strip().splitlines():
+            parts = line.strip().split(':')
+            if len(parts) == 2:
+                key, val = parts[0].strip(), parts[1].strip()
+                key = key.lower().replace(' ', '_')  # e.g. "Accel X" → "accel_x"
+                try:
+                    imu_data[key] = float(val)
+                except ValueError:
+                    pass
+        return imu_data
+    except Exception as e:
+        print(f"IMU read error: {e}")
+        return {
+            "accel_x": 0.0, "accel_y": 0.0, "accel_z": 0.0,
+            "gyro_x": 0.0, "gyro_y": 0.0, "gyro_z": 0.0
+        }
+
 def get_ai_metrics():
     global ai_run_metrics_raw
     ai_temp = {}
@@ -646,6 +676,8 @@ def get_system_info():
 
     ai_run_metrics_raw = None
 
+    imu_data = get_imu_data();
+
     system_info = {
         "memory_usage": memory_usage,
         "total_memory": total_memory,
@@ -666,7 +698,8 @@ def get_system_info():
         "ai_freqs": ai_freqs,
         "ai_total_pwr": ai_total_pwr,
         "ai_run_metrics": ai_run_metrics,
-        "per_ai_core_pwrs": ai_core_power
+        "per_ai_core_pwrs": ai_core_power,
+        "imu_data": imu_data
     }
     # print(f"System Info: {system_info}")
     
