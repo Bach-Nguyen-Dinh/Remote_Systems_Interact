@@ -76,6 +76,7 @@ netTestDuration = 0
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
+# Define functions
 def broadcast_to_clients(data):
     """Broadcast data to all connected clients"""
     # This could be implemented with WebSockets or Server-Sent Events
@@ -249,10 +250,10 @@ def receive_metrics():
                     for i in range(4):
                         core_key = f"core_{i}_usage"
                         usage = float(system_info["per_core_usage"].get(core_key, 0))
-                        per_core_usage_data[f"per_core_usage{i}"] = usage
+                        per_core_usage_data[f"per_core_usage_RDB{i}"] = usage
                         total_cpu_usage += usage*0.25
                     per_core_freq_data = {
-                        f"per_core_freq{i}": float(system_info["per_core_freq"].get(f"core_{i}_frequency", 0))
+                        f"per_core_freq_RDB{i}": float(system_info["per_core_freq"].get(f"core_{i}_frequency", 0))
                         for i in range(4)
                     }
                     # Network data
@@ -303,18 +304,18 @@ def receive_metrics():
                             "measurement": "system_metrics",
                             "tags": {"host": client_address[0]},
                             "fields": {
-                                "cpu_usage": total_cpu_usage,
-                                "memory_usage": float(system_info["memory_usage"]),
-                                "swap_usage": float(system_info["swap_usage"]),
-                                "sys_temp": system_info.get("sys_temp", 0.0),
-                                "uptime_seconds": float(system_info["uptime_seconds"]),
-                                "total_memory": float(system_info["total_memory"]),
-                                "total_swap": float(system_info["total_swap"]),
-                                "num_threads": int(system_info["num_threads"]),
-                                "cpu_power": float(system_info.get("cpu_power", 0.0)),
-                                "total_disk_usage": float(system_info.get("total_disk_usage", 0.0)),
-                                "total_disk_size": float(system_info.get("total_disk_size", 0.0)),
-                                "progress_update": float(system_info.get("progress_update", 0.0)),
+                                "cpu_usage_RDB": total_cpu_usage,
+                                "memory_usage_RDB": float(system_info["memory_usage"]),
+                                "swap_usage_RDB": float(system_info["swap_usage"]),
+                                "sys_temp_RDB": system_info.get("sys_temp", 0.0),
+                                "uptime_seconds_RDB": float(system_info["uptime_seconds"]),
+                                "total_memory_RDB": float(system_info["total_memory"]),
+                                "total_swap_RDB": float(system_info["total_swap"]),
+                                "num_threads_RDB": int(system_info["num_threads"]),
+                                "cpu_power_RDB": float(system_info.get("cpu_power", 0.0)),
+                                "total_disk_usage_RDB": float(system_info.get("total_disk_usage", 0.0)),
+                                "total_disk_size_RDB": float(system_info.get("total_disk_size", 0.0)),
+                                "progress_update_RDB": float(system_info.get("progress_update", 0.0)),
                                 **per_core_usage_data,
                                 **per_core_freq_data,
                                 **network_data,
