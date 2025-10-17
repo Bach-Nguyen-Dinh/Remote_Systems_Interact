@@ -15,7 +15,7 @@ NETTEST_PORT = 29102
 IMAGE_PORT = 55555
 FLASK_PORT = 5000
 
-TARGET_IP = "10.42.0.102"  # Target system IP
+TARGET_IP = "10.42.0.101"  # Target system IP
 TARGET_PORT = 54321       # Target system port
 
 INFLUXDB_HOST = "localhost"
