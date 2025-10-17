@@ -10,7 +10,9 @@ import os
 # IMAGE_PATH_2 = "/home/root/Desktop/Bach/backprojection_result_small.png"  
 # IMAGE_PATH_1 = "/home/root/Desktop/Bach/backprojection_histogram.png"
 RESIZED_IMAGE_PATH = "/home/sarthak/demo-resrc/optimized_image.webp"  # Temporary resized image path
-DEMO_PATH = "/home/sarthak/demo-resrc/"
+# DEMO_PATH = "/home/sarthak/demo-resrc/"
+DEMO_PATH = "/home/sarthak/workspace/SAR_codebase/cphd"
+SAR_PROG = "/home/sarthak/workspace/SAR_codebase/cphd_aic.py"
 
 HOST_IP = "10.42.0.1"
 SYSINFO_PORT = 12345
@@ -31,6 +33,11 @@ UP_ETH_OB_INTERFACE_ID = "enp5s0"
 LW_ETH_ADT_INTERFACE_ID = "enp4s0f0"
 UP_ETH_ADT_INTERFACE_ID = "enp4s0f1"
 WIRELESS_INTERFACE_ID = "wlp3s0"
+
+DOCKER_INTERFACE_ID = "docker0"
+FM_INTERFACE_ID = "fm1-mac3"
+LOCAL_INTERFACE_ID = "lo"
+VIRTUAL_INTERFACE_ID = "virbr0"
 
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 SAVE_PATH_IPERF_LW_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_LwEthAdt.json")
@@ -173,7 +180,7 @@ def process_cphd_file(filePath):
         # send the processed image
         handle_image_sending(tif_path)
         
-        # send the properies of the processed image
+        # send the properties of the processed image
         tif_size = os.path.getsize(tif_path)
         cphd_size = os.path.getsize(filePath)
         reduction_scale = round(cphd_size / tif_size, 2)
@@ -209,7 +216,7 @@ def handle_netrun_test(netTestDuration, netTestInterface):
     global bwValue
     bwValue = int(bwValue)
 
-    if netTestInterface == "LwEthAdt" or netTestInterface == "fm1-mac9":
+    if netTestInterface == "LwEthAdt" or netTestInterface == FM_INTERFACE_ID:
         filePath = SAVE_PATH_IPERF_LW_ETH_ADT
         netTest_clientIP = LW_ETH_ADT_CLIENT_IP
     if netTestInterface == "UpEthAdt":
@@ -255,11 +262,11 @@ def handle_netrun_test(netTestDuration, netTestInterface):
         print(f"Results saved to {filePath}")
 
 
-        if netTestInterface == "fm1-mac9":
+        if netTestInterface == FM_INTERFACE_ID:
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
                     client_socket.connect((HOST_IP, NETTEST_PORT_RDB))
-                    client_socket.sendall(json.dumps({"NETDONE":"fm1-mac9"}).encode())
+                    client_socket.sendall(json.dumps({"NETDONE":FM_INTERFACE_ID}).encode())
             except Exception as e:
                 print(f"Error sending NETDONE signal over socket: {e}")
 
@@ -363,7 +370,7 @@ def listen_for_messages():
                         interface_id = LW_ETH_OB_INTERFACE_ID
                     elif target == "UpEthOnb":
                         interface_id = UP_ETH_OB_INTERFACE_ID
-                    elif target == "LwEthAdt" or "fm1-mac9":
+                    elif target == "LwEthAdt" or FM_INTERFACE_ID:
                         interface_id = LW_ETH_ADT_INTERFACE_ID
                     elif target == "UpEthAdt":
                         interface_id = UP_ETH_ADT_INTERFACE_ID
