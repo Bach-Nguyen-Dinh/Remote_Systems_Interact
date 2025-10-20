@@ -6,12 +6,14 @@ import psutil
 import time
 import json
 import os
+import glob
 
 # IMAGE_PATH_2 = "/home/root/Desktop/Bach/backprojection_result_small.png"  
 # IMAGE_PATH_1 = "/home/root/Desktop/Bach/backprojection_histogram.png"
 RESIZED_IMAGE_PATH = "/home/sarthak/demo-resrc/optimized_image.webp"  # Temporary resized image path
 # DEMO_PATH = "/home/sarthak/demo-resrc/"
 DEMO_PATH = "/home/sarthak/workspace/SAR_codebase/cphd"
+OUT_TIF_PATH = "/home/sarthak/workspace/SAR_codebase/output_immediate"
 SAR_PROG = "/home/sarthak/workspace/SAR_codebase/cphd_aic.py"
 
 HOST_IP = "10.42.0.1"
@@ -101,23 +103,30 @@ def send_image(image_path):
     except Exception as e:
         print(f"Error sending image: {e}")
 
-def handle_image_sending(image_path):
-    timestamps = {
-        0: 0.0,
-        1: 10,
-        2: 20,
-        3: 30,
-        5: 50,
-        6: 60,
-        8: 80,
-        10: 100
-    }
-    for second in range(11):
+def handle_image_sending():
+    # Start the SAR program as a subprocess
+    process = subprocess.Popen(["python3", SAR_PROG])
+    print(f"SAR program started with PID {process.pid}")
+
+    # While the process is still running, print "processing..."
+    while process.poll() is None:
+        print("processing...")
         time.sleep(1)
-        if second in timestamps:
-            global progress_update
-            progress_update = timestamps[second]
+
+    print("done")
+
+    # Find the most recently created .tif file in OUT_TIF_PATH
+    tif_files = glob.glob(os.path.join(OUT_TIF_PATH, "*.tiff"))
+    print(tif_files)
+    if not tif_files:
+        print("No .tif files found in output directory.")
+        return
+
+    # Sort by modification time, newest first
+    image_path = max(tif_files, key=os.path.getmtime)
+
     send_image(image_path)
+    return image_path
 
 def send_cphd_files_list():
     global cphd_files
@@ -170,41 +179,69 @@ def get_metadata_from_json(directory):
     return None
 
 def process_cphd_file(filePath):
-    directory = os.path.dirname(filePath)
-    tif_files = [f for f in os.listdir(directory) if f.endswith(".tif")]
-    # png_files = [f for f in os.listdir(directory) if f.endswith(".png")]
+    tif_path = handle_image_sending()
+
+    # send the properties of the processed image
+    tif_size = os.path.getsize(tif_path)
+    cphd_size = os.path.getsize(filePath)
+    reduction_scale = round(cphd_size / tif_size, 2)
+    size_compared = round((tif_size / cphd_size) * 100, 2) if cphd_size else 0
+    reduction_factor = round(100 - size_compared, 2)
+
+    tif_size_str = f"{tif_size / 1_000_000:.2f} MB" if tif_size >= 1_000_000 else f"{tif_size} bytes"
+
+
+    response = {
+        "tif_filename": os.path.basename(tif_path),
+        "size": tif_size_str,
+        "reduction_factor": reduction_factor,
+        "size_compared": size_compared,
+        "reduction_scale": reduction_scale
+    }        
+    print(f"Response: {response}")
     
-    if tif_files:
-        tif_path = os.path.join(directory, tif_files[0])  # Take the first .tif file found
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as size_sock:
+            size_sock.connect((HOST_IP, IMAGE_PORT))
+            size_sock.sendall(json.dumps(response).encode())
+    except Exception as e:
+        print(f"Error sending tif file properties: {e}")
 
-        # send the processed image
-        handle_image_sending(tif_path)
+    # directory = os.path.dirname(filePath)
+    # tif_files = [f for f in os.listdir(directory) if f.endswith(".tif")]
+    # # png_files = [f for f in os.listdir(directory) if f.endswith(".png")]
+    
+    # if tif_files:
+    #     tif_path = os.path.join(directory, tif_files[0])  # Take the first .tif file found
+
+    #     # send the processed image
+    #     handle_image_sending(tif_path)
         
-        # send the properties of the processed image
-        tif_size = os.path.getsize(tif_path)
-        cphd_size = os.path.getsize(filePath)
-        reduction_scale = round(cphd_size / tif_size, 2)
-        size_compared = round((tif_size / cphd_size) * 100, 2) if cphd_size else 0
-        reduction_factor = round(100 - size_compared, 2)
+    #     # send the properties of the processed image
+    #     tif_size = os.path.getsize(tif_path)
+    #     cphd_size = os.path.getsize(filePath)
+    #     reduction_scale = round(cphd_size / tif_size, 2)
+    #     size_compared = round((tif_size / cphd_size) * 100, 2) if cphd_size else 0
+    #     reduction_factor = round(100 - size_compared, 2)
 
-        tif_size_str = f"{tif_size / 1_000_000:.2f} MB" if tif_size >= 1_000_000 else f"{tif_size} bytes"
+    #     tif_size_str = f"{tif_size / 1_000_000:.2f} MB" if tif_size >= 1_000_000 else f"{tif_size} bytes"
 
 
-        response = {
-            "tif_filename": tif_files[0],
-            "size": tif_size_str,
-            "reduction_factor": reduction_factor,
-            "size_compared": size_compared,
-            "reduction_scale": reduction_scale
-        }        
-        print(f"Response: {response}")
+    #     response = {
+    #         "tif_filename": tif_files[0],
+    #         "size": tif_size_str,
+    #         "reduction_factor": reduction_factor,
+    #         "size_compared": size_compared,
+    #         "reduction_scale": reduction_scale
+    #     }        
+    #     print(f"Response: {response}")
         
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as size_sock:
-                size_sock.connect((HOST_IP, IMAGE_PORT))
-                size_sock.sendall(json.dumps(response).encode())
-        except Exception as e:
-            print(f"Error sending tif file properties: {e}")
+    #     try:
+    #         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as size_sock:
+    #             size_sock.connect((HOST_IP, IMAGE_PORT))
+    #             size_sock.sendall(json.dumps(response).encode())
+    #     except Exception as e:
+    #         print(f"Error sending tif file properties: {e}")
 
         # if png_files:
         #     png_path = os.path.join(directory, png_files[0])
@@ -349,8 +386,10 @@ def listen_for_messages():
                 elif message.startswith("RUN:"):
                     filename = message.split(":", 1)[1]
                     filePath = cphd_files.get(filename)
+                    print(filePath)
                     
                     if filePath and os.path.exists(filePath):
+                        print("file exist, start processing")
                         threading.Thread(target=process_cphd_file, args=(filePath,), daemon=True).start()
                 elif message.startswith("NETRUN:"):
                     # handle run iperf test in thread to avoid blocking other tasks
