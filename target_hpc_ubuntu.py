@@ -49,6 +49,7 @@ SAVE_PATH_IPERF_UP_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_UpEthAdt.
 progress_update = 0.0
 cphd_files = {}
 bwValue = 0
+sar_proc_time = 0
 
 def optimize_tif(image_path, output_path, format="webp", max_size=(800, 800), quality=85):
     """
@@ -104,6 +105,9 @@ def send_image(image_path):
         print(f"Error sending image: {e}")
 
 def handle_image_sending():
+    global sar_proc_time
+
+    start_time = time.perf_counter()
     # Start the SAR program as a subprocess
     process = subprocess.Popen(["python3", SAR_PROG])
     print(f"SAR program started with PID {process.pid}")
@@ -114,6 +118,10 @@ def handle_image_sending():
         time.sleep(1)
 
     print("done")
+
+    end_time = time.perf_counter()
+    sar_proc_time = end_time - start_time
+    print(f"SAR processing time: {sar_proc_time:.1f}s")
 
     # Find the most recently created .tif file in OUT_TIF_PATH
     tif_files = glob.glob(os.path.join(OUT_TIF_PATH, "*.tiff"))
@@ -179,6 +187,8 @@ def get_metadata_from_json(directory):
     return None
 
 def process_cphd_file(filePath):
+    global sar_proc_time
+    
     tif_path = handle_image_sending()
 
     # send the properties of the processed image
@@ -196,7 +206,8 @@ def process_cphd_file(filePath):
         "size": tif_size_str,
         "reduction_factor": reduction_factor,
         "size_compared": size_compared,
-        "reduction_scale": reduction_scale
+        "reduction_scale": reduction_scale,
+        "sar_proc_time": sar_proc_time
     }        
     print(f"Response: {response}")
     
