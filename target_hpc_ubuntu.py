@@ -120,7 +120,7 @@ def handle_image_sending():
     print("done")
 
     end_time = time.perf_counter()
-    sar_proc_time = end_time - start_time
+    sar_proc_time = round(end_time - start_time, 1)
     print(f"SAR processing time: {sar_proc_time:.1f}s")
 
     # Find the most recently created .tif file in OUT_TIF_PATH
@@ -188,7 +188,7 @@ def get_metadata_from_json(directory):
 
 def process_cphd_file(filePath):
     global sar_proc_time
-    
+
     tif_path = handle_image_sending()
 
     # send the properties of the processed image
