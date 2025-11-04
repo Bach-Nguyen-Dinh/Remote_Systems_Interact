@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Small Object Detection Interface</title>
+    <title>AI Smoke Interface</title>
     <style>
         .ai-smoke-widget-body {
             font-family: Arial, sans-serif;
@@ -60,7 +60,7 @@
             border-radius: 3px;
             /* padding: 10px; */
             background-color: #181b1f;
-            min-height: 500px;
+            min-height: 600px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -68,11 +68,11 @@
         
         .ai-smoke-widget-image-container img {
             /* max-width: 100%; */
-            max-height: 500px;
-            object-fit: cover;
+            max-height: 800px;
+            object-fit: contain;
             border-radius: 3px;
-            width: 925px;
-            height: 500px;
+            width: auto;
+            height: 600px;
         }
         
         .ai-smoke-widget-image-placeholder {
@@ -80,6 +80,7 @@
             font-style: italic;
         }
         .ai-smoke-widget-control-panel {
+            min-width: 450px;
             display: flex;
         }
         
@@ -148,55 +149,82 @@
             <div class="ai-smoke-widget-image-panel">
                 <h3>Input image</h3>
                 <div class="ai-smoke-widget-image-container">
-                    <div id="inputImageContainer" class="ai-smoke-widget-image-placeholder">
+                    <div id="inputImageContainer_aiSmoke" class="ai-smoke-widget-image-placeholder">
                         Loading...
                     </div>
                 </div>
-                <p id="inputImageInfo"></p>
+                <p id="inputImageInfo_aiSmoke"></p>
             </div>
             
             <div class="ai-smoke-widget-image-panel">
                 <h3>Output image</h3>
                 <div class="ai-smoke-widget-image-container">
-                    <div id="outputImageContainer" class="ai-smoke-widget-image-placeholder">
+                    <div id="outputImageContainer_aiSmoke" class="ai-smoke-widget-image-placeholder">
                         Loading...
                     </div>
                 </div>
-                <p id="outputImageInfo"></p>
+                <p id="outputImageInfo_aiSmoke"></p>
             </div>
-        </div>
 
-        <div class="ai-smoke-widget-control-panel">
-            <div class="ai-smoke-widget-options-container ">
-                <p><strong>Select number of running AI core:</strong>
-                    <select id="aiCoreDropdown" class="ai-smoke-widget-select"
-                        onchange="select_num_ai_core_run()">
-                    </select>
-                </p>
-            </div>
-            <div class="ai-smoke-widget-button-container">
-                <button id="fetchBtn_aiSmoke" onclick="preload_ai_smoke_images()">Fetch</button>
-                <button id="runBtn_aiSmoke" onclick="run_ai_smoke()">Run</button>
-                <button id="clearBtn_aiSmoke" onclick="clear_ai_smoke()">Clear</button>
-
-                <div id="statusBar" class="ai-smoke-widget-status-bar">Ready to start processing</div>
-                <p><strong>Processing Time:</strong> <span id="processingTime">-</span></p>
+            <div class="ai-smoke-widget-control-panel">
+                <div class="ai-smoke-widget-button-container">
+                    <p><strong>Select number of running AI core:</strong>
+                        <select id="aiCoreDropdown" class="ai-smoke-widget-select"
+                            onchange="select_num_ai_core_run()">
+                        </select>
+                    </p>
+                    <button id="fetchBtn_aiSmoke" onclick="preload_ai_smoke_images()">Fetch</button>
+                    <button id="runBtn_aiSmoke" onclick="run_ai_smoke()">Run</button>
+                    <button id="clearBtn_aiSmoke" onclick="clear_ai_smoke()">Clear</button>
+    
+                    <div id="statusBar_aiSmoke" class="ai-smoke-widget-status-bar">Ready to start processing</div>
+                    <p><strong>Processing Time:</strong> <span id="processingTime_aiSmoke">-</span></p>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
-        // Global variable to store the current selected number of running AI cores
+        let ai_smoke_InputImageCache = {};
+        let ai_smoke_OutputImageCache = {};
         let numAICoreRun = 4;
         let displayInterval = null;
         let imagePairs = [];
+
+
+    (function() {
+        'use strict';
+
         let currentPairIndex = 0;
 
-        // populate options for number of running AI core
-        populate_options_num_ai_core_run();
+        // // populate options for number of running AI core
+        // populate_options_num_ai_core_run();
 
+        // function populate_options_num_ai_core_run() {
+        //     const dropdown = document.getElementById('aiCoreDropdown');
+            
+        //     // Generate options 1 through 4
+        //     for (let i = 1; i <= 4; i++) {
+        //         const option = document.createElement('option');
+        //         option.value = i;
+        //         option.textContent = i;
+                
+        //         // Set option 4 as default
+        //         if (i === 4) {
+        //             option.selected = true;
+        //         }
+                
+        //         dropdown.appendChild(option);
+        //     }
+        // }
+
+        // populate options for number of running AI core
         function populate_options_num_ai_core_run() {
             const dropdown = document.getElementById('aiCoreDropdown');
+            
+            // Only populate if dropdown exists and is empty
+            if (!dropdown) return;
+            if (dropdown.options.length > 0) return; // Already populated
             
             // Generate options 1 through 4
             for (let i = 1; i <= 4; i++) {
@@ -213,17 +241,46 @@
             }
         }
 
-        function select_num_ai_core_run() {
+        function ensureDropdownPopulated() {
+            const dropdown = document.getElementById('aiCoreDropdown');
+            if (dropdown && dropdown.options.length === 0) {
+                populate_options_num_ai_core_run();
+            }
+        }
+
+        populate_options_num_ai_core_run();
+
+        // Set up MutationObserver to watch for dropdown
+        const observer = new MutationObserver(() => {
+            ensureDropdownPopulated();
+        });
+
+        // Observe the body for changes
+        if (document.body) {
+            observer.observe(document.body, { childList: true, subtree: true });
+        }
+
+        // Also check periodically as backup
+        setInterval(ensureDropdownPopulated, 1000);
+
+        // ALSO EXPOSE THIS FUNCTION TO WINDOW
+        window.select_num_ai_core_run = function() {
             const dropdown = document.getElementById('aiCoreDropdown');
             numAICoreRun = parseInt(dropdown.value);
             console.log('Number of AI cores selected:', numAICoreRun);
-        }
+        };
+
+        // function select_num_ai_core_run() {
+        //     const dropdown = document.getElementById('aiCoreDropdown');
+        //     numAICoreRun = parseInt(dropdown.value);
+        //     console.log('Number of AI cores selected:', numAICoreRun);
+        // }
 
         function createShuffledPairs() {
             const pairs = [];
             // Create pairs from cached images
-            const inputKeys = Object.keys(inputImageCache);
-            const outputKeys = Object.keys(outputImageCache);
+            const inputKeys = Object.keys(ai_smoke_InputImageCache);
+            const outputKeys = Object.keys(ai_smoke_OutputImageCache);
             
             // Match input/output pairs (assuming they have corresponding numbers/names)
             const minLength = Math.min(inputKeys.length, outputKeys.length);
@@ -274,48 +331,50 @@
         const FLASK_HOST = "localhost";
         const FLASK_PORT = 5001;
         
-        let inputImageCache = {};
-        let outputImageCache = {};
+        let isRunning_aiSmoke = false;
+        let startTime_aiSmoke = null;
+        let pollInterval_aiSmoke = null;
         
-        let isRunning = false;
-        let startTime = null;
-        let pollInterval = null;
+        // // Preload all images when page loads
+        // window.addEventListener('load', function() {
+        //     preload_ai_smoke_images();
+        // });
 
-        function clearImages() {
-            document.getElementById('inputImageContainer').innerHTML = '<div class="ai-smoke-widget-image-placeholder">Loading...</div>';
-            document.getElementById('outputImageContainer').innerHTML = '<div class="ai-smoke-widget-image-placeholder">Loading...</div>';
-            document.getElementById('inputImageInfo').textContent = '';
-            document.getElementById('outputImageInfo').textContent = '';
+        function clearImages_aiSmoke() {
+            document.getElementById('inputImageContainer_aiSmoke').innerHTML = '<div class="ai-smoke-widget-image-placeholder">Loading...</div>';
+            document.getElementById('outputImageContainer_aiSmoke').innerHTML = '<div class="ai-smoke-widget-image-placeholder">Loading...</div>';
+            document.getElementById('inputImageInfo_aiSmoke').textContent = '';
+            document.getElementById('outputImageInfo_aiSmoke').textContent = '';
         }
 
-        function updateStatus(message, type = '') {
-            const statusBar = document.getElementById('statusBar');
-            statusBar.textContent = message;
-            statusBar.className = `ai-smoke-widget-status-bar ${type}`;
+        function updateStatus_aiSmoke(message, type = '') {
+            const statusBar_aiSmoke = document.getElementById('statusBar_aiSmoke');
+            statusBar_aiSmoke.textContent = message;
+            statusBar_aiSmoke.className = `ai-smoke-widget-status-bar ${type}`;
         }
 
-        function updateButtons() {
+        function updateButtons_aiSmoke() {
             const runBtn_aiSmoke = document.getElementById('runBtn_aiSmoke');
             const clearBtn_aiSmoke = document.getElementById('clearBtn_aiSmoke');
             
-            runBtn_aiSmoke.disabled = isRunning;
-            runBtn_aiSmoke.textContent = isRunning ? 'Processing...' : 'Run';
+            runBtn_aiSmoke.disabled = isRunning_aiSmoke;
+            runBtn_aiSmoke.textContent = isRunning_aiSmoke ? 'Processing...' : 'Run';
         }
 
-        function updateProcessingTime() {
-            if (startTime) {
-                const elapsed = Math.floor((new Date() - startTime) / 1000);
+        function updateprocessingTime_aiSmoke() {
+            if (startTime_aiSmoke) {
+                const elapsed = Math.floor((new Date() - startTime_aiSmoke) / 1000);
                 const minutes = Math.floor(elapsed / 60);
                 const seconds = elapsed % 60;
-                document.getElementById('processingTime').textContent = 
+                document.getElementById('processingTime_aiSmoke').textContent = 
                     `${minutes}:${seconds.toString().padStart(2, '0')}`;
             }
         }
         
-        async function preload_ai_smoke_images() {
+        window.preload_ai_smoke_images = async function() {
             try {
                 console.log('Starting enhanced image load...');
-                updateStatus('Loading image list...', 'running');
+                updateStatus_aiSmoke('Loading image list...', 'running');
                 
                 const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/ai_smoke/image_list`);
                 if (!response.ok) {
@@ -326,7 +385,7 @@
                 console.log('Image list received:', data);
                 
                 const totalImages = data.input_images.length + data.output_images.length;
-                updateStatus(`Loading input images...`, 'running');
+                updateStatus_aiSmoke(`Loading input images...`, 'running');
                 
                 // Enhanced image loading with retry mechanism
                 function loadImageWithRetry(src, filename, imageType, maxRetries = 3, timeout = 15000) {
@@ -341,19 +400,19 @@
                             
                             img.onload = () => {
                                 clearTimeout(timeoutId);
-                                console.log(`Successfully loaded: ${filename} (${imageType})`);
+                                console.log(`✓ Successfully loaded: ${filename} (${imageType})`);
                                 
                                 // Validate that the image actually loaded with content
                                 if (img.naturalWidth > 0 && img.naturalHeight > 0) {
                                     // Store in appropriate cache
                                     if (imageType === 'input') {
-                                        inputImageCache[filename] = img;
+                                        ai_smoke_InputImageCache[filename] = img;
                                     } else {
-                                        outputImageCache[filename] = img;
+                                        ai_smoke_OutputImageCache[filename] = img;
                                     }
                                     resolve({ success: true, filename, imageType, attempts });
                                 } else {
-                                    console.warn(`Image loaded but has no dimensions: ${filename} (${imageType})`);
+                                    console.warn(`⚠ Image loaded but has no dimensions: ${filename} (${imageType})`);
                                     if (attempts < maxRetries) {
                                         setTimeout(attemptLoad, 1000 * attempts);
                                     } else {
@@ -364,7 +423,7 @@
                             
                             img.onerror = () => {
                                 clearTimeout(timeoutId);
-                                console.error(`Failed to load: ${filename} (${imageType}) (attempt ${attempts})`);
+                                console.error(`✗ Failed to load: ${filename} (${imageType}) (attempt ${attempts})`);
                                 
                                 if (attempts < maxRetries) {
                                     setTimeout(attemptLoad, 1000 * attempts);
@@ -375,7 +434,7 @@
                             
                             // Set timeout for this attempt
                             timeoutId = setTimeout(() => {
-                                console.warn(`Timeout loading: ${filename} (${imageType}) (attempt ${attempts})`);                                img.src = ''; // Cancel the request
+                                console.warn(`⚠ Timeout loading: ${filename} (${imageType}) (attempt ${attempts})`);                                img.src = ''; // Cancel the request
                                 
                                 if (attempts < maxRetries) {
                                     setTimeout(attemptLoad, 1000 * attempts); // Progressive delay
@@ -410,6 +469,7 @@
                 let validatedCount = 0;
                 
                 // Process input images
+                // Process input images
                 for (const filename of data.input_images) {
                     const isValid = await validateImageExists(filename, 'input');
                     if (isValid) {
@@ -434,7 +494,7 @@
                 }
                 
                 console.log(`Validated ${validatedCount}/${totalImages} images, starting download...`);
-                updateStatus(`Loading ${validatedCount} validated images...`, 'running');
+                updateStatus_aiSmoke(`Loading ${validatedCount} validated images...`, 'running');
                 
                 // Track progress
                 let loadedCount = 0;
@@ -442,12 +502,12 @@
                     promise.then(result => {
                         loadedCount++;
                         const percentage = Math.round((loadedCount / validatedCount) * 100);
-                        updateStatus(`Loading images... ${loadedCount}/${validatedCount} (${percentage}%)`, 'running');
+                        updateStatus_aiSmoke(`Loading images... ${loadedCount}/${validatedCount} (${percentage}%)`, 'running');
                         return result;
                     }).catch(error => {
                         loadedCount++;
                         const percentage = Math.round((loadedCount / validatedCount) * 100);
-                        updateStatus(`Loading images... ${loadedCount}/${validatedCount} (${percentage}%)`, 'running');
+                        updateStatus_aiSmoke(`Loading images... ${loadedCount}/${validatedCount} (${percentage}%)`, 'running');
                         throw error;
                     })
                 );
@@ -469,7 +529,7 @@
                     console.groupEnd();
                 }
                 
-                // Log successful loads with retsmall_obj_detectry information
+                // Log successful loads with retry information
                 if (successful.length > 0) {
                     console.group('Successful image loads:');
                     successful.forEach(result => {
@@ -484,14 +544,24 @@
                 const successRate = Math.round((successful.length / validatedCount) * 100);
                 
                 if (failed.length === 0) {
-                    // updateStatus(`All input images loaded successfully (${successful.length}/${validatedCount})`, 'ready');
-                    updateStatus(`All input images loaded successfully`, 'ready');
+                    // updateStatus_aiSmoke(`All input images loaded successfully (${successful.length}/${validatedCount})`, 'ready');
+                    updateStatus_aiSmoke(`All input images loaded successfully`, 'ready');
                 } else if (successful.length > 0) {
-                    // updateStatus(`Images loaded: ${successful.length}/${validatedCount} (${successRate}%) - ${failed.length} failed`, 'ready');
-                    updateStatus(`All input images loaded successfully`, 'ready');
+                    // updateStatus_aiSmoke(`Images loaded: ${successful.length}/${validatedCount} (${successRate}%) - ${failed.length} failed`, 'ready');
+                    updateStatus_aiSmoke(`All input images loaded successfully`, 'ready');
                 } else {
-                    updateStatus('Failed to load input images - check console for details', 'error');
+                    updateStatus_aiSmoke('Failed to load input images - check console for details', 'error');
                 }
+                
+                // // Store validation results for later use
+                // window.imageValidationResults = {
+                //     total: validatedCount,
+                //     successful: successful.length,
+                //     failed: failed.length,
+                //     successRate: successRate
+                // };
+                
+                // console.log('Enhanced image preload completed - ready for display');
 
                 // Store validation results for later use
                 window.imageValidationResults = {
@@ -503,45 +573,42 @@
 
                 console.log('Input image load completed - ready for display');
                 
-                // numToCheck = 20;
-                // const inputValidation = validateInputImages(numToCheck);
+                // numToCheck = 300;
+                // // Validate first 100 input images
+                // const inputValidation = validateFirst100InputImages(numToCheck);
 
                 // // Update final status based on validation
                 // if (failed.length === 0 && inputValidation.success) {
-                //     // updateStatus(`All input images loaded and validated successfully (${successful.length}/${validatedCount})`, 'ready');
-                //     updateStatus(`All input images loaded and validated`, 'ready');
+                //     // updateStatus_aiSmoke(`All input images loaded and validated successfully (${successful.length}/${validatedCount})`, 'ready');
+                //     updateStatus_aiSmoke(`All input images loaded and validated`, 'ready');
                 //     console.log(`All first ${numToCheck} input images are present in cache`);
                 // } else if (failed.length === 0 && !inputValidation.success) {
-                //     updateStatus(`Input images loaded: ${successful.length}/${validatedCount} - Missing ${inputValidation.missing}/${numToCheck} input images`, 'error');
+                //     updateStatus_aiSmoke(`Input images loaded: ${successful.length}/${validatedCount} - Missing ${inputValidation.missing}/${numToCheck} input images`, 'error');
                 //     console.warn(`Missing ${inputValidation.missing}/${numToCheck} input images`);
                 // } else if (successful.length > 0) {
-                //     updateStatus(`Input images loaded: ${successful.length}/${validatedCount} (${successRate}%) - ${failed.length} failed, ${inputValidation.missing}/${numToCheck} input missing`, 'error');
+                //     updateStatus_aiSmoke(`Input images loaded: ${successful.length}/${validatedCount} (${successRate}%) - ${failed.length} failed, ${inputValidation.missing}/${numToCheck} input missing`, 'error');
                 //     console.warn(`Missing ${inputValidation.missing}/${numToCheck} input images`);
                 // } else {
-                //     updateStatus('Failed to load input images - check console for details', 'error');
+                //     updateStatus_aiSmoke('Failed to load input images - check console for details', 'error');
                 //     console.error('Failed to load input images - check console for details');
                 // }
                                 
             } catch (error) {
                 console.error('Error in loading:', error);
-                updateStatus('Error loading input images - check network connection', 'error');
+                updateStatus_aiSmoke('Error loading input images - check network connection', 'error');
             }
         }
 
-        // function validateInputImages(numToCheck=10) {
+        // function validateFirst100InputImages(numToCheck = 100) {
         //     console.log(`Validating first ${numToCheck} input images in cache...`);
             
         //     const missingImages = [];
         //     const presentImages = [];
             
-        //     // Get the actual filenames from the cache instead of generating sequential numbers
-        //     const cachedFilenames = Object.keys(inputImageCache);
-        //     const filesToCheck = cachedFilenames.slice(0, numToCheck);
-            
-        //     for (const filename of filesToCheck) {
-        //         if (inputImageCache[filename] && 
-        //             inputImageCache[filename].complete && 
-        //             inputImageCache[filename].naturalWidth > 0) {
+        //     // Check images 1.webp through 100.webp
+        //     for (let i = 1; i <= numToCheck; i++) {
+        //         const filename = `${i}.webp`;
+        //         if (ai_smoke_InputImageCache[filename]) {
         //             presentImages.push(filename);
         //         } else {
         //             missingImages.push(filename);
@@ -550,21 +617,31 @@
             
         //     // Log results
         //     console.log(`Input image validation results:`);
-        //     console.log(`✓ Present: ${presentImages.length}/${filesToCheck.length} images`);
+        //     console.log(`✓ Present: ${presentImages.length}/${numToCheck} images`);
             
         //     if (missingImages.length > 0) {
-        //         console.warn(`✗ Missing: ${missingImages.length}/${filesToCheck.length} images`);
+        //         console.warn(`✗ Missing: ${missingImages.length}/${numToCheck} images`);
         //         console.group('Missing input images:');
         //         missingImages.forEach(filename => {
         //             console.warn(`- ${filename}`);
         //         });
         //         console.groupEnd();
                 
-        //         updateStatus(`Input images loaded with warnings: ${presentImages.length}/${filesToCheck.length} input images found`, 'error');
+        //         // Update status to show validation results
+        //         updateStatus_aiSmoke(`Input images loaded with warnings: ${presentImages.length}/${numToCheck} input images found`, 'error');
         //     } else {
         //         console.log(`✓ All first ${numToCheck} input images are present in cache`);
-        //         updateStatus(`All input images loaded successfully - First ${numToCheck} input images validated`, 'ready');
+        //         updateStatus_aiSmoke(`All input images loaded successfully - First ${numToCheck} input images validated`, 'ready');
         //     }
+            
+        //     // Store validation results
+        //     window.inputImageValidation = {
+        //         total: numToCheck,
+        //         present: presentImages.length,
+        //         missing: missingImages.length,
+        //         missingList: missingImages,
+        //         presentList: presentImages
+        //     };
             
         //     return {
         //         success: missingImages.length === 0,
@@ -574,17 +651,17 @@
         //     };
         // }
 
-        function run_ai_smoke() {
-            if (isRunning) return;
+        window.run_ai_smoke = function() {
+            if (isRunning_aiSmoke) return;
             
-            isRunning = true;
-            startTime = new Date();
+            isRunning_aiSmoke = true;
+            startTime_aiSmoke = new Date();
             
-            updateStatus('Starting ai smoke...', 'running');
-            updateButtons();
+            updateStatus_aiSmoke('Starting ai smoke...', 'running');
+            updateButtons_aiSmoke();
             
             // Clear previous images
-            clearImages();
+            clearImages_aiSmoke();
             
             try {
                 fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
@@ -603,29 +680,31 @@
                 })
                 .catch(error => {
                     console.error("Error sending command:", error);
-                    updateStatus('Error starting detection', 'error');
-                    isRunning = false;
-                    updateButtons();
+                    updateStatus_aiSmoke('Error starting detection', 'error');
+                    isRunning_aiSmoke = false;
+                    updateButtons_aiSmoke();
                 });
             } catch (error) {
                 console.error("Error:", error);
-                updateStatus('Error starting detection', 'error');
-                isRunning = false;
-                updateButtons();
+                updateStatus_aiSmoke('Error starting detection', 'error');
+                isRunning_aiSmoke = false;
+                updateButtons_aiSmoke();
             }
         }
         
-        function clear_ai_smoke() {
+        window.clear_ai_smoke = function() {
             stopLocalImageDisplay();
             stopProgressPolling();
-            isRunning = false;
-            startTime = null;
+            isRunning_aiSmoke = false;
+            startTime_aiSmoke = null;
             
-            clearImages();
-            updateStatus('Cleared', 'ready');
-            updateButtons();
-
-            document.getElementById('processingTime').textContent = '-';
+            clearImages_aiSmoke();
+            updateStatus_aiSmoke('Cleared', 'ready');
+            updateButtons_aiSmoke();
+            
+            // document.getElementById('processStatus').textContent = 'Idle';
+            // document.getElementById('latestOutput').textContent = 'None';
+            document.getElementById('processingTime_aiSmoke').textContent = '-';
             
             // Send clear command to server
             fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
@@ -639,9 +718,9 @@
         }
         
         // function startProgressPolling() {
-        //     if (pollInterval) clearInterval(pollInterval);
+        //     if (pollInterval_aiSmoke) clearInterval(pollInterval_aiSmoke);
             
-        //     pollInterval = setInterval(async () => {
+        //     pollInterval_aiSmoke = setInterval(async () => {
         //         try {
         //             const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/ai_smoke/progress`);
         //             const data = await response.json();
@@ -656,9 +735,9 @@
         // }
 
         function startCompletionPolling() {
-            if (pollInterval) clearInterval(pollInterval);
+            if (pollInterval_aiSmoke) clearInterval(pollInterval_aiSmoke);
             
-            pollInterval = setInterval(async () => {
+            pollInterval_aiSmoke = setInterval(async () => {
                 try {
                     const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/ai_smoke/progress`);
                     const data = await response.json();
@@ -675,9 +754,9 @@
         }
         
         function stopProgressPolling() {
-            if (pollInterval) {
-                clearInterval(pollInterval);
-                pollInterval = null;
+            if (pollInterval_aiSmoke) {
+                clearInterval(pollInterval_aiSmoke);
+                pollInterval_aiSmoke = null;
             }
         }
         
@@ -685,20 +764,20 @@
         //     console.log('Progress update:', data);
             
         //     switch (data.type) {
-        //         case 'ai_smoke_start':
-        //             updateStatus('Detection started', 'running');
+        //         case 'small_obj_detect_start':
+        //             updateStatus_aiSmoke('Detection started', 'running');
         //             // document.getElementById('processStatus').textContent = 'Running';
         //             break;
                     
-        //         case 'ai_smoke_progress':
+        //         case 'small_obj_detect_progress':
         //             // Log what we're trying to display
         //             // console.log(`Attempting1111 input=${data.input_image}, output=${data.output_image}`);
                     
         //             // Check if images exist in cache before displaying
-        //             if (!inputImageCache[data.input_image]) {
+        //             if (!ai_smoke_InputImageCache[data.input_image]) {
         //                 console.warn(`Input image ${data.input_image} not found in input cache`);
         //             }
-        //             if (!outputImageCache[data.output_image]) {
+        //             if (!ai_smoke_OutputImageCache[data.output_image]) {
         //                 console.warn(`Output image ${data.output_image} not found in output cache`);
         //             }
                                         
@@ -706,24 +785,24 @@
         //             // console.log(`Attempting2222 input=${data.input_image}, output=${data.output_image}`);
         //             // document.getElementById('latestOutput').textContent = data.output_image;
 
-        //             updateProcessingTime();
+        //             updateprocessingTime_aiSmoke();
         //             // console.log(`Attempting3333 input=${data.input_image}, output=${data.output_image}`);
 
         //             break;
                     
-        //         case 'ai_smoke_complete':
-        //             updateStatus('Detection completed successfully', 'ready');
+        //         case 'small_obj_detect_complete':
+        //             updateStatus_aiSmoke('Detection completed successfully', 'ready');
         //             // document.getElementById('processStatus').textContent = 'Completed';
-        //             isRunning = false;
-        //             updateButtons();
+        //             isRunning_aiSmoke = false;
+        //             updateButtons_aiSmoke();
         //             stopProgressPolling();
         //             break;
                     
-        //         case 'ai_smoke_error':
-        //             updateStatus(`Error: ${data.error}`, 'error');
+        //         case 'small_obj_detect_error':
+        //             updateStatus_aiSmoke(`Error: ${data.error}`, 'error');
         //             // document.getElementById('processStatus').textContent = 'Error';
-        //             isRunning = false;
-        //             updateButtons();
+        //             isRunning_aiSmoke = false;
+        //             updateButtons_aiSmoke();
         //             stopProgressPolling();
         //             break;
         //     }
@@ -731,26 +810,26 @@
 
         function handleCompletion() {
             stopLocalImageDisplay();
-            updateStatus('Detection completed successfully', 'ready');
-            isRunning = false;
-            updateButtons();
+            updateStatus_aiSmoke('Detection completed successfully', 'ready');
+            isRunning_aiSmoke = false;
+            updateButtons_aiSmoke();
             stopProgressPolling();
         }
 
         function handleError(errorMsg) {
             stopLocalImageDisplay();
-            updateStatus(`Error: ${errorMsg}`, 'error');
-            isRunning = false;
-            updateButtons();
+            updateStatus_aiSmoke(`Error: ${errorMsg}`, 'error');
+            isRunning_aiSmoke = false;
+            updateButtons_aiSmoke();
             stopProgressPolling();
         }
         
         function displayImagePair(inputFilename, outputFilename) {
             console.log(`Displaying images: input=${inputFilename}, output=${outputFilename}`);
-            const inputContainer = document.getElementById('inputImageContainer');
-            const outputContainer = document.getElementById('outputImageContainer');
-            const inputInfo = document.getElementById('inputImageInfo');
-            const outputInfo = document.getElementById('outputImageInfo');
+            const inputContainer = document.getElementById('inputImageContainer_aiSmoke');
+            const outputContainer = document.getElementById('outputImageContainer_aiSmoke');
+            const inputInfo = document.getElementById('inputImageInfo_aiSmoke');
+            const outputInfo = document.getElementById('outputImageInfo_aiSmoke');
             
             // Function to create and display image with fallback
             function displayImage(filename, type, container, infoElement) {
@@ -758,9 +837,9 @@
                 
                 // Get image from appropriate cache
                 if (type === 'input') {
-                    cachedImg = inputImageCache[filename];
+                    cachedImg = ai_smoke_InputImageCache[filename];
                 } else {
-                    cachedImg = outputImageCache[filename];
+                    cachedImg = ai_smoke_OutputImageCache[filename];
                 }
                 
                 if (cachedImg && cachedImg.complete && cachedImg.naturalWidth > 0) {
@@ -798,7 +877,8 @@
                 console.warn(`Partial display: input=${inputDisplayed}, output=${outputDisplayed}`);
             }
         }
-
+    
+    })(); // End of IIFE
     </script>
 </body>
 </html>
