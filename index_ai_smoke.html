@@ -88,6 +88,12 @@
             flex: 1;
             /* margin-bottom: 20px; */
             text-align: center;
+            /* Center content vertically */
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            gap: 15px; /* Space between elements */
         }
         
         .ai-smoke-widget-options-container {
@@ -173,12 +179,14 @@
                             onchange="select_num_ai_core_run()">
                         </select>
                     </p>
-                    <button id="fetchBtn_aiSmoke" onclick="preload_ai_smoke_images()">Fetch</button>
-                    <button id="runBtn_aiSmoke" onclick="run_ai_smoke()">Run</button>
-                    <button id="clearBtn_aiSmoke" onclick="clear_ai_smoke()">Clear</button>
+                    <div>
+                        <button id="fetchBtn_aiSmoke" onclick="preload_ai_smoke_images()">Fetch</button>
+                        <button id="runBtn_aiSmoke" onclick="run_ai_smoke()">Run</button>
+                        <button id="clearBtn_aiSmoke" onclick="clear_ai_smoke()">Clear</button>
+                    </div>
     
                     <div id="statusBar_aiSmoke" class="ai-smoke-widget-status-bar">Ready to start processing</div>
-                    <p><strong>Processing Time:</strong> <span id="processingTime_aiSmoke">-</span></p>
+                    <!-- <p><strong>Processing Time:</strong> <span id="processingTime_aiSmoke">-</span></p> -->
                 </div>
             </div>
         </div>
@@ -361,15 +369,15 @@
             runBtn_aiSmoke.textContent = isRunning_aiSmoke ? 'Processing...' : 'Run';
         }
 
-        function updateprocessingTime_aiSmoke() {
-            if (startTime_aiSmoke) {
-                const elapsed = Math.floor((new Date() - startTime_aiSmoke) / 1000);
-                const minutes = Math.floor(elapsed / 60);
-                const seconds = elapsed % 60;
-                document.getElementById('processingTime_aiSmoke').textContent = 
-                    `${minutes}:${seconds.toString().padStart(2, '0')}`;
-            }
-        }
+        // function updateprocessingTime_aiSmoke() {
+        //     if (startTime_aiSmoke) {
+        //         const elapsed = Math.floor((new Date() - startTime_aiSmoke) / 1000);
+        //         const minutes = Math.floor(elapsed / 60);
+        //         const seconds = elapsed % 60;
+        //         document.getElementById('processingTime_aiSmoke').textContent = 
+        //             `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        //     }
+        // }
         
         window.preload_ai_smoke_images = async function() {
             try {
@@ -704,7 +712,7 @@
             
             // document.getElementById('processStatus').textContent = 'Idle';
             // document.getElementById('latestOutput').textContent = 'None';
-            document.getElementById('processingTime_aiSmoke').textContent = '-';
+            // document.getElementById('processingTime_aiSmoke').textContent = '-';
             
             // Send clear command to server
             fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
