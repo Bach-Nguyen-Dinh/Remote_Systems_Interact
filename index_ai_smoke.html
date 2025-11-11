@@ -204,6 +204,9 @@
         'use strict';
 
         let currentPairIndex = 0;
+        let aiCoreMonitorInterval = null;
+        let imageDisplayStarted = false;
+        const AI_USAGE_THRESHOLD = 5.0;  // Percentage above baseline to start display
 
         // // populate options for number of running AI core
         // populate_options_num_ai_core_run();
@@ -225,6 +228,42 @@
         //         dropdown.appendChild(option);
         //     }
         // }
+
+        function startAICoreMonitoring() {
+            imageDisplayStarted = false;
+            updateStatus_aiSmoke('Waiting for AI cores to start...', 'running');
+            
+            if (aiCoreMonitorInterval) clearInterval(aiCoreMonitorInterval);
+            
+            aiCoreMonitorInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/ai_smoke/ai_core_usage`);
+                    const data = await response.json();
+                    
+                    const usageIncrease = data.total_ai_usage - data.baseline;
+                    
+                    console.log(`AI Usage: ${data.total_ai_usage.toFixed(2)}%, Baseline: ${data.baseline.toFixed(2)}%, Increase: ${usageIncrease.toFixed(2)}%`);
+                    
+                    // If usage has increased significantly above baseline, start displaying images
+                    if (!imageDisplayStarted && usageIncrease > AI_USAGE_THRESHOLD) {
+                        console.log('AI cores are now active - starting image display');
+                        updateStatus_aiSmoke('AI cores active - processing images...', 'running');
+                        startLocalImageDisplay();
+                        imageDisplayStarted = true;
+                        stopAICoreMonitoring();
+                    }
+                } catch (error) {
+                    console.error('Error monitoring AI core usage:', error);
+                }
+            }, 200);  // Check every 200ms for quick response
+        }
+
+        function stopAICoreMonitoring() {
+            if (aiCoreMonitorInterval) {
+                clearInterval(aiCoreMonitorInterval);
+                aiCoreMonitorInterval = null;
+            }
+        }
 
         // populate options for number of running AI core
         function populate_options_num_ai_core_run() {
@@ -683,7 +722,7 @@
                 .then(data => {
                     console.log("Command sent successfully:", data);
                     // startProgressPolling();
-                    startLocalImageDisplay();
+                    startAICoreMonitoring();  // wait for AI cores
                     startCompletionPolling();
                 })
                 .catch(error => {
@@ -702,6 +741,7 @@
         
         window.clear_ai_smoke = function() {
             stopLocalImageDisplay();
+            stopAICoreMonitoring();
             stopProgressPolling();
             isRunning_aiSmoke = false;
             startTime_aiSmoke = null;
@@ -818,6 +858,7 @@
 
         function handleCompletion() {
             stopLocalImageDisplay();
+            stopAICoreMonitoring();
             updateStatus_aiSmoke('Detection completed successfully', 'ready');
             isRunning_aiSmoke = false;
             updateButtons_aiSmoke();
@@ -826,6 +867,7 @@
 
         function handleError(errorMsg) {
             stopLocalImageDisplay();
+            stopAICoreMonitoring();
             updateStatus_aiSmoke(`Error: ${errorMsg}`, 'error');
             isRunning_aiSmoke = false;
             updateButtons_aiSmoke();
