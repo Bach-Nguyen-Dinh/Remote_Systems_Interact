@@ -16,6 +16,8 @@ RSS_EXECUTABLE_PATH = "/home/user/Small-Object-Detection/Utils/RSS"
 INPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Image"
 OUTPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Predictions"
 
+AI_SMOKE_PATH = "/home/user/ai_smoke/ai_server.py"
+
 # IMAGE_PATH_2 = "/home/root/Desktop/Bach/backprojection_result_small.png"  
 # IMAGE_PATH_1 = "/home/root/Desktop/Bach/backprojection_histogram.png"
 RESIZED_IMAGE_PATH = "/home/user/demo/optimized_image.webp"  # Temporary resized image path
@@ -51,6 +53,9 @@ SAVE_PATH_IPERF_LW_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_LwEthAdt.
 SAVE_PATH_IPERF_UP_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_UpEthAdt.json")
 
 AI_METRIC_PATH = "/home/user/ai_tool/status"
+IMU_EXECUTABLE_PATH = "/home/user/topaz_imu/iim42652"
+
+NUM_AI_CORE = 4
 
 # Global variable
 progress_update = 0.0
@@ -60,6 +65,9 @@ BW = 1000
 
 small_obj_detect_running = False
 current_output_count = 0
+
+ai_core_run_ai_smoke = 4
+ai_smoke_running = False
 
 ai_run_metrics_raw = None
 ai_run_metrics_lock = threading.Lock()  # Add thread safety
@@ -106,6 +114,65 @@ def send_progress_update(data):
         # print(f"Progress update sent: {data}")
     except Exception as e:
         print(f"Error sending progress update: {e}")
+
+def run_ai_smoke():
+    global ai_core_run_ai_smoke, ai_smoke_running
+    if ai_smoke_running:
+        print("AI smoke already running")
+        return
+    ai_smoke_running = True
+
+    try:
+        print(f"Running ai server with {ai_core_run_ai_smoke} cores")
+
+        # Send start notification
+        start_data = {
+            "type": "ai_smoke_start",
+            "status": "started",
+            "ai_cores": ai_core_run_ai_smoke
+        }
+        send_progress_update(start_data)
+
+        # Run the AI smoke process and wait for completion
+        process = subprocess.Popen([
+            "python3",
+            AI_SMOKE_PATH,
+            "--ai",
+            str(ai_core_run_ai_smoke)
+        ])
+
+        # Wait for process to complete
+        return_code = process.wait()
+
+        # Send completion notification based on return code
+        if return_code == 0:
+            completion_data = {
+                "type": "ai_smoke_complete",
+                "status": "completed",
+                "ai_cores": ai_core_run_ai_smoke
+            }
+            print("AI smoke process completed successfully")
+        else:
+            completion_data = {
+                "type": "ai_smoke_error",
+                "status": "error",
+                "error": f"Process exited with code {return_code}",
+                "ai_cores": ai_core_run_ai_smoke
+            }
+            print(f"AI smoke process failed with return code {return_code}")
+
+        send_progress_update(completion_data)
+
+    except Exception as e:
+        # Send error notification
+        error_data = {
+            "type": "ai_smoke_error",
+            "error": str(e)
+        }
+        send_progress_update(error_data)
+        print(f"Error running ai_smoke: {e}")
+    finally:
+        ai_smoke_running = False
 
 def run_small_object_detection():
     global small_obj_detect_running, current_output_count
@@ -412,7 +479,7 @@ def handle_netrun_test(netTestDuration, netTestInterface):
         print("No valid results to save.")
 
 def listen_for_messages():
-    global progress_update, BW
+    global progress_update, BW, ai_core_run_ai_smoke
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((LISTEN_IP, LISTEN_PORT))
     server_socket.listen(1)
@@ -480,6 +547,14 @@ def listen_for_messages():
 
                 elif message == "run_small_obj_detect":
                     threading.Thread(target=run_small_object_detection, daemon=True).start()
+                elif message.startswith("run_ai_smoke"):
+                    if ":" in message:
+                        ai_core_run_ai_smoke = int(message.split(":")[1])
+                        if ai_core_run_ai_smoke > NUM_AI_CORE:
+                            ai_core_run_ai_smoke = NUM_AI_CORE
+                        elif ai_core_run_ai_smoke <= 0:
+                            ai_core_run_ai_smoke = 1
+                    threading.Thread(target=run_ai_smoke, daemon=True).start()
 
 # # Function to run the iperf3 server
 # def run_iperf3_server():
@@ -525,9 +600,7 @@ def read_rapl_energy():
             return int(f.read().strip())  # Energy in microjoules
     except FileNotFoundError:
         return None
-
-IMU_EXECUTABLE_PATH = "/home/user/topaz_imu/iim42652"
-
+                    
 def get_imu_data():
     try:
         result = subprocess.run(
@@ -600,7 +673,7 @@ def get_ai_metrics():
         "active_core": 4,
     }
 
-    # Get AI temperature and frequency metrics (your existing code)
+    # Get AI temperature and frequency metrics
     try:
         process = subprocess.Popen([AI_METRIC_PATH],
                                    stdout=subprocess.PIPE,
@@ -640,6 +713,8 @@ def get_ai_metrics():
                 ai_run_metrics_decode = ai_run_metrics_raw.decode("utf-8")
                 # Parse the JSON string (use json.loads, not json.load)
                 ai_run_metrics_data = json.loads(ai_run_metrics_decode)
+
+                print(ai_run_metrics_data)
                 
                 # Reset the dictionary before updating
                 ai_run_metrics = {
