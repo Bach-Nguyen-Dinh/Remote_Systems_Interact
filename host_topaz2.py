@@ -57,6 +57,9 @@ SAVE_PATH_IPERF_VIRTUAL = os.path.join(CURR_DIR, "iperf3_end_result_virtual.json
 SMALL_OBJ_INPUT_DIR = "/home/matthew/Remote_Systems_Interact/small_obj_detect/data1/image"
 SMALL_OBJ_OUTPUT_DIR = "/home/matthew/Remote_Systems_Interact/small_obj_detect/data1/predictions"
 
+AI_SMOKE_INPUT_DIR = "/home/matthew/Downloads/SmokeNet-Data/validation/opt_web_img"
+AI_SMOKE_OUTPUT_DIR = "/home/matthew/Downloads/SmokeNet-Data/classification/opt_web_img"
+
 # Gyro parameters
 CALIBRATION_TIME = 10.0  # seconds to collect stationary gyro data
 alpha = 0.2              # low-pass filter coefficient
@@ -65,6 +68,10 @@ MIN_DIFF = 0.05          # minimum change threshold (deg/s)
 # Global variable
 connected_clients = []
 latest_small_obj_progress = {}
+latest_ai_smoke_progress = {}
+
+latest_ai_core_usage = 0.0
+ai_smoke_baseline_usage = 0.0
 
 # Global variable
 message = ""
@@ -173,7 +180,7 @@ def handle_image_process_server():
                             # Update the dictionary to store the formatted size
                             tif_file_properties = received_data
 
-                        elif "type" in received_data and received_data["type"].startswith("small_obj_detect"):
+                        elif "type" in received_data:
                             # print(f"Small object detection update: {received_data}")
                             # Broadcast to all connected clients (like index grafana)
                             broadcast_to_clients(received_data)
@@ -241,6 +248,7 @@ def handle_net_test_server():
 def handle_system_metrics_server():
     global _last_time, _angles
     global _gyro_filtered, _gyro_bias, _calibration_start, _calibration_samples, _calibrated
+    global latest_ai_core_usage
     
     client = InfluxDBClient(INFLUXDB_HOST, INFLUXDB_PORT, INFLUXDB_USER, INFLUXDB_PASSWORD, INFLUXDB_DB)
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -303,6 +311,7 @@ def handle_system_metrics_server():
                         ai_usage = float(system_info["ai_run_metrics"].get(ai_core_key, 0))
                         per_ai_core_usage[ai_core_key] = ai_usage
                         total_ai_core_usage += ai_usage*0.25
+                    latest_ai_core_usage = total_ai_core_usage
 
                     # print(total_ai_core_usage)
                     # Prepare data for InfluxDB
@@ -465,328 +474,22 @@ def broadcast_to_clients(data):
     """Broadcast data to all connected clients"""
     # This could be implemented with WebSockets or Server-Sent Events
     # For simplicity, we'll store the latest update and serve it via HTTP
-    global latest_small_obj_progress
-    latest_small_obj_progress = data
-
-# def start_server():
-#     global message, cphd_file_list, cphd_file_properties, tif_file_properties
-#     imageSaved = False
-#     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
-#         server_socket.bind((HOST_IP, DATA_PORT))
-#         server_socket.listen(1)
-#         print(f"Listening for incoming image on {HOST_IP}:{DATA_PORT}...")
-
-#         while True:
-#             conn, addr = server_socket.accept()
-#             with conn:
-#                 print(f"Receiving data from {addr}")
-
-#                 # Check if message is related to an image
-#                 if message.startswith("RUN:") and imageSaved == False:
-#                     save_path = SAVE_PATH_TIF
-#                 elif message.startswith("NETRUN:"):
-#                     if DOCKER_INTERFACE_ID in message:
-#                         save_path = SAVE_PATH_IPERF_DOCKER
-#                     elif VIRTUAL_INTERFACE_ID in message:
-#                         save_path = SAVE_PATH_IPERF_VIRTUAL
-#                     else:
-#                         save_path = None
-#                 else:
-#                     save_path = None
-#                     imageSaved = False
-
-#                 print(f"Current save path: {save_path}")
-
-#                 if save_path == SAVE_PATH_TIF:
-#                     # Receive file size first
-#                     file_size = int.from_bytes(conn.recv(8), byteorder="big")
-#                     print(f"Expecting to receive {file_size} bytes...")
-
-#                     received_data = b""
-#                     while len(received_data) < file_size:
-#                         chunk = conn.recv(4096)
-#                         if not chunk:
-#                             break
-#                         received_data += chunk
-
-#                     if len(received_data) == file_size:
-#                         with open(save_path, "wb") as f:
-#                             f.write(received_data)
-#                         print(f"Image received and saved as {save_path} ({len(received_data)} bytes)")
-#                     else:
-#                         print(f"Error: Received {len(received_data)} bytes, expected {file_size} bytes")
-#                     imageSaved = True
-#                 elif save_path is not None and save_path != SAVE_PATH_TIF:
-#                     try:
-#                         # Read the incoming JSON data until the client closes the connection
-#                         received_data = b""
-#                         while True:
-#                             chunk = conn.recv(4096)
-#                             if not chunk:
-#                                 break  # Connection closed by client
-#                             received_data += chunk
-
-#                         # Decode and save
-#                         if received_data:
-#                             json_text = received_data.decode()
-#                             with open(save_path, "w") as f:
-#                                 f.write(json_text)
-#                             print(f"JSON file saved to: {save_path} ({len(received_data)} bytes)")
-
-#                         else:
-#                             print("No data received.")
-
-#                     except Exception as e:
-#                         print(f"Error receiving JSON file: {e}")
-#                 else:
-#                     data = conn.recv(4096).decode()
-#                     try:
-#                         received_data = json.loads(data)
-
-#                         # Check if it's a file size response
-#                         if "filename" in received_data and "size" in received_data:
-#                             file_name = received_data["filename"]
-#                             file_size_str = received_data["size"]
-#                             print(f"File '{file_name}' has a size of '{file_size_str}'.")
-#                             # Update the dictionary to store the formatted size
-#                             cphd_file_properties = received_data
-
-#                         # Check if it's a list of CPHD files
-#                         elif "cphd_files" in received_data:
-#                             cphd_file_list = received_data["cphd_files"]
-#                             print(f"Updated CPHD file list: {cphd_file_list}")
-
-#                         elif "tif_filename" in received_data:
-#                             file_name = received_data["tif_filename"]
-#                             file_size_str = received_data["size"]
-#                             print(f"File '{file_name}' has a size of '{file_size_str}'.")
-#                             # Update the dictionary to store the formatted size
-#                             tif_file_properties = received_data
-
-#                         else:
-#                             print(f"Received unknown data: {received_data}")
-
-#                         if "type" in received_data and received_data["type"].startswith("small_obj_detect"):
-#                             print(f"Small object detection update: {received_data}")
-#                             # Broadcast to all connected clients (like index grafana)
-#                             broadcast_to_clients(received_data)
-
-#                     except json.JSONDecodeError as e:
-#                         print(f"Error decoding received data: {e}")
-
-
-# # # Function to serve images over HTTP
-# # def run_http_server():
-# #     os.chdir(SAVE_DIR)
-# #     httpd = HTTPServer(("0.0.0.0", IMAGE_PORT), SimpleHTTPRequestHandler)
-# #     print(f"Serving images on port {IMAGE_PORT}...")
-# #     httpd.serve_forever()
-
-# # Override to suppress logging for specific status codes (200 and 404)
-# class CustomHTTPRequestHandler(SimpleHTTPRequestHandler):
-#     def log_message(self, format, *args):
-#         # Extract the status code from the format
-#         status_code = args[-2]  # The second-to-last argument is the status code
-        
-#         # Suppress logs for 404 status code (and 200 if needed)
-#         if status_code == "200" or status_code == "404":
-#             return  # Do not log the message
-        
-#         # Call the original log_message method for other status codes
-#         super().log_message(format, *args)
-
-# def run_http_server():
-#     # Set the working directory to serve files from
-#     os.chdir(SAVE_DIR)
-#     # Start the HTTP server with the custom request handler
-#     httpd = HTTPServer((HOST_IP, IMAGE_PORT), CustomHTTPRequestHandler)
-#     print(f"Serving images on port {IMAGE_PORT}...")
-#     httpd.serve_forever()
-
-# # Function to receive system metrics and store them in InfluxDB
-# def receive_metrics():
-#     client = InfluxDBClient(INFLUXDB_HOST, INFLUXDB_PORT, INFLUXDB_USER, INFLUXDB_PASSWORD, INFLUXDB_DB)
-#     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-#     server_socket.bind((HOST_IP, SYSINFO_PORT))
-#     server_socket.listen(1)
-
-#     print("System metrics server listening for connections...")
+    global latest_small_obj_progress, latest_ai_smoke_progress
     
-#     while True:
-#         client_socket, client_address = server_socket.accept()
-#         print(f"Connection established with {client_address}")
-
-#         buffer = ""
-#         while True:
-#             data = client_socket.recv(1024 * 10).decode()
-#             # print(data)
-#             if not data:
-#                 break
-
-#             buffer += data
-#             while "\n" in buffer:
-#                 message, buffer = buffer.split("\n", 1)
-#                 try:
-#                     system_info = json.loads(message)
-#                     total_cpu_usage = 0
-#                     # CPU metrics
-#                     per_core_usage_data = {}
-#                     for i in range(4):
-#                         core_key = f"core_{i}_usage"
-#                         usage = float(system_info["per_core_usage"].get(core_key, 0))
-#                         per_core_usage_data[f"per_core_usage{i}"] = usage
-#                         total_cpu_usage += usage*0.25
-#                     per_core_freq_data = {
-#                         f"per_core_freq{i}": float(system_info["per_core_freq"].get(f"core_{i}_frequency", 0))
-#                         for i in range(4)
-#                     }
-#                     # Network data
-#                     network_data = {}
-#                     network_info = system_info.get("network", {})
-
-#                     for iface_name, iface_stats in network_info.items():
-#                         for stat_name, value in iface_stats.items():
-#                             # Create a field like enp2s0_upload_speed, enp1s0f1_bytes_recv, etc.
-#                             field_key = f"{iface_name}_{stat_name}"
-#                             try:
-#                                 network_data[field_key] = float(value)
-#                             except (ValueError, TypeError):
-#                                 # Skip if value is not convertible to float
-#                                 continue
-#                     per_ai_core_temp = {
-#                         f"ai_core_{i}_temp": float(system_info["ai_temps"].get(f"ai_core_{i}_temp", 0))
-#                         for i in range(4)
-#                     }
-#                     per_ai_core_freq = {
-#                         f"ai_core_{i}_freq": float(system_info["ai_freqs"].get(f"ai_core_{i}_freq", 0))
-#                         for i in range(4)
-#                     }
-#                     total_ai_core_usage = 0
-#                     per_ai_core_usage = {}
-#                     for i in range(4):
-#                         ai_core_key = f"ai_core_{i}_usage"
-#                         ai_usage = float(system_info["ai_run_metrics"].get(ai_core_key, 0))
-#                         per_ai_core_usage[ai_core_key] = ai_usage
-#                         total_ai_core_usage += ai_usage*0.25
-
-#                     # print(total_ai_core_usage)
-#                     # Prepare data for InfluxDB
-#                     per_ai_core_pwr ={
-#                         f"ai_core_{i}_pwr": float(system_info["per_ai_core_pwrs"].get(f"ai_core_{i}_pwr", 0))
-#                         for i in range(4)
-#                     }
-#                     json_body = [
-#                         {
-#                             "measurement": "system_metrics",
-#                             "tags": {"host": client_address[0]},
-#                             "fields": {
-#                                 "cpu_usage": total_cpu_usage,
-#                                 "memory_usage": float(system_info["memory_usage"]),
-#                                 "swap_usage": float(system_info["swap_usage"]),
-#                                 "sys_temp": system_info.get("sys_temp", 0.0),
-#                                 "uptime_seconds": float(system_info["uptime_seconds"]),
-#                                 "total_memory": float(system_info["total_memory"]),
-#                                 "total_swap": float(system_info["total_swap"]),
-#                                 "num_threads": int(system_info["num_threads"]),
-#                                 "cpu_power": float(system_info.get("cpu_power", 0.0)),
-#                                 "total_disk_usage": float(system_info.get("total_disk_usage", 0.0)),
-#                                 "total_disk_size": float(system_info.get("total_disk_size", 0.0)),
-#                                 "progress_update": float(system_info.get("progress_update", 0.0)),
-#                                 **per_core_usage_data,
-#                                 **per_core_freq_data,
-#                                 **network_data,
-#                                 **per_ai_core_temp,
-#                                 **per_ai_core_freq,
-#                                 "ai_total_pwr": float(system_info["ai_total_pwr"]),
-#                                 **per_ai_core_usage,
-#                                 "total_ai_usage": total_ai_core_usage,
-#                                 **per_ai_core_pwr
-#                             },
-#                             "time": int(time.time() * 1e9)  # Nanoseconds
-#                         }
-#                     ]
-
-#                     # Write data to InfluxDB
-#                     client.write_points(json_body)
-#                 except json.JSONDecodeError as e:
-#                     print(f"JSON Decode Error: {e}. Skipping message.")
-
-#         client_socket.close()
-
-# # Flask route to send messages to target system
-# @app.route('/send_message', methods=['POST'])
-# def send_message():
-#     global message, netTestDuration
-#     global latest_small_obj_progress
-
-#     data = request.get_json()
-#     message = data.get("message", "Default message from host")
-#     print(message)
-
-#     if message == "3":
-#         return delete_all_files()
-#     elif message.startswith("RUN:"):
-#         global tif_file_properties
-#         # clear the database for new data
-#         tif_file_properties = []
-#     elif message.startswith("NETRUN:"):
-#         netTestDuration = message.split(":", 1)[1]
-#         if FM_INTERFACE_ID in message:
-#             # Start iperf3 in a separate thread
-#             start_iperf_thread(SAVE_PATH_IPERF_FM)
-#             return jsonify({"status": "iperf3 test started"}), 200
-#         elif LOCAL_INTERFACE_ID in message:
-#             # Start iperf3 in a separate thread
-#             start_iperf_thread(SAVE_PATH_IPERF_LOCAL)
-#             return jsonify({"status": "iperf3 test started"}), 200
-#         elif DOCKER_INTERFACE_ID in message:
-#             return forward_message_to_target(message)
-#         elif VIRTUAL_INTERFACE_ID in message:
-#             return forward_message_to_target(message)
-#     elif message.startswith("BW:"):
-#         if FM_INTERFACE_ID in message:
-#             parts = message.split(":")
-#             if len(parts) != 3:
-#                 print("Invalid BW message format")
-#                 return
-#             _, bwValue, target = parts  # bwValue = "1000", target = "LwEthOnb"
-#             target = COMP_ETH_PORT_INTERFACE_ID
-#             # Construct the ethtool command
-#             command = ["sudo", "ethtool", "-s", target, "speed", bwValue, "autoneg", "off"]
-#             print(f"Executing command: {' '.join(command)}")
-#             # Run the command and capture stdout and stderr
-#             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-#             # Capture output and error streams
-#             stdout, stderr = process.communicate()
-
-#             # Check the return code
-#             if process.returncode == 0:
-#                 print("Command executed successfully.")
-#                 if stdout:
-#                     print("Output:", stdout)
-#                 else:
-#                     print("No output from the command.")
-#                 return jsonify({"status": "success", "message": "Bandwidth updated successfully"}), 200
-#             else:
-#                 print(f"Error executing command. Return code: {process.returncode}")
-#                 if stderr:
-#                     print("Error message:", stderr)
-#                 return jsonify({"status": "error", "message": stderr.strip()}), 500
-            
-#     if message == "run_small_obj_detect":
-#         # Clear previous progress
-#         latest_small_obj_progress = {}
-#         return forward_message_to_target(message)
-#     elif message == "clear_small_obj_detect":
-#         latest_small_obj_progress = {}
-#         return jsonify({"status": "cleared"})
-
-#     return forward_message_to_target(message)   
+    # Route to appropriate storage based on message type
+    if data.get("type", "").startswith("ai_smoke"):
+        latest_ai_smoke_progress = data
+    elif data.get("type", "").startswith("small_obj_detect"):
+        latest_small_obj_progress = data
+    else:
+        # Default to small_obj for backward compatibility
+        latest_small_obj_progress = data
 
 # Flask route to send messages to target system
 @app.route('/send_message', methods=['POST'])
 def send_message():
-    global message, netTestDuration, flag_get_image, latest_small_obj_progress
+    global message, netTestDuration, flag_get_image, latest_small_obj_progress, latest_ai_smoke_progress
+    global ai_smoke_baseline_usage, latest_ai_core_usage
     data = request.get_json()
     message = data.get("message", "Default message from host")
     print(message)
@@ -804,8 +507,13 @@ def send_message():
         # Clear previous progress
         latest_small_obj_progress = {}
         return forward_message_to_target(message)
-    elif message == "clear_small_obj_detect":
-        latest_small_obj_progress = {}
+    elif message.startswith("run_ai_smoke"):
+        # Clear previous progress
+        latest_ai_smoke_progress = {}
+        ai_smoke_baseline_usage = latest_ai_core_usage
+        return forward_message_to_target(message)
+    elif message == "clear_ai_smoke":
+        latest_ai_smoke_progress = {}
         return jsonify({"status": "cleared"})
 
     return forward_message_to_target(message)  
@@ -1081,6 +789,103 @@ def validate_image(image_type, filename):
             
     except Exception as e:
         return jsonify({"valid": False, "error": str(e)}), 500
+
+@app.route('/ai_smoke/image_list', methods=['GET'])
+def get_ai_smoke_image_list():
+    """Get list of all input and output images with validation"""
+    input_images = []
+    output_images = []
+    
+    # Helper function to validate and get image info
+    def get_valid_images(directory, image_type):
+        images = []
+        if os.path.exists(directory):
+            for filename in os.listdir(directory):
+                if filename.endswith('.webp'):
+                    filepath = os.path.join(directory, filename)
+                    try:
+                        # Verify file exists and is readable
+                        if os.path.isfile(filepath) and os.access(filepath, os.R_OK):
+                            file_size = os.path.getsize(filepath)
+                            # Only include files that have content
+                            if file_size > 0:
+                                images.append({
+                                    'filename': filename,
+                                    'size': file_size,
+                                    'type': image_type
+                                })
+                            else:
+                                print(f"Warning: Empty file {filepath}")
+                        else:
+                            print(f"Warning: Cannot read file {filepath}")
+                    except Exception as e:
+                        print(f"Error checking file {filepath}: {e}")
+        
+        return images
+    
+    input_images = get_valid_images(AI_SMOKE_INPUT_DIR, 'input')
+    output_images = get_valid_images(AI_SMOKE_OUTPUT_DIR, 'output')
+    
+    return jsonify({
+        "input_images": [img['filename'] for img in input_images],
+        "output_images": [img['filename'] for img in output_images],
+        "input_images_info": input_images,
+        "output_images_info": output_images,
+        "total_input": len(input_images),
+        "total_output": len(output_images)
+    })
+
+@app.route('/ai_smoke/validate_image/<image_type>/<filename>')
+def validate_ai_smoke_image(image_type, filename):
+    """Validate that a specific image exists and is accessible"""
+    try:
+        if image_type == 'input':
+            directory = AI_SMOKE_INPUT_DIR
+        elif image_type == 'output':
+            directory = AI_SMOKE_OUTPUT_DIR
+        else:
+            return jsonify({"valid": False, "error": "Invalid image type"}), 400
+        
+        filepath = os.path.join(directory, filename)
+        
+        if os.path.isfile(filepath) and os.access(filepath, os.R_OK):
+            file_size = os.path.getsize(filepath)
+            return jsonify({
+                "valid": True,
+                "filename": filename,
+                "size": file_size,
+                "path": filepath
+            })
+        else:
+            return jsonify({"valid": False, "error": "File not accessible"}), 404
+            
+    except Exception as e:
+        return jsonify({"valid": False, "error": str(e)}), 500
+
+@app.route('/ai_smoke/images/input/<filename>')
+def serve_ai_smoke_input_image(filename):
+    """Serve input images for AI smoke detection"""
+    return send_from_directory(AI_SMOKE_INPUT_DIR, filename)
+
+@app.route('/ai_smoke/images/output/<filename>')
+def serve_ai_smoke_output_image(filename):
+    """Serve output images for AI smoke detection"""
+    return send_from_directory(AI_SMOKE_OUTPUT_DIR, filename)
+
+@app.route('/ai_smoke/progress', methods=['GET'])
+def get_ai_smoke_progress():
+    """Get the latest AI smoke detection progress"""
+    global latest_ai_smoke_progress
+    return jsonify(latest_ai_smoke_progress)
+
+@app.route('/ai_smoke/ai_core_usage', methods=['GET'])
+def get_ai_core_usage():
+    """Get the current total AI core usage"""
+    global latest_ai_core_usage, ai_smoke_baseline_usage
+    return jsonify({
+        "total_ai_usage": latest_ai_core_usage,
+        "baseline": ai_smoke_baseline_usage
+    })
 
 # Function to run Flask server
 # def run_flask_server():
