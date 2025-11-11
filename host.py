@@ -331,7 +331,7 @@ def get_cphd_file_properties():
 
 @app.route('/get_tif_file_properties', methods=['GET'])
 def get_tif_file_properties():
-    """Returns the latest list of CPHD files"""
+    """Returns the properties of the latest tiff file"""
     return jsonify({"files": tif_file_properties})
 
 # Serve static files from the SAVE_DIR
@@ -339,6 +339,20 @@ def get_tif_file_properties():
 def serve_image(filename):
     """Serve images from the SAVE_DIR directory."""
     return send_from_directory(SAVE_DIR, filename)
+
+@app.route('/sar_colored_image')
+def serve_sar_colored_image():
+    """Serve the latest SAR colorized image."""
+    sar_colored_path = os.path.join(CURR_DIR, "SAR_colored_images")  # Remove the subdirectory part
+    # Find the first image file in the directory
+    try:
+        files = [f for f in os.listdir(sar_colored_path) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))]
+        if files:
+            return send_from_directory(sar_colored_path, files[0])
+        else:
+            return "No image found", 404
+    except FileNotFoundError:
+        return "Directory not found", 404
 
 # Function to run iperf3 and capture the results
 def run_iperf3(file_path, message):
