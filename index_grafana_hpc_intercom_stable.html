@@ -163,25 +163,28 @@
 
     <script>
         FLASK_PORT = 5000
+        FLASK_HOST = "localhost"
 
         let lastTifFilename = "lastFile"; // Store the last processed tif_filename
         let testDurationLwEthOnb = null; // Variable to store selected duration
         let testDurationUpEthOnb = null;
         let testDurationLwEthAdt = null;
         let testDurationUpEthAdt = null;
+        let sarProcTimer = null;  // SAR run flag
+        let sarProcStartTime = null;  // store the start time for SAR processing
         
         function fetchFileList() {
             const statusElement = document.getElementById("status");
             statusElement.textContent = "Fetching file list..."; // Show status message
 
-            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: "4" })  
             })
             .then(() => {
                 setTimeout(() => {
-                    fetch(`http://localhost:${FLASK_PORT}/get_cphd_files`)
+                    fetch(`http://${FLASK_HOST}:${FLASK_PORT}/get_cphd_files`)
                         .then(response => response.json())
                         .then(data => {
                             console.log("Fetched CPHD files:", data.files);
@@ -220,10 +223,19 @@
             const selectedFile = document.getElementById("menuDropdown").value;
             if (!selectedFile) return;
 
-            fetch(`http://localhost:${FLASK_PORT}/get_cphd_file_properties`)
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/get_cphd_file_properties`)
                 .then(response => response.json())
                 .then(data => {
                     if (data.files.filename === selectedFile) {
+                        if (selectedFile.includes("2023-09")) {
+                            document.getElementById("totalPulses").textContent = "18,051";
+                        }
+                        else if (selectedFile.includes("2023-06")) {
+                            document.getElementById("totalPulses").textContent = "15,063";
+                        }
+                        else {
+                            document.getElementById("totalPulses").textContent = "N/A";
+                        }
                         document.getElementById("fileSize").textContent = data.files.size;
                         document.getElementById("imageSize").textContent = data.files.metadata.numRows + " x " + data.files.metadata.numColumns;
                         document.getElementById("resolution").textContent = data.files.metadata.groundResolution.toFixed(2) + " meters";
@@ -242,9 +254,9 @@
                     document.getElementById("areaSize").textContent = "N/A";
                 });
         }
-
+        
         function fetchProcessedFile() {
-            fetch(`http://localhost:${FLASK_PORT}/images/tif_image.webp`)
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/images/tif_image.webp`)
                 .then(response => {
                     if (!response.ok) {
                         throw new Error("Failed to fetch image.");
@@ -254,13 +266,34 @@
                 .then(imageBlob => {
                     const imageUrl = URL.createObjectURL(imageBlob);
                     document.getElementById("processedImage1").src = imageUrl;
-                    document.getElementById("processedImage2").src = imageUrl;
                     document.getElementById("processedImage1").style.display = "block";
-                    document.getElementById("processedImage2").style.display = "block";
+
+                    // Wait 2 seconds, then fetch and display the colorized image
+                    setTimeout(() => {
+                        fetchColorizedImage();
+                    }, 2000);
                 })
                 .catch(error => {
                     console.error("Error fetching processed image:", error);
                     document.getElementById("processedImage1").style.display = "none";
+                });
+        }
+
+        function fetchColorizedImage() {
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/sar_colored_image`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error("Failed to fetch colorized image.");
+                    }
+                    return response.blob();
+                })
+                .then(imageBlob => {
+                    const imageUrl = URL.createObjectURL(imageBlob);
+                    document.getElementById("processedImage2").src = imageUrl;
+                    document.getElementById("processedImage2").style.display = "block";
+                })
+                .catch(error => {
+                    console.error("Error fetching colorized image:", error);
                     document.getElementById("processedImage2").style.display = "none";
                 });
         }
@@ -274,7 +307,7 @@
                 return;
             }
 
-            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: `SIZE:${selectedOption}` })
@@ -295,6 +328,7 @@
             document.getElementById("outFileSize").textContent = "N/A";
             document.getElementById("reductionFactor").textContent = "N/A";
             document.getElementById("sizeCompared").textContent = "N/A";
+            document.getElementById("sarProcTime").textContent = "N/A";
         }
 
         async function sendRun() {
@@ -310,7 +344,7 @@
         
             try {
                 // Send the "RUN" command
-                await fetch(`http://localhost:${FLASK_PORT}/send_message`, {
+                await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ message: `RUN:${selectedOption}` })
@@ -325,25 +359,52 @@
                 document.getElementById("outFileSize").textContent = "N/A";
                 document.getElementById("reductionFactor").textContent = "N/A";
                 document.getElementById("sizeCompared").textContent = "N/A";
+
+                // document.getElementById("sarProcTime").textContent = "N/A";
+                // START TIMER - Initialize and start counting
+                sarProcStartTime = Date.now();
+                document.getElementById("sarProcTime").textContent = "0.00s";
+
+                // Clear any existing timer
+                if (sarProcTimer) {
+                    clearInterval(sarProcTimer);
+                }
+                
+                // Update timer every 100ms for smooth counting
+                sarProcTimer = setInterval(() => {
+                    const elapsed = (Date.now() - sarProcStartTime) / 1000;
+                    document.getElementById("sarProcTime").textContent = elapsed.toFixed(2) + "s";
+                }, 100);
         
                 // Set timeout
                 const startTime = Date.now();
-                const timeout = 30 * 1000; // 25 seconds
+                const timeout = 300 * 1000;
                 let fileUpdated = false;
         
                 while (!fileUpdated && (Date.now() - startTime < timeout)) {
                     // Fetch the output file properties
-                    const response = await fetch(`http://localhost:${FLASK_PORT}/get_tif_file_properties`);
+                    const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/get_tif_file_properties`);
                     const data = await response.json();
         
                     // Check if tif_filename has changed
                     if (data.files.tif_filename && data.files.tif_filename !== lastTifFilename) {
                         statusElement.textContent = "Getting output properties ... Data Fetched.";
+
+                        // STOP TIMER when we receive response
+                        if (sarProcTimer) {
+                            clearInterval(sarProcTimer);
+                            sarProcTimer = null;
+                        }
+
+                        // Calculate final elapsed time
+                        const finalElapsed = (Date.now() - sarProcStartTime) / 1000;
+                        document.getElementById("sarProcTime").textContent = finalElapsed.toFixed(2) + "s";
         
                         // Update output file properties
                         document.getElementById("outFileSize").textContent = data.files.size;
                         document.getElementById("reductionFactor").textContent = "x" + data.files.reduction_scale + " or " + data.files.reduction_factor + "%";
                         document.getElementById("sizeCompared").textContent = data.files.size_compared + "%";
+                        // document.getElementById("sarProcTime").textContent = data.files.sar_proc_time + "s";
         
                         // Fetch the image after properties are updated
                         fetchProcessedFile();
@@ -372,7 +433,7 @@
         function resetMenu() {
             lastTifFilename = "lastFile";
 
-            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: "3"})
@@ -387,6 +448,7 @@
             });
             document.getElementById("menuDropdown").innerHTML = '<option value="" disabled selected>Click "Refresh" to fetch</option>';
             document.getElementById("status").textContent = "";
+            document.getElementById("totalPulses").textContent = "N/A";
             document.getElementById("fileSize").textContent = "N/A";
             document.getElementById("imageSize").textContent = "N/A";
             document.getElementById("resolution").textContent = "N/A";
@@ -398,6 +460,7 @@
             document.getElementById("outFileSize").textContent = "N/A";
             document.getElementById("reductionFactor").textContent = "N/A";
             document.getElementById("sizeCompared").textContent = "N/A";
+            document.getElementById("sarProcTime").textContent = "N/A";
         }
         
         // ================================================================================================================
@@ -432,7 +495,7 @@
                 return;
             }
             // Send the NETRUN message via POST request
-            await fetch(`http://localhost:${FLASK_PORT}/send_message`, {
+            await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:LwEthOnb` })
@@ -441,7 +504,7 @@
             
             await new Promise(resolve => setTimeout(resolve, testDurationLwEthOnb*1000*2+5000));
 
-            fetch(`http://localhost:${FLASK_PORT}/iperf3/lw_eth_onb_results`)
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/iperf3/lw_eth_onb_results`)
                 .then(response => response.json())
                 .then(data => {
                     // Extract the relevant data from the JSON response
@@ -555,8 +618,8 @@
 
             // Add real options
             const bandwidthOptions = [
-                { value: "10", text: "10 Mbits/sec" },
-                { value: "100", text: "100 Mbits/sec" },
+                // { value: "10", text: "10 Mbits/sec" },
+                // { value: "100", text: "100 Mbits/sec" },
                 { value: "1000", text: "1000 Mbits/sec" }
             ];
 
@@ -586,7 +649,7 @@
             // Display the status (optional)
             document.getElementById("statusNet_LwEthOnbBw").innerText = "Configuring...";
 
-            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -643,7 +706,7 @@
                 return;
             }
             // Send the NETRUN message via POST request
-            await fetch(`http://localhost:${FLASK_PORT}/send_message`, {
+            await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:UpEthOnb` })
@@ -652,7 +715,7 @@
             
             await new Promise(resolve => setTimeout(resolve, testDurationUpEthOnb*1000*2+5000));
 
-            fetch(`http://localhost:${FLASK_PORT}/iperf3/up_eth_onb_results`)
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/iperf3/up_eth_onb_results`)
                 .then(response => response.json())
                 .then(data => {
                     // Extract the relevant data from the JSON response
@@ -778,8 +841,8 @@
 
             // Add real options
             const bandwidthOptions = [
-                { value: "10", text: "10 Mbits/sec" },
-                { value: "100", text: "100 Mbits/sec" },
+                // { value: "10", text: "10 Mbits/sec" },
+                // { value: "100", text: "100 Mbits/sec" },
                 { value: "1000", text: "1000 Mbits/sec" }
             ];
 
@@ -809,7 +872,7 @@
             // Display the status (optional)
             document.getElementById("statusNet_UpEthOnbBw").innerText = "Configuring...";
 
-            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -837,7 +900,7 @@
         // ================================================================================================================
         // ========================================= Lower Ethernet Port on adapter =======================================
         // ================================================================================================================
-        async function btnLwEthAdtRunClick(triggeredBySync = false) {
+        async function btnLwEthAdtRunClick() {
             const selectedTestDuration = testDurationLwEthAdt; // Use the global testDuration variable
             const statusNetElement = document.getElementById("statusNet_LwEthAdt");
             const bwDropdown = document.getElementById("bwDropdown_LwEthAdt");
@@ -870,17 +933,17 @@
                 localStorage.setItem("panelSync", JSON.stringify({ 
                     type: "run" 
                 }));
-                // Send the NETRUN message via POST request
-                await fetch(`http://localhost:${FLASK_PORT}/send_message`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:LwEthAdt` })
-                });
-                statusNetElement.textContent = "Waiting for results...";
+            // Send the NETRUN message via POST request
+            await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:LwEthAdt` })
+            });
+            statusNetElement.textContent = "Waiting for results...";
             
-                await new Promise(resolve => setTimeout(resolve, testDurationLwEthAdt*1000*2+5000));
+            await new Promise(resolve => setTimeout(resolve, testDurationLwEthAdt*1000*2+5000));
 
-                fetch(`http://localhost:${FLASK_PORT}/iperf3/lw_eth_adt_results`)
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/iperf3/lw_eth_adt_results`)
                 .then(response => response.json())
                 .then(data => {
                     // // Extract the relevant data from the JSON response
@@ -928,10 +991,10 @@
                     statusNetElement.textContent = "Test run error";
                     console.error('Error fetching the data:', error);
                 });     
-            }
-            else {
+                    }
+                    else {
                 statusNetElement.textContent = "Waiting for results...";
-            }
+                    }
         }
 
         function updateResultsLwEthAdt(data) {
@@ -942,13 +1005,13 @@
             const bwDropdown = document.getElementById("bwDropdown_LwEthAdt");
             const selectedBwValue = bwDropdown.value;
 
-            if (selectedBwValue == 10000) {
+                    if (selectedBwValue == 10000) {
                 const downBW = (streamDown.bits_per_second / 1e6).toFixed(2);   // Convert bits_per_second to Mbit/sec (divide by 1e6)
                 const upBW = (streamUp.bits_per_second / 1e6).toFixed(2);
                 document.getElementById('downBW_LwEthAdt').textContent = `${downBW} Mbits/sec`;
                 document.getElementById('upBW_LwEthAdt').textContent = `${upBW} Mbits/sec`;
-            }
-            else {
+                    }
+                    else {
                 let bitsPerSecondMbit, jitterMs, lostPackets, totalPackets, lostPercent;
 
                 bitsPerSecondMbit = streamDown.bits_per_second / 1e6;
@@ -957,9 +1020,9 @@
                 totalPackets = streamDown.packets * 11584 / 1000000000;
                 lostPercent = streamDown.lost_percent;
 
-                document.getElementById('downBW_LwEthAdt').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
-                document.getElementById('downLat_LwEthAdt').textContent = `${jitterMs.toFixed(4)} ms`;
-                document.getElementById('downLostTotal_LwEthAdt').textContent = `${lostPackets.toFixed(4)}/${totalPackets.toFixed(4)} Gbits (${lostPercent.toFixed(2)}%)`;
+                        document.getElementById('downBW_LwEthAdt').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
+                        document.getElementById('downLat_LwEthAdt').textContent = `${jitterMs.toFixed(4)} ms`;
+                        document.getElementById('downLostTotal_LwEthAdt').textContent = `${lostPackets.toFixed(4)}/${totalPackets.toFixed(4)} Gbits (${lostPercent.toFixed(2)}%)`;
 
                 bitsPerSecondMbit = streamUp.bits_per_second / 1e6;
                 jitterMs = streamUp.jitter_ms;
@@ -970,7 +1033,7 @@
                 document.getElementById('upBW_LwEthAdt').textContent = `${bitsPerSecondMbit.toFixed(2)} Mbits/sec`;
                 document.getElementById('upLat_LwEthAdt').textContent = `${jitterMs.toFixed(4)} ms`;
                 document.getElementById('upLostTotal_LwEthAdt').textContent = `${lostPackets.toFixed(4)}/${totalPackets.toFixed(4)} Gbits (${lostPercent.toFixed(2)}%)`;
-            }
+                    }
             document.getElementById("statusNet_LwEthAdt").textContent = "Waiting for results... Done";
         }
 
@@ -1062,10 +1125,10 @@
             // Add real options
             const bandwidthOptions = [
                 // { value: "100", text: "100 Mbits/sec" },
-                { value: "1000", text: "1000 Mbits/sec" },
-                { value: "2500", text: "2500 Mbits/sec" },
-                { value: "5000", text: "5000 Mbits/sec" },
-                { value: "10000", text: "10000 Mbits/sec" }
+                { value: "1000", text: "1000 Mbits/sec" }
+                // { value: "2500", text: "2500 Mbits/sec" },
+                // { value: "5000", text: "5000 Mbits/sec" },
+                // { value: "10000", text: "10000 Mbits/sec" }
             ];
 
             bandwidthOptions.forEach(optionData => {
@@ -1103,29 +1166,29 @@
                     type: "bandwidth",
                     value: selectedBwValue
                 }));
-                fetch("http://localhost:5000/send_message", {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({ message: `BW:${selectedBwValue}:LwEthAdt` })
-                })
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error("Configuring... Failed");
-                    }
-                    // Wait for 5 seconds before updating status
-                    return new Promise(resolve => {
-                        setTimeout(() => resolve("Configuring... Done"), 5000);
-                    });
-                })
-                .then(status => {
-                    document.getElementById("statusNet_LwEthAdtBw").innerText = status;
-                })
-                .catch(error => {
-                    console.error('Error:', error);
-                    document.getElementById("statusNet_LwEthAdtBw").innerText = "Error sending";
+                fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ message: `BW:${selectedBwValue}:LwEthAdt` })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error("Configuring... Failed");
+                }
+                // Wait for 5 seconds before updating status
+                return new Promise(resolve => {
+                    setTimeout(() => resolve("Configuring... Done"), 5000);
                 });
+            })
+            .then(status => {
+                document.getElementById("statusNet_LwEthAdtBw").innerText = status;
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                document.getElementById("statusNet_LwEthAdtBw").innerText = "Error sending";
+            });
             }
         }
 
@@ -1161,7 +1224,7 @@
                 return;
             }
             // Send the NETRUN message via POST request
-            await fetch(`http://localhost:${FLASK_PORT}/send_message`, {
+            await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:UpEthAdt` })
@@ -1170,7 +1233,7 @@
             
             await new Promise(resolve => setTimeout(resolve, testDurationUpEthAdt*1000*2+5000));
 
-            fetch(`http://localhost:${FLASK_PORT}/iperf3/up_eth_adt_results`)
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/iperf3/up_eth_adt_results`)
                 .then(response => response.json())
                 .then(data => {
                     // Extract the relevant data from the JSON response
@@ -1297,10 +1360,10 @@
             // Add real options
             const bandwidthOptions = [
                 // { value: "100", text: "100 Mbits/sec" },
-                { value: "1000", text: "1000 Mbits/sec" },
-                { value: "2500", text: "2500 Mbits/sec" },
-                { value: "5000", text: "5000 Mbits/sec" },
-                { value: "10000", text: "10000 Mbits/sec" }
+                { value: "1000", text: "1000 Mbits/sec" }
+                // { value: "2500", text: "2500 Mbits/sec" },
+                // { value: "5000", text: "5000 Mbits/sec" },
+                // { value: "10000", text: "10000 Mbits/sec" }
             ];
 
             bandwidthOptions.forEach(optionData => {
@@ -1329,7 +1392,7 @@
             // Display the status (optional)
             document.getElementById("statusNet_UpEthAdtBw").innerText = "Configuring...";
 
-            fetch(`http://localhost:${FLASK_PORT}/send_message`, {
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
