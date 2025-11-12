@@ -185,12 +185,17 @@
     </div>
 
     <script>
-        const FLASK_HOST = "192.168.0.32";
+        let sodInputImageCache = {};
+        let sodOutputImageCache = {};
+        
+    (function() {
+        'use strict';
+        const FLASK_HOST = "localhost";
         const FLASK_PORT = 5001;
         
         // let imageCache = {};
-        let inputImageCache = {};
-        let outputImageCache = {};
+        let sodInputImageCache = {};
+        let sodOutputImageCache = {};
         
         let isRunning = false;
         let startTime = null;
@@ -232,7 +237,7 @@
             }
         }
         
-        async function preloadImages() {
+        window.preloadImages = async function() {
             try {
                 console.log('Starting enhanced image load...');
                 updateStatus('Loading image list...', 'running');
@@ -267,9 +272,9 @@
                                 if (img.naturalWidth > 0 && img.naturalHeight > 0) {
                                     // Store in appropriate cache
                                     if (imageType === 'input') {
-                                        inputImageCache[filename] = img;
+                                        sodInputImageCache[filename] = img;
                                     } else {
-                                        outputImageCache[filename] = img;
+                                        sodOutputImageCache[filename] = img;
                                     }
                                     resolve({ success: true, filename, imageType, attempts });
                                 } else {
@@ -434,25 +439,25 @@
 
                 console.log('Input image load completed - ready for display');
                 
-                numToCheck = 300;
-                // Validate first 100 input images
-                const inputValidation = validateFirst100InputImages(numToCheck);
+                // numToCheck = 300;
+                // // Validate first 100 input images
+                // const inputValidation = validateFirst100InputImages(numToCheck);
 
-                // Update final status based on validation
-                if (failed.length === 0 && inputValidation.success) {
-                    // updateStatus(`All input images loaded and validated successfully (${successful.length}/${validatedCount})`, 'ready');
-                    updateStatus(`All input images loaded and validated`, 'ready');
-                    console.log(`All first ${numToCheck} input images are present in cache`);
-                } else if (failed.length === 0 && !inputValidation.success) {
-                    updateStatus(`Input images loaded: ${successful.length}/${validatedCount} - Missing ${inputValidation.missing}/${numToCheck} input images`, 'error');
-                    console.warn(`Missing ${inputValidation.missing}/${numToCheck} input images`);
-                } else if (successful.length > 0) {
-                    updateStatus(`Input images loaded: ${successful.length}/${validatedCount} (${successRate}%) - ${failed.length} failed, ${inputValidation.missing}/${numToCheck} input missing`, 'error');
-                    console.warn(`Missing ${inputValidation.missing}/${numToCheck} input images`);
-                } else {
-                    updateStatus('Failed to load input images - check console for details', 'error');
-                    console.error('Failed to load input images - check console for details');
-                }
+                // // Update final status based on validation
+                // if (failed.length === 0 && inputValidation.success) {
+                //     // updateStatus(`All input images loaded and validated successfully (${successful.length}/${validatedCount})`, 'ready');
+                //     updateStatus(`All input images loaded and validated`, 'ready');
+                //     console.log(`All first ${numToCheck} input images are present in cache`);
+                // } else if (failed.length === 0 && !inputValidation.success) {
+                //     updateStatus(`Input images loaded: ${successful.length}/${validatedCount} - Missing ${inputValidation.missing}/${numToCheck} input images`, 'error');
+                //     console.warn(`Missing ${inputValidation.missing}/${numToCheck} input images`);
+                // } else if (successful.length > 0) {
+                //     updateStatus(`Input images loaded: ${successful.length}/${validatedCount} (${successRate}%) - ${failed.length} failed, ${inputValidation.missing}/${numToCheck} input missing`, 'error');
+                //     console.warn(`Missing ${inputValidation.missing}/${numToCheck} input images`);
+                // } else {
+                //     updateStatus('Failed to load input images - check console for details', 'error');
+                //     console.error('Failed to load input images - check console for details');
+                // }
                                 
             } catch (error) {
                 console.error('Error in loading:', error);
@@ -460,59 +465,59 @@
             }
         }
 
-        function validateFirst100InputImages(numToCheck = 100) {
-            console.log(`Validating first ${numToCheck} input images in cache...`);
+        // function validateFirst100InputImages(numToCheck = 100) {
+        //     console.log(`Validating first ${numToCheck} input images in cache...`);
             
-            const missingImages = [];
-            const presentImages = [];
+        //     const missingImages = [];
+        //     const presentImages = [];
             
-            // Check images 1.webp through 100.webp
-            for (let i = 1; i <= numToCheck; i++) {
-                const filename = `${i}.webp`;
-                if (inputImageCache[filename]) {
-                    presentImages.push(filename);
-                } else {
-                    missingImages.push(filename);
-                }
-            }
+        //     // Check images 1.webp through 100.webp
+        //     for (let i = 1; i <= numToCheck; i++) {
+        //         const filename = `${i}.webp`;
+        //         if (sodInputImageCache[filename]) {
+        //             presentImages.push(filename);
+        //         } else {
+        //             missingImages.push(filename);
+        //         }
+        //     }
             
-            // Log results
-            console.log(`Input image validation results:`);
-            console.log(`✓ Present: ${presentImages.length}/${numToCheck} images`);
+        //     // Log results
+        //     console.log(`Input image validation results:`);
+        //     console.log(`✓ Present: ${presentImages.length}/${numToCheck} images`);
             
-            if (missingImages.length > 0) {
-                console.warn(`✗ Missing: ${missingImages.length}/${numToCheck} images`);
-                console.group('Missing input images:');
-                missingImages.forEach(filename => {
-                    console.warn(`- ${filename}`);
-                });
-                console.groupEnd();
+        //     if (missingImages.length > 0) {
+        //         console.warn(`✗ Missing: ${missingImages.length}/${numToCheck} images`);
+        //         console.group('Missing input images:');
+        //         missingImages.forEach(filename => {
+        //             console.warn(`- ${filename}`);
+        //         });
+        //         console.groupEnd();
                 
-                // Update status to show validation results
-                updateStatus(`Input images loaded with warnings: ${presentImages.length}/${numToCheck} input images found`, 'error');
-            } else {
-                console.log(`✓ All first ${numToCheck} input images are present in cache`);
-                updateStatus(`All input images loaded successfully - First ${numToCheck} input images validated`, 'ready');
-            }
+        //         // Update status to show validation results
+        //         updateStatus(`Input images loaded with warnings: ${presentImages.length}/${numToCheck} input images found`, 'error');
+        //     } else {
+        //         console.log(`✓ All first ${numToCheck} input images are present in cache`);
+        //         updateStatus(`All input images loaded successfully - First ${numToCheck} input images validated`, 'ready');
+        //     }
             
-            // Store validation results
-            window.inputImageValidation = {
-                total: numToCheck,
-                present: presentImages.length,
-                missing: missingImages.length,
-                missingList: missingImages,
-                presentList: presentImages
-            };
+        //     // Store validation results
+        //     window.inputImageValidation = {
+        //         total: numToCheck,
+        //         present: presentImages.length,
+        //         missing: missingImages.length,
+        //         missingList: missingImages,
+        //         presentList: presentImages
+        //     };
             
-            return {
-                success: missingImages.length === 0,
-                present: presentImages.length,
-                missing: missingImages.length,
-                missingList: missingImages
-            };
-        }
+        //     return {
+        //         success: missingImages.length === 0,
+        //         present: presentImages.length,
+        //         missing: missingImages.length,
+        //         missingList: missingImages
+        //     };
+        // }
 
-        function run_small_obj_detect() {
+        window.run_small_obj_detect = function() {
             if (isRunning) return;
             
             isRunning = true;
@@ -551,7 +556,7 @@
             }
         }
         
-        function clear_small_obj_detect() {
+        window.clear_small_obj_detect = function() {
             stopProgressPolling();
             isRunning = false;
             startTime = null;
@@ -613,10 +618,10 @@
                     // console.log(`Attempting1111 input=${data.input_image}, output=${data.output_image}`);
                     
                     // Check if images exist in cache before displaying
-                    if (!inputImageCache[data.input_image]) {
+                    if (!sodInputImageCache[data.input_image]) {
                         console.warn(`Input image ${data.input_image} not found in input cache`);
                     }
-                    if (!outputImageCache[data.output_image]) {
+                    if (!sodOutputImageCache[data.output_image]) {
                         console.warn(`Output image ${data.output_image} not found in output cache`);
                     }
                                         
@@ -660,9 +665,9 @@
                 
                 // Get image from appropriate cache
                 if (type === 'input') {
-                    cachedImg = inputImageCache[filename];
+                    cachedImg = sodInputImageCache[filename];
                 } else {
-                    cachedImg = outputImageCache[filename];
+                    cachedImg = sodOutputImageCache[filename];
                 }
                 
                 if (cachedImg && cachedImg.complete && cachedImg.naturalWidth > 0) {
@@ -704,6 +709,7 @@
             }
         }
 
+    })(); // End of IIFE
     </script>
 </body>
 </html>
