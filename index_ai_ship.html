@@ -195,6 +195,8 @@
     <script>
         let ai_ship_InputImageCache = {};
         let ai_ship_OutputImageCache = {};
+        let ai_ship_displayInterval = null;
+
     (function() {
         'use strict';
 
@@ -211,7 +213,6 @@
         let pollInterval_aiSmoke = null;
 
         let numAICoreRun = 4;
-        let displayInterval = null;
         let imagePairs = [];
 
         function startAICoreMonitoring() {
@@ -338,7 +339,7 @@
             currentPairIndex = 0;
             
             // Display images every 0.5 seconds
-            displayInterval = setInterval(() => {
+            ai_ship_displayInterval = setInterval(() => {
                 if (currentPairIndex < imagePairs.length) {
                     const pair = imagePairs[currentPairIndex];
                     displayImagePair(pair.input, pair.output);
@@ -351,9 +352,9 @@
         }
 
         function stopLocalImageDisplay() {
-            if (displayInterval) {
-                clearInterval(displayInterval);
-                displayInterval = null;
+            if (ai_ship_displayInterval) {
+                clearInterval(ai_ship_displayInterval);
+                ai_ship_displayInterval = null;
             }
         }
 
@@ -677,8 +678,11 @@
                 try {
                     const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/ai_ship/progress`);
                     const data = await response.json();
+
+                    console.log(`AI ship progress: ${data.type}`);
                     
                     if (data.type === 'ai_ship_complete') {
+                        console.log("AI ship application completed")
                         handleCompletion();
                     } else if (data.type === 'ai_ship_error') {
                         handleError(data.error);
@@ -715,7 +719,7 @@
         }
         
         function displayImagePair(inputFilename, outputFilename) {
-            console.log(`Displaying images: input=${inputFilename}, output=${outputFilename}`);
+            // console.log(`Displaying images: input=${inputFilename}, output=${outputFilename}`);
             const inputContainer = document.getElementById('inputImageContainer_aiSmoke');
             const outputContainer = document.getElementById('outputImageContainer_aiSmoke');
             const inputInfo = document.getElementById('inputImageInfo_aiSmoke');
@@ -762,7 +766,7 @@
             
             // Log display status
             if (inputDisplayed && outputDisplayed) {
-                console.log(`Successfully displayed both images: ${inputFilename} and ${outputFilename}`);
+                // console.log(`Successfully displayed both images: ${inputFilename} and ${outputFilename}`);
             } else {
                 console.warn(`Partial display: input=${inputDisplayed}, output=${outputDisplayed}`);
             }
