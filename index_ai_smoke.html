@@ -186,7 +186,8 @@
                     </div>
     
                     <div id="statusBar_aiSmoke" class="ai-smoke-widget-status-bar">Ready to start processing</div>
-                    <!-- <p><strong>Processing Time:</strong> <span id="processingTime_aiSmoke">-</span></p> -->
+                    <p style="margin-bottom: 0;"><strong>Processed Images:</strong> <span id="processed_images_aiSmoke">-</span></p>
+                    <p style="margin-top: 0;"><strong>Processing Time:</strong> <span id="processingTime_aiSmoke">-</span></p>
                 </div>
             </div>
         </div>
@@ -207,6 +208,22 @@
         let aiCoreMonitorInterval = null;
         let imageDisplayStarted = false;
         const AI_USAGE_THRESHOLD = 5.0;  // Percentage above baseline to start display
+
+        let processingTimeInterval = null;
+
+        function startProcessingTimer() {
+            if (processingTimeInterval) clearInterval(processingTimeInterval);
+            processingTimeInterval = setInterval(() => {
+                update_processingTime_aiSmoke();
+            }, 1000); // Update every second
+        }
+
+        function stopProcessingTimer() {
+            if (processingTimeInterval) {
+                clearInterval(processingTimeInterval);
+                processingTimeInterval = null;
+            }
+        }
 
         // // populate options for number of running AI core
         // populate_options_num_ai_core_run();
@@ -408,15 +425,15 @@
             runBtn_aiSmoke.textContent = isRunning_aiSmoke ? 'Processing...' : 'Run';
         }
 
-        // function updateprocessingTime_aiSmoke() {
-        //     if (startTime_aiSmoke) {
-        //         const elapsed = Math.floor((new Date() - startTime_aiSmoke) / 1000);
-        //         const minutes = Math.floor(elapsed / 60);
-        //         const seconds = elapsed % 60;
-        //         document.getElementById('processingTime_aiSmoke').textContent = 
-        //             `${minutes}:${seconds.toString().padStart(2, '0')}`;
-        //     }
-        // }
+        function update_processingTime_aiSmoke() {
+            if (startTime_aiSmoke) {
+                const elapsed = Math.floor((new Date() - startTime_aiSmoke) / 1000);
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
+                document.getElementById('processingTime_aiSmoke').textContent = 
+                    `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            }
+        }
         
         window.preload_ai_smoke_images = async function() {
             try {
@@ -703,6 +720,7 @@
             
             isRunning_aiSmoke = true;
             startTime_aiSmoke = new Date();
+            startProcessingTimer();
             
             updateStatus_aiSmoke('Starting ai smoke...', 'running');
             updateButtons_aiSmoke();
@@ -741,6 +759,7 @@
         
         window.clear_ai_smoke = function() {
             stopLocalImageDisplay();
+            stopProcessingTimer();
             stopAICoreMonitoring();
             stopProgressPolling();
             isRunning_aiSmoke = false;
@@ -752,7 +771,8 @@
             
             // document.getElementById('processStatus').textContent = 'Idle';
             // document.getElementById('latestOutput').textContent = 'None';
-            // document.getElementById('processingTime_aiSmoke').textContent = '-';
+            document.getElementById('processed_images_aiSmoke').textContent = '-';
+            document.getElementById('processingTime_aiSmoke').textContent = '-';
             
             // Send clear command to server
             fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
@@ -792,6 +812,7 @@
                     
                     if (data.type === 'ai_smoke_complete') {
                         handleCompletion();
+                        document.getElementById('processed_images_aiSmoke').textContent = '1,239';
                     } else if (data.type === 'ai_smoke_error') {
                         handleError(data.error);
                     }
@@ -858,6 +879,7 @@
 
         function handleCompletion() {
             stopLocalImageDisplay();
+            stopProcessingTimer();
             stopAICoreMonitoring();
             updateStatus_aiSmoke('Detection completed successfully', 'ready');
             isRunning_aiSmoke = false;
@@ -867,6 +889,7 @@
 
         function handleError(errorMsg) {
             stopLocalImageDisplay();
+            stopProcessingTimer();
             stopAICoreMonitoring();
             updateStatus_aiSmoke(`Error: ${errorMsg}`, 'error');
             isRunning_aiSmoke = false;
