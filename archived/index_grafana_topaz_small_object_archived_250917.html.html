@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Small Object Detection Interface</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        
+        .button-container {
+            margin-bottom: 20px;
+        }
+        
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            font-size: 16px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        
+        button:hover {
+            opacity: 0.8;
+        }
+        
+        .fetch-btn { background-color: #4CAF50; color: white; }
+        .run-btn { background-color: #2196F3; color: white; }
+        .clear-btn { background-color: #f44336; color: white; }
+        
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+        
+        .status-container {
+            background-color: white;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #f0f0f0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background-color: #4CAF50;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+        
+        .image-pairs-container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        .image-pair {
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .image-pair-header {
+            margin-bottom: 10px;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .images-row {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+        }
+        
+        .image-column {
+            flex: 1;
+            text-align: center;
+        }
+        
+        .image-column h4 {
+            margin: 0 0 10px 0;
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .image-column img {
+            max-width: 100%;
+            height: auto;
+            max-height: 300px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        
+        .loading-placeholder {
+            width: 200px;
+            height: 150px;
+            background-color: #f0f0f0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px dashed #ccc;
+            border-radius: 4px;
+            color: #999;
+        }
+        
+        .stats {
+            display: flex;
+            gap: 20px;
+            margin: 10px 0;
+        }
+        
+        .stat-item {
+            background-color: #f8f9fa;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    
+    <div class="button-container">
+        <button id="fetchBtn" class="fetch-btn" onclick="fetchImages()">Fetch Images</button>
+        <button id="runBtn" class="run-btn" onclick="runProcessing()" disabled>Run Processing</button>
+        <button id="clearBtn" class="clear-btn" onclick="clearAll()">Clear All</button>
+    </div>
+
+    <div class="status-container">
+        <div id="statusText">Ready - Click 'Fetch Images' to begin</div>
+        <div class="progress-bar">
+            <div id="progressFill" class="progress-fill"></div>
+        </div>
+        <div class="stats">
+            <div id="totalImagesCount" class="stat-item">Total Images: 0</div>
+            <div id="processedCount" class="stat-item">Processed: 0</div>
+            <div id="fetchProgress" class="stat-item">Fetch Progress: 0%</div>
+        </div>
+    </div>
+
+    <div id="imagePairsContainer" class="image-pairs-container"></div>
+
+    <script>
+        FLASK_HOST = "192.168.0.32";
+        FLASK_PORT = 5001;
+        
+        // WebSocket connection
+        const socket = io(`http://${FLASK_HOST}:${FLASK_PORT}`);
+        
+        // Application state
+        let state = {
+            inputImages: {},
+            outputImages: {},
+            totalImages: 0,
+            processedImages: 0,
+            fetchedImages: 0,
+            isProcessing: false,
+            isFetching: false
+        };
+
+        // UI elements
+        const elements = {
+            fetchBtn: document.getElementById('fetchBtn'),
+            runBtn: document.getElementById('runBtn'),
+            clearBtn: document.getElementById('clearBtn'),
+            statusText: document.getElementById('statusText'),
+            progressFill: document.getElementById('progressFill'),
+            totalImagesCount: document.getElementById('totalImagesCount'),
+            processedCount: document.getElementById('processedCount'),
+            fetchProgress: document.getElementById('fetchProgress'),
+            imagePairsContainer: document.getElementById('imagePairsContainer')
+        };
+
+        // WebSocket event handlers
+        socket.on('connect', () => {
+            console.log('Connected to server');
+            updateStatus('Connected to server - Ready');
+        });
+
+        socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+            updateStatus('Disconnected from server');
+        });
+
+        socket.on('small_obj_fetch_started', (data) => {
+            state.totalImages = data.total_images;
+            state.isFetching = true;
+            updateUI();
+            updateStatus(`Fetching ${data.total_images} images...`);
+        });
+
+        socket.on('in_img_recv', (data) => {
+            state.inputImages[data.index] = data.image_data;
+            state.fetchedImages++;
+            updateUI();
+            updateStatus(`Fetched ${state.fetchedImages}/${state.totalImages} images`);
+        });
+
+        socket.on('fetch_completed', () => {
+            state.isFetching = false;
+            updateUI();
+            updateStatus(`Fetch completed! ${state.totalImages} images ready for processing`);
+        });
+
+        socket.on('small_obj_detect_started', () => {
+            state.isProcessing = true;
+            updateUI();
+            updateStatus('Processing started...');
+        });
+
+        socket.on('out_img_recv', (data) => {
+            state.outputImages[data.out_img_index] = data.out_img_data;
+            state.processedImages++;
+            
+            // Create or update image pair display
+            displayImagePair(data.in_img_index, data.out_img_index);
+            updateUI();
+            
+            const progress = (state.processedImages / state.totalImages * 100).toFixed(1);
+            updateStatus(`Processing: ${state.processedImages}/${state.totalImages} (${progress}%)`);
+        });
+
+        socket.on('processing_completed', () => {
+            state.isProcessing = false;
+            updateUI();
+            updateStatus('Processing completed!');
+        });
+
+        socket.on('error', (data) => {
+            console.error('Error from server:', data.message);
+            updateStatus(`Error: ${data.message}`);
+        });
+
+        // UI update functions
+        function updateUI() {
+            // Update button states
+            elements.fetchBtn.disabled = state.isFetching || state.isProcessing;
+            elements.runBtn.disabled = state.fetchedImages === 0 || state.isProcessing || state.isFetching;
+            elements.clearBtn.disabled = state.isProcessing || state.isFetching;
+
+            // Update stats
+            elements.totalImagesCount.textContent = `Total Images: ${state.totalImages}`;
+            elements.processedCount.textContent = `Processed: ${state.processedImages}`;
+            
+            // Update fetch progress
+            const fetchProgress = state.totalImages > 0 ? (state.fetchedImages / state.totalImages * 100).toFixed(1) : 0;
+            elements.fetchProgress.textContent = `Fetch Progress: ${fetchProgress}%`;
+
+            // Update progress bar
+            const overallProgress = state.totalImages > 0 ? (state.processedImages / state.totalImages * 100) : 0;
+            elements.progressFill.style.width = `${overallProgress}%`;
+        }
+
+        function updateStatus(message) {
+            elements.statusText.textContent = message;
+            console.log(message);
+        }
+        
+        // function displayImagePair(inputIndex, outputIndex) {
+        //     const pairId = `pair-${inputIndex}-${outputIndex}`;
+        //     let pairElement = document.getElementById(pairId);
+            
+        //     if (!pairElement) {
+        //         pairElement = document.createElement('div');
+        //         pairElement.id = pairId;
+        //         pairElement.className = 'image-pair';
+                
+        //         pairElement.innerHTML = `
+        //             <div class="image-pair-header">
+        //                 Processing Pair: Input ${inputIndex}.png → Output ${outputIndex}.png
+        //             </div>
+        //             <div class="images-row">
+        //                 <div class="image-column">
+        //                     <h4>Input Image (${inputIndex}.png)</h4>
+        //                     <div id="input-${inputIndex}">
+        //                         ${state.inputImages[inputIndex] ? 
+        //                             `<img src="data:image/png;base64,${state.inputImages[inputIndex]}" alt="Input ${inputIndex}">` :
+        //                             '<div class="loading-placeholder">Loading input...</div>'
+        //                         }
+        //                     </div>
+        //                 </div>
+        //                 <div class="image-column">
+        //                     <h4>Output Image (${outputIndex}.png)</h4>
+        //                     <div id="output-${outputIndex}">
+        //                         ${state.outputImages[outputIndex] ? 
+        //                             `<img src="data:image/png;base64,${state.outputImages[outputIndex]}" alt="Output ${outputIndex}">` :
+        //                             '<div class="loading-placeholder">Processing...</div>'
+        //                         }
+        //                     </div>
+        //                 </div>
+        //             </div>
+        //         `;
+                
+        //         elements.imagePairsContainer.appendChild(pairElement);
+        //     } else {
+        //         // Update existing pair with output image
+        //         const outputContainer = document.getElementById(`output-${outputIndex}`);
+        //         if (outputContainer && state.outputImages[outputIndex]) {
+        //             outputContainer.innerHTML = `<img src="data:image/png;base64,${state.outputImages[outputIndex]}" alt="Output ${outputIndex}">`;
+        //         }
+        //     }
+        // }
+
+        function displayImagePair(inputIndex, outputIndex) {
+            // Remove existing children one by one instead of clearing innerHTML
+            while (elements.imagePairsContainer.firstChild) {
+                elements.imagePairsContainer.removeChild(elements.imagePairsContainer.firstChild);
+            }
+            
+            const pairElement = document.createElement('div');
+            pairElement.className = 'image-pair';
+            
+            pairElement.innerHTML = `
+                <div class="image-pair-header">
+                    Processing Pair: Input ${inputIndex}.png → Output ${outputIndex}.png
+                </div>
+                <div class="images-row">
+                    <div class="image-column">
+                        <h4>Input Image (${inputIndex}.png)</h4>
+                        <div id="input-${inputIndex}">
+                            ${state.inputImages[inputIndex] ? 
+                                `<img src="data:image/png;base64,${state.inputImages[inputIndex]}" alt="Input ${inputIndex}">` :
+                                '<div class="loading-placeholder">Loading input...</div>'
+                            }
+                        </div>
+                    </div>
+                    <div class="image-column">
+                        <h4>Output Image (${outputIndex}.png)</h4>
+                        <div id="output-${outputIndex}">
+                            ${state.outputImages[outputIndex] ? 
+                                `<img src="data:image/png;base64,${state.outputImages[outputIndex]}" alt="Output ${outputIndex}">` :
+                                '<div class="loading-placeholder">Processing...</div>'
+                            }
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            elements.imagePairsContainer.appendChild(pairElement);
+        }
+
+        // Button action functions
+        function fetchImages() {
+            sendMessage("fetch_small_obj_detect");
+            updateStatus('Initiating fetch...');
+        }
+
+        function runProcessing() {
+            sendMessage("run_small_obj_detect");
+            updateStatus('Starting processing...');
+        }
+
+        function clearAll() {
+            sendMessage("clear_small_obj_detect");
+            // Reset state and UI
+            state = {
+                inputImages: {},
+                outputImages: {},
+                totalImages: 0,
+                processedImages: 0,
+                fetchedImages: 0,
+                isProcessing: false,
+                isFetching: false
+            };
+            elements.imagePairsContainer.innerHTML = '';
+            updateUI();
+            updateStatus('Cleared all data');
+        }
+
+        function sendMessage(message) {
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({"message": message})
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status !== 'success') {
+                    console.error('Server response:', data);
+                }
+            })
+            .catch(error => {
+                console.error("Error sending message:", error);
+                updateStatus(`Error: ${error.message}`);
+            });
+        }
+
+        // Initialize UI
+        updateUI();
+
+        function run_small_obj_detect() {
+            try {
+                fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({ message: "run_small_obj_detect" })
+                })
+                .then(response => response.json())
+                .then(data => console.log("Success:", data))
+                .catch(error => console.error("Error:", error));
+            }
+            catch (error) {
+                console.error("Error:", error);
+            }
+        }
+
+        function clear_small_obj_detect() {
+        }
+    </script>
+</body>
+</html>
