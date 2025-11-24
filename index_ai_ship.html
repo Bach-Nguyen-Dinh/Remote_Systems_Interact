@@ -155,37 +155,37 @@
             <div class="ai-ship-widget-image-panel">
                 <h3>Input image</h3>
                 <div class="ai-ship-widget-image-container">
-                    <div id="inputImageContainer_aiSmoke" class="ai-ship-widget-image-placeholder">
+                    <div id="inputImageContainer_aiShip" class="ai-ship-widget-image-placeholder">
                         Loading...
                     </div>
                 </div>
-                <p id="inputImageInfo_aiSmoke"></p>
+                <p id="inputImageInfo_aiShip"></p>
             </div>
-            
+
             <div class="ai-ship-widget-image-panel">
                 <h3>Output image</h3>
                 <div class="ai-ship-widget-image-container">
-                    <div id="outputImageContainer_aiSmoke" class="ai-ship-widget-image-placeholder">
+                    <div id="outputImageContainer_aiShip" class="ai-ship-widget-image-placeholder">
                         Loading...
                     </div>
                 </div>
-                <p id="outputImageInfo_aiSmoke"></p>
+                <p id="outputImageInfo_aiShip"></p>
             </div>
 
             <div class="ai-ship-widget-control-panel">
                 <div class="ai-ship-widget-button-container">
                     <p><strong>Select number of running AI core:</strong>
-                        <select id="aiCoreDropdown" class="ai-ship-widget-select"
-                            onchange="select_num_ai_core_run()">
+                        <select id="aiCoreDropdown_aiShip" class="ai-ship-widget-select"
+                            onchange="select_num_ai_core_run_aiShip()">
                         </select>
                     </p>
                     <div>
-                        <button id="fetchBtn_aiSmoke" onclick="preload_ai_ship_images()">Fetch</button>
-                        <button id="runBtn_aiSmoke" onclick="run_ai_ship()">Run</button>
-                        <button id="clearBtn_aiSmoke" onclick="clear_ai_ship()">Clear</button>
+                        <button id="fetchBtn_aiShip" onclick="preload_ai_ship_images()">Fetch</button>
+                        <button id="runBtn_aiShip" onclick="run_ai_ship()">Run</button>
+                        <button id="clearBtn_aiShip" onclick="clear_ai_ship()">Clear</button>
                     </div>
     
-                    <div id="statusBar_aiSmoke" class="ai-ship-widget-status-bar">Ready to start processing</div>
+                    <div id="statusBar_aiShip" class="ai-ship-widget-status-bar">Ready to start processing</div>
                     <p style="margin-bottom: 0;"><strong>Processed Images:</strong> <span id="processed_images_aiShip">-</span></p>
                     <p style="margin-top: 0;"><strong>Processing Time:</strong> <span id="processingTime_aiShip">-</span></p>
                 </div>
@@ -233,7 +233,7 @@
 
         function startAICoreMonitoring() {
             imageDisplayStarted = false;
-            updateStatus_aiSmoke('Waiting for AI cores to start...', 'running');
+            updateStatus_aiShip('Waiting for AI cores to start...', 'running');
             
             if (aiCoreMonitorInterval) clearInterval(aiCoreMonitorInterval);
             
@@ -249,7 +249,7 @@
                     // If usage has increased significantly above baseline, start displaying images
                     if (!imageDisplayStarted && usageIncrease > AI_USAGE_THRESHOLD) {
                         console.log('AI cores are now active - starting image display');
-                        updateStatus_aiSmoke('AI cores active - processing images...', 'running');
+                        updateStatus_aiShip('AI cores active - processing images...', 'running');
                         startLocalImageDisplay();
                         imageDisplayStarted = true;
                         stopAICoreMonitoring();
@@ -269,29 +269,29 @@
 
         // populate options for number of running AI core
         function populate_options_num_ai_core_run() {
-            const dropdown = document.getElementById('aiCoreDropdown');
-            
+            const dropdown = document.getElementById('aiCoreDropdown_aiShip');
+
             // Only populate if dropdown exists and is empty
             if (!dropdown) return;
             if (dropdown.options.length > 0) return; // Already populated
-            
+
             // Generate options 1 through 4
             for (let i = 1; i <= 4; i++) {
                 const option = document.createElement('option');
                 option.value = i;
                 option.textContent = i;
-                
+
                 // Set option 4 as default
                 if (i === 4) {
                     option.selected = true;
                 }
-                
+
                 dropdown.appendChild(option);
             }
         }
 
         function ensureDropdownPopulated() {
-            const dropdown = document.getElementById('aiCoreDropdown');
+            const dropdown = document.getElementById('aiCoreDropdown_aiShip');
             if (dropdown && dropdown.options.length === 0) {
                 populate_options_num_ai_core_run();
             }
@@ -313,10 +313,10 @@
         setInterval(ensureDropdownPopulated, 1000);
 
         // ALSO EXPOSE THIS FUNCTION TO WINDOW
-        window.select_num_ai_core_run = function() {
-            const dropdown = document.getElementById('aiCoreDropdown');
+        window.select_num_ai_core_run_aiShip = function() {
+            const dropdown = document.getElementById('aiCoreDropdown_aiShip');
             numAICoreRun = parseInt(dropdown.value);
-            console.log('Number of AI cores selected:', numAICoreRun);
+            console.log('AI Ship - Number of AI cores selected:', numAICoreRun);
         };
 
         // function select_num_ai_core_run() {
@@ -374,25 +374,25 @@
             }
         }
 
-        function clearImages_aiSmoke() {
-            document.getElementById('inputImageContainer_aiSmoke').innerHTML = '<div class="ai-ship-widget-image-placeholder">Loading...</div>';
-            document.getElementById('outputImageContainer_aiSmoke').innerHTML = '<div class="ai-ship-widget-image-placeholder">Loading...</div>';
-            document.getElementById('inputImageInfo_aiSmoke').textContent = '';
-            document.getElementById('outputImageInfo_aiSmoke').textContent = '';
+        function clearImages_aiShip() {
+            document.getElementById('inputImageContainer_aiShip').innerHTML = '<div class="ai-ship-widget-image-placeholder">Loading...</div>';
+            document.getElementById('outputImageContainer_aiShip').innerHTML = '<div class="ai-ship-widget-image-placeholder">Loading...</div>';
+            document.getElementById('inputImageInfo_aiShip').textContent = '';
+            document.getElementById('outputImageInfo_aiShip').textContent = '';
         }
 
-        function updateStatus_aiSmoke(message, type = '') {
-            const statusBar_aiSmoke = document.getElementById('statusBar_aiSmoke');
-            statusBar_aiSmoke.textContent = message;
-            statusBar_aiSmoke.className = `ai-ship-widget-status-bar ${type}`;
+        function updateStatus_aiShip(message, type = '') {
+            const statusBar_aiShip = document.getElementById('statusBar_aiShip');
+            statusBar_aiShip.textContent = message;
+            statusBar_aiShip.className = `ai-ship-widget-status-bar ${type}`;
         }
 
-        function updateButtons_aiSmoke() {
-            const runBtn_aiSmoke = document.getElementById('runBtn_aiSmoke');
-            const clearBtn_aiSmoke = document.getElementById('clearBtn_aiSmoke');
-            
-            runBtn_aiSmoke.disabled = isRunning_aiSmoke;
-            runBtn_aiSmoke.textContent = isRunning_aiSmoke ? 'Processing...' : 'Run';
+        function updateButtons_aiShip() {
+            const runBtn_aiShip = document.getElementById('runBtn_aiShip');
+            const clearBtn_aiShip = document.getElementById('clearBtn_aiShip');
+
+            runBtn_aiShip.disabled = isRunning_aiSmoke;
+            runBtn_aiShip.textContent = isRunning_aiSmoke ? 'Processing...' : 'Run';
         }
 
         function update_processingTime_aiShip() {
@@ -408,7 +408,7 @@
         window.preload_ai_ship_images = async function() {
             try {
                 console.log('Starting enhanced image load...');
-                updateStatus_aiSmoke('Loading image list...', 'running');
+                updateStatus_aiShip('Loading image list...', 'running');
                 
                 const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/ai_ship/image_list`);
                 if (!response.ok) {
@@ -419,7 +419,7 @@
                 console.log('Image list received:', data);
                 
                 const totalImages = data.input_images.length + data.output_images.length;
-                updateStatus_aiSmoke(`Loading input images...`, 'running');
+                updateStatus_aiShip(`Loading input images...`, 'running');
                 
                 // Enhanced image loading with retry mechanism
                 function loadImageWithRetry(src, filename, imageType, maxRetries = 3, timeout = 15000) {
@@ -528,7 +528,7 @@
                 }
                 
                 console.log(`Validated ${validatedCount}/${totalImages} images, starting download...`);
-                updateStatus_aiSmoke(`Loading ${validatedCount} validated images...`, 'running');
+                updateStatus_aiShip(`Loading ${validatedCount} validated images...`, 'running');
                 
                 // Track progress
                 let loadedCount = 0;
@@ -536,12 +536,12 @@
                     promise.then(result => {
                         loadedCount++;
                         const percentage = Math.round((loadedCount / validatedCount) * 100);
-                        updateStatus_aiSmoke(`Loading images... ${loadedCount}/${validatedCount} (${percentage}%)`, 'running');
+                        updateStatus_aiShip(`Loading images... ${loadedCount}/${validatedCount} (${percentage}%)`, 'running');
                         return result;
                     }).catch(error => {
                         loadedCount++;
                         const percentage = Math.round((loadedCount / validatedCount) * 100);
-                        updateStatus_aiSmoke(`Loading images... ${loadedCount}/${validatedCount} (${percentage}%)`, 'running');
+                        updateStatus_aiShip(`Loading images... ${loadedCount}/${validatedCount} (${percentage}%)`, 'running');
                         throw error;
                     })
                 );
@@ -578,13 +578,13 @@
                 const successRate = Math.round((successful.length / validatedCount) * 100);
                 
                 if (failed.length === 0) {
-                    // updateStatus_aiSmoke(`All input images loaded successfully (${successful.length}/${validatedCount})`, 'ready');
-                    updateStatus_aiSmoke(`All input images loaded successfully`, 'ready');
+                    // updateStatus_aiShip(`All input images loaded successfully (${successful.length}/${validatedCount})`, 'ready');
+                    updateStatus_aiShip(`All input images loaded successfully`, 'ready');
                 } else if (successful.length > 0) {
-                    // updateStatus_aiSmoke(`Images loaded: ${successful.length}/${validatedCount} (${successRate}%) - ${failed.length} failed`, 'ready');
-                    updateStatus_aiSmoke(`All input images loaded successfully`, 'ready');
+                    // updateStatus_aiShip(`Images loaded: ${successful.length}/${validatedCount} (${successRate}%) - ${failed.length} failed`, 'ready');
+                    updateStatus_aiShip(`All input images loaded successfully`, 'ready');
                 } else {
-                    updateStatus_aiSmoke('Failed to load input images - check console for details', 'error');
+                    updateStatus_aiShip('Failed to load input images - check console for details', 'error');
                 }
 
                 // Store validation results for later use
@@ -599,7 +599,7 @@
                                 
             } catch (error) {
                 console.error('Error in loading:', error);
-                updateStatus_aiSmoke('Error loading input images - check network connection', 'error');
+                updateStatus_aiShip('Error loading input images - check network connection', 'error');
             }
         }
 
@@ -610,11 +610,11 @@
             startTime_aiShip = new Date();
             startProcessingTimer();
             
-            updateStatus_aiSmoke('Starting ai smoke...', 'running');
-            updateButtons_aiSmoke();
+            updateStatus_aiShip('Starting ai smoke...', 'running');
+            updateButtons_aiShip();
             
             // Clear previous images
-            clearImages_aiSmoke();
+            clearImages_aiShip();
             
             try {
                 fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
@@ -633,15 +633,15 @@
                 })
                 .catch(error => {
                     console.error("Error sending command:", error);
-                    updateStatus_aiSmoke('Error starting detection', 'error');
+                    updateStatus_aiShip('Error starting detection', 'error');
                     isRunning_aiSmoke = false;
-                    updateButtons_aiSmoke();
+                    updateButtons_aiShip();
                 });
             } catch (error) {
                 console.error("Error:", error);
-                updateStatus_aiSmoke('Error starting detection', 'error');
+                updateStatus_aiShip('Error starting detection', 'error');
                 isRunning_aiSmoke = false;
-                updateButtons_aiSmoke();
+                updateButtons_aiShip();
             }
         }
         
@@ -652,10 +652,10 @@
             isRunning_aiSmoke = false;
             startTime_aiShip = null;
             
-            clearImages_aiSmoke();
+            clearImages_aiShip();
             stopProcessingTimer();
-            updateStatus_aiSmoke('Cleared', 'ready');
-            updateButtons_aiSmoke();
+            updateStatus_aiShip('Cleared', 'ready');
+            updateButtons_aiShip();
             
             // document.getElementById('processStatus').textContent = 'Idle';
             // document.getElementById('latestOutput').textContent = 'None';
@@ -724,9 +724,9 @@
             stopLocalImageDisplay();
             stopProcessingTimer();
             stopAICoreMonitoring();
-            updateStatus_aiSmoke('Detection completed successfully', 'ready');
+            updateStatus_aiShip('Detection completed successfully', 'ready');
             isRunning_aiSmoke = false;
-            updateButtons_aiSmoke();
+            updateButtons_aiShip();
             stopProgressPolling();
         }
 
@@ -734,18 +734,18 @@
             stopLocalImageDisplay();
             stopProcessingTimer();
             stopAICoreMonitoring();
-            updateStatus_aiSmoke(`Error: ${errorMsg}`, 'error');
+            updateStatus_aiShip(`Error: ${errorMsg}`, 'error');
             isRunning_aiSmoke = false;
-            updateButtons_aiSmoke();
+            updateButtons_aiShip();
             stopProgressPolling();
         }
         
         function displayImagePair(inputFilename, outputFilename) {
             // console.log(`Displaying images: input=${inputFilename}, output=${outputFilename}`);
-            const inputContainer = document.getElementById('inputImageContainer_aiSmoke');
-            const outputContainer = document.getElementById('outputImageContainer_aiSmoke');
-            const inputInfo = document.getElementById('inputImageInfo_aiSmoke');
-            const outputInfo = document.getElementById('outputImageInfo_aiSmoke');
+            const inputContainer = document.getElementById('inputImageContainer_aiShip');
+            const outputContainer = document.getElementById('outputImageContainer_aiShip');
+            const inputInfo = document.getElementById('inputImageInfo_aiShip');
+            const outputInfo = document.getElementById('outputImageInfo_aiShip');
             
             // Function to create and display image with fallback
             function displayImage(filename, type, container, infoElement) {

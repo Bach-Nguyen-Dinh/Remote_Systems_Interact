@@ -175,8 +175,8 @@
             <div class="ai-smoke-widget-control-panel">
                 <div class="ai-smoke-widget-button-container">
                     <p><strong>Select number of running AI core:</strong>
-                        <select id="aiCoreDropdown" class="ai-smoke-widget-select"
-                            onchange="select_num_ai_core_run()">
+                        <select id="aiCoreDropdown_aiSmoke" class="ai-smoke-widget-select"
+                            onchange="select_num_ai_core_run_aiSmoke()">
                         </select>
                     </p>
                     <div>
@@ -284,29 +284,29 @@
 
         // populate options for number of running AI core
         function populate_options_num_ai_core_run() {
-            const dropdown = document.getElementById('aiCoreDropdown');
-            
+            const dropdown = document.getElementById('aiCoreDropdown_aiSmoke');
+
             // Only populate if dropdown exists and is empty
             if (!dropdown) return;
             if (dropdown.options.length > 0) return; // Already populated
-            
+
             // Generate options 1 through 4
             for (let i = 1; i <= 4; i++) {
                 const option = document.createElement('option');
                 option.value = i;
                 option.textContent = i;
-                
+
                 // Set option 4 as default
                 if (i === 4) {
                     option.selected = true;
                 }
-                
+
                 dropdown.appendChild(option);
             }
         }
 
         function ensureDropdownPopulated() {
-            const dropdown = document.getElementById('aiCoreDropdown');
+            const dropdown = document.getElementById('aiCoreDropdown_aiSmoke');
             if (dropdown && dropdown.options.length === 0) {
                 populate_options_num_ai_core_run();
             }
@@ -328,10 +328,10 @@
         setInterval(ensureDropdownPopulated, 1000);
 
         // ALSO EXPOSE THIS FUNCTION TO WINDOW
-        window.select_num_ai_core_run = function() {
-            const dropdown = document.getElementById('aiCoreDropdown');
+        window.select_num_ai_core_run_aiSmoke = function() {
+            const dropdown = document.getElementById('aiCoreDropdown_aiSmoke');
             numAICoreRun = parseInt(dropdown.value);
-            console.log('Number of AI cores selected:', numAICoreRun);
+            console.log('AI Smoke - Number of AI cores selected:', numAICoreRun);
         };
 
         // function select_num_ai_core_run() {
