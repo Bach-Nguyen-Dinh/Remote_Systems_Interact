@@ -229,9 +229,11 @@
                     if (data.files.filename === selectedFile) {
                         if (selectedFile.includes("2023-09")) {
                             document.getElementById("totalPulses").textContent = "18,051";
+                            document.getElementById("centreFreq").textContent = "9.6 GHz (X band)"
                         }
                         else if (selectedFile.includes("2023-06")) {
                             document.getElementById("totalPulses").textContent = "15,063";
+                            document.getElementById("centreFreq").textContent = "9.6 GHz (X band)"
                         }
                         else {
                             document.getElementById("totalPulses").textContent = "N/A";
@@ -453,6 +455,7 @@
             document.getElementById("imageSize").textContent = "N/A";
             document.getElementById("resolution").textContent = "N/A";
             document.getElementById("areaSize").textContent = "N/A";
+            document.getElementById("centreFreq").textContent = "N/A"
             // Reset images
             document.getElementById("processedImage1").src = "";
             document.getElementById("processedImage2").src = "";
@@ -900,7 +903,7 @@
         // ================================================================================================================
         // ========================================= Lower Ethernet Port on adapter =======================================
         // ================================================================================================================
-        async function btnLwEthAdtRunClick() {
+        async function btnLwEthAdtRunClick(triggeredBySync = false) {
             const selectedTestDuration = testDurationLwEthAdt; // Use the global testDuration variable
             const statusNetElement = document.getElementById("statusNet_LwEthAdt");
             const bwDropdown = document.getElementById("bwDropdown_LwEthAdt");
