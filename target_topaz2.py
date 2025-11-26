@@ -17,6 +17,7 @@ INPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Image"
 OUTPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Predictions"
 
 AI_SMOKE_PATH = "/home/user/ai_smoke/ai_server.py"
+AI_SHIP_PATH = "/home/user/modified_ai_ship/ship/ai_ship.py"
 
 # IMAGE_PATH_2 = "/home/root/Desktop/Bach/backprojection_result_small.png"  
 # IMAGE_PATH_1 = "/home/root/Desktop/Bach/backprojection_histogram.png"
@@ -68,6 +69,8 @@ current_output_count = 0
 
 ai_core_run_ai_smoke = 4
 ai_smoke_running = False
+ai_core_run_ai_ship = 4
+ai_ship_running = False
 
 ai_run_metrics_raw = None
 ai_run_metrics_lock = threading.Lock()  # Add thread safety
@@ -173,6 +176,64 @@ def run_ai_smoke():
         print(f"Error running ai_smoke: {e}")
     finally:
         ai_smoke_running = False
+
+def run_ai_ship():
+    global ai_core_run_ai_ship, ai_ship_running
+    if ai_ship_running:
+        print("AI ship already running")
+        return
+    ai_ship_running = True
+
+    try:
+        print(f"Running ai application with {ai_core_run_ai_ship} cores")
+
+        # Send start notification
+        start_data = {
+            "type": "ai_ship_start",
+            "status": "started",
+            "ai_cores": ai_core_run_ai_ship
+        }
+        send_progress_update(start_data)
+
+        # Run AI ship application and wait for completion
+        process = subprocess.Popen([
+            "python3",
+            AI_SHIP_PATH,
+            "--ai",
+            str(ai_core_run_ai_ship)
+        ])
+
+        return_code = process.wait()
+
+        # Send completion notification based on return code
+        if return_code == 0:
+            completion_data = {
+                "type": "ai_ship_complete",
+                "status": "completed",
+                "ai_cores": ai_core_run_ai_ship
+            }
+            print("AI ship application completed successfully")
+        else:
+            completion_data = {
+                "type": "ai_ship_error",
+                "status": "error",
+                "error": f"Process exited with code {return_code}",
+                "ai_cores": ai_core_run_ai_ship
+            }
+            print(f"AI ship application failed with return code {return_code}")
+
+        send_progress_update(completion_data)
+
+    except Exception as e:
+        # Send error notification
+        error_data = {
+            "type": "ai_ship_error",
+            "error": str(e)
+        }
+        send_progress_update(error_data)
+        print(f"Error running ai_ship: {e}")
+    finally:
+        ai_ship_running = False
 
 def run_small_object_detection():
     global small_obj_detect_running, current_output_count
@@ -479,7 +540,7 @@ def handle_netrun_test(netTestDuration, netTestInterface):
         print("No valid results to save.")
 
 def listen_for_messages():
-    global progress_update, BW, ai_core_run_ai_smoke
+    global progress_update, BW, ai_core_run_ai_smoke, ai_core_run_ai_ship
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((LISTEN_IP, LISTEN_PORT))
     server_socket.listen(1)
@@ -555,6 +616,14 @@ def listen_for_messages():
                         elif ai_core_run_ai_smoke <= 0:
                             ai_core_run_ai_smoke = 1
                     threading.Thread(target=run_ai_smoke, daemon=True).start()
+                elif message.startswith("run_ai_ship"):
+                    if ":" in message:
+                        ai_core_run_ai_ship = int(message.split(":")[1])
+                        if ai_core_run_ai_ship > NUM_AI_CORE:
+                            ai_core_run_ai_ship = NUM_AI_CORE
+                        elif ai_core_run_ai_ship <= 0:
+                            ai_core_run_ai_ship = 1
+                    threading.Thread(target=run_ai_ship, daemon=True).start()
 
 # # Function to run the iperf3 server
 # def run_iperf3_server():
