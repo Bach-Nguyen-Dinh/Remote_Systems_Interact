@@ -1,13 +1,5 @@
-note.txt
+*
 
-small_obj_detect/
-
-pictures/
-
-SAR_colored_images/
-
-*.md
-
-*.json
-
-fix_dashboard_panels.py
+!.gitignore
+!*.c
+!*.py
