@@ -16,6 +16,9 @@ RSS_EXECUTABLE_PATH = "/home/user/Small-Object-Detection/Utils/RSS"
 INPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Image"
 OUTPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Predictions"
 
+AI_SMOKE_PATH = "/home/user/ai_smoke/ai_server.py"
+AI_SHIP_PATH = "/home/user/modified_ai_ship/ship/ai_ship.py"
+
 # IMAGE_PATH_2 = "/home/root/Desktop/Bach/backprojection_result_small.png"  
 # IMAGE_PATH_1 = "/home/root/Desktop/Bach/backprojection_histogram.png"
 RESIZED_IMAGE_PATH = "/home/user/demo/optimized_image.webp"  # Temporary resized image path
@@ -34,26 +37,36 @@ AI_PORT = 8888
 RECV_BUFFER = 65536    # 64KB, should be enough for typical JSON payloads
 SOCKET_TIMEOUT = 1.0   # seconds - allows clean shutdown checks
 
-# RDB_IP = "169.254.207.123"
-
 DOCKER_INTERFACE_ID = "docker0"
 FM_INTERFACE_ID = "fm1-mac3"
 LOCAL_INTERFACE_ID = "lo"
 VIRTUAL_INTERFACE_ID = "virbr0"
 
-SAVE_PATH_IPERF_LW_ETH_ADT = "/home/root/iperf3_end_result_LwEthAdt.json"
-SAVE_PATH_IPERF_UP_ETH_ADT = "/home/root/iperf3_end_result_UpEthAdt.json"
+# SAVE_PATH_IPERF_LW_ETH_ADT = "/home/root/iperf3_end_result_LwEthAdt.json"
+# SAVE_PATH_IPERF_UP_ETH_ADT = "/home/root/iperf3_end_result_UpEthAdt.json"
+
+CURR_DIR = os.path.dirname(os.path.abspath(__file__))
+SAVE_PATH_IPERF_LW_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_LwEthAdt.json")
+SAVE_PATH_IPERF_UP_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_UpEthAdt.json")
 
 AI_METRIC_PATH = "/home/user/ai_tool/status"
 IMU_EXECUTABLE_PATH = "/home/user/topaz_imu/iim42652"
+
+NUM_AI_CORE = 4
 
 # Global variable
 progress_update = 0.0
 global_pwr_var = 1000
 cphd_files = {}
+BW = 1000
 
 small_obj_detect_running = False
 current_output_count = 0
+
+ai_core_run_ai_smoke = 4
+ai_smoke_running = False
+ai_core_run_ai_ship = 4
+ai_ship_running = False
 
 ai_run_metrics_raw = None
 ai_run_metrics_lock = threading.Lock()  # Add thread safety
@@ -97,9 +110,126 @@ def send_progress_update(data):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.connect((HOST_IP, IMAGE_PORT))
             sock.sendall(json.dumps(data).encode())
-        print(f"Progress update sent: {data}")
+        # print(f"Progress update sent: {data}")
     except Exception as e:
         print(f"Error sending progress update: {e}")
+
+def run_ai_smoke():
+    global ai_core_run_ai_smoke, ai_smoke_running
+    if ai_smoke_running:
+        print("AI smoke already running")
+        return
+    ai_smoke_running = True
+
+    try:
+        print(f"Running ai server with {ai_core_run_ai_smoke} cores")
+
+        # Send start notification
+        start_data = {
+            "type": "ai_smoke_start",
+            "status": "started",
+            "ai_cores": ai_core_run_ai_smoke
+        }
+        send_progress_update(start_data)
+
+        # Run the AI smoke process and wait for completion
+        process = subprocess.Popen([
+            "python3",
+            AI_SMOKE_PATH,
+            "--ai",
+            str(ai_core_run_ai_smoke)
+        ])
+
+        # Wait for process to complete
+        return_code = process.wait()
+
+        # Send completion notification based on return code
+        if return_code == 0:
+            completion_data = {
+                "type": "ai_smoke_complete",
+                "status": "completed",
+                "ai_cores": ai_core_run_ai_smoke
+            }
+            print("AI smoke process completed successfully")
+        else:
+            completion_data = {
+                "type": "ai_smoke_error",
+                "status": "error",
+                "error": f"Process exited with code {return_code}",
+                "ai_cores": ai_core_run_ai_smoke
+            }
+            print(f"AI smoke process failed with return code {return_code}")
+
+        send_progress_update(completion_data)
+
+    except Exception as e:
+        # Send error notification
+        error_data = {
+            "type": "ai_smoke_error",
+            "error": str(e)
+        }
+        send_progress_update(error_data)
+        print(f"Error running ai_smoke: {e}")
+    finally:
+        ai_smoke_running = False
+
+def run_ai_ship():
+    global ai_core_run_ai_ship, ai_ship_running
+    if ai_ship_running:
+        print("AI ship already running")
+        return
+    ai_ship_running = True
+
+    try:
+        print(f"Running ai application with {ai_core_run_ai_ship} cores")
+
+        # Send start notification
+        start_data = {
+            "type": "ai_ship_start",
+            "status": "started",
+            "ai_cores": ai_core_run_ai_ship
+        }
+        send_progress_update(start_data)
+
+        # Run AI ship application and wait for completion
+        process = subprocess.Popen([
+            "python3",
+            AI_SHIP_PATH,
+            "--ai",
+            str(ai_core_run_ai_ship)
+        ])
+
+        return_code = process.wait()
+
+        # Send completion notification based on return code
+        if return_code == 0:
+            completion_data = {
+                "type": "ai_ship_complete",
+                "status": "completed",
+                "ai_cores": ai_core_run_ai_ship
+            }
+            print("AI ship application completed successfully")
+        else:
+            completion_data = {
+                "type": "ai_ship_error",
+                "status": "error",
+                "error": f"Process exited with code {return_code}",
+                "ai_cores": ai_core_run_ai_ship
+            }
+            print(f"AI ship application failed with return code {return_code}")
+
+        send_progress_update(completion_data)
+
+    except Exception as e:
+        # Send error notification
+        error_data = {
+            "type": "ai_ship_error",
+            "error": str(e)
+        }
+        send_progress_update(error_data)
+        print(f"Error running ai_ship: {e}")
+    finally:
+        ai_ship_running = False
 
 def run_small_object_detection():
     global small_obj_detect_running, current_output_count
@@ -321,7 +451,6 @@ def process_cphd_file(file_path):
 
         tif_size_str = f"{tif_size / 1_000_000:.2f} MB" if tif_size >= 1_000_000 else f"{tif_size} bytes"
 
-
         response = {
             "tif_filename": tif_files[0],
             "size": tif_size_str,
@@ -345,73 +474,152 @@ def process_cphd_file(file_path):
         #     handle_image_sending(png_path)
 
 def listen_for_messages():
-    global progress_update
+    global progress_update, BW, ai_core_run_ai_smoke, ai_core_run_ai_ship
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Allow reuse
     server_socket.settimeout(1.0)  # Add timeout for accept()
-    
-    try:
-        server_socket.bind((LISTEN_IP, LISTEN_PORT))
-        server_socket.listen(1)
+    server_socket.bind((LISTEN_IP, LISTEN_PORT))
+    server_socket.listen(1)
 
-        print(f"Listening for messages on {LISTEN_IP}:{LISTEN_PORT}...")
+    print(f"Listening for messages on {LISTEN_IP}:{LISTEN_PORT}...")
 
-        while not stop_event.is_set():
-            try:
-                conn, addr = server_socket.accept()  # This can timeout
-                conn.settimeout(2.0)  # Add timeout for recv()
-                with conn:
-                    print(f"Connection received from {addr}")
-                    message = conn.recv(1024).decode().strip()
-                    if message:
-                        print(f"Message from host: {message}")
-                        # Your existing message handling code...
-                        if message == "3":
-                            progress_update = 0.0
-                        elif message == "4":
-                            send_cphd_files_list()  # Send CPHD files back to host
-                        elif message.startswith("SIZE:"):
-                            progress_update = 0.0
-                            filename = message.split(":", 1)[1]
+    while not stop_event.is_set():
+        try:
+            conn, addr = server_socket.accept()
+            conn.settimeout(2.0)  # Add timeout for recv()
+            with conn:
+                print(f"Connection received from {addr}")
+                message = conn.recv(1024).decode().strip()
+                if message:
+                    print(f"Message from host: {message}")
+                    if message == "3":
+                        progress_update = 0.0
+                    elif message == "4":
+                        send_cphd_files_list()
+
+                    elif message.startswith("SIZE"):
+                        progress_update = 0.0
+                        filename = message.split(":", 1)[1]
+                        file_path = cphd_files.get(filename)
+
+                        if file_path and os.path.exists(file_path):
+                            file_size = os.path.getsize(file_path)
+                            metadata = get_metadata_from_json(os.path.dirname(file_path))
+
+                            file_size_str = f"{file_size / 1_000_000:.2f} MB" if file_size >= 1_000_000 else f"{file_size} bytes"
+
+                            response = {"filename": filename, "size": file_size_str, "metadata": metadata}
+                            print(f"Response: {response}")
+
+                            try:
+                                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as size_sock:
+                                    size_sock.connect((HOST_IP, IMAGE_PORT))
+                                    size_sock.sendall(json.dumps(response).encode())
+                            except Exception as e:
+                                print(f"Error sending file size and metadata: {e}")
+
+                    elif message.startswith("RUN"):
+                        filename = message.split(":", 1)[1] if ":" in message else None
+                        if filename:
                             file_path = cphd_files.get(filename)
-                            
-                            if file_path and os.path.exists(file_path):
-                                file_size = os.path.getsize(file_path)
-                                metadata = get_metadata_from_json(os.path.dirname(file_path))
-                                
-                                file_size_str = f"{file_size / 1_000_000:.2f} MB" if file_size >= 1_000_000 else f"{file_size} bytes"
-                                
-                                response = {"filename": filename, "size": file_size_str, "metadata": metadata}
-                                print(f"Response: {response}")
-                                
-                                try:
-                                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as size_sock:
-                                        size_sock.connect((HOST_IP, IMAGE_PORT))
-                                        size_sock.sendall(json.dumps(response).encode())
-                                except Exception as e:
-                                    print(f"Error sending file size and metadata: {e}")
-                        elif message.startswith("RUN:"):
-                            filename = message.split(":", 1)[1]
-                            file_path = cphd_files.get(filename)
-                            
+
                             if file_path and os.path.exists(file_path):
                                 threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
 
-                        elif message == "run_small_obj_detect":
-                            threading.Thread(target=run_small_object_detection, daemon=True).start()
+                    elif message == "run_small_obj_detect":
+                        threading.Thread(target=run_small_object_detection, daemon=True).start()
+
+                    elif message.startswith("run_ai_smoke"):
+                        if ":" in message:
+                            ai_core_run_ai_smoke = int(message.split(":")[1])
+                            if ai_core_run_ai_smoke > NUM_AI_CORE:
+                                ai_core_run_ai_smoke = NUM_AI_CORE
+                            elif ai_core_run_ai_smoke <= 0:
+                                ai_core_run_ai_smoke = 1
+                        threading.Thread(target=run_ai_smoke, daemon=True).start()
+
+                    elif message.startswith("run_ai_ship"):
+                        if ":" in message:
+                            ai_core_run_ai_ship = int(message.split(":")[1])
+                            if ai_core_run_ai_ship > NUM_AI_CORE:
+                                ai_core_run_ai_ship = NUM_AI_CORE
+                            elif ai_core_run_ai_ship <= 0:
+                                ai_core_run_ai_ship = 1
+                        threading.Thread(target=run_ai_ship, daemon=True).start()
+
+        except socket.timeout:
+            # This is expected and allows checking stop_event
+            continue
+        except Exception as e:
+            if not stop_event.is_set():
+                print(f"Error in message listener: {e}")
+            break
+
+    server_socket.close()
+    print("Message listener stopped")
+
+    # try:
+    #     server_socket.bind((LISTEN_IP, LISTEN_PORT))
+    #     server_socket.listen(1)
+
+    #     print(f"Listening for messages on {LISTEN_IP}:{LISTEN_PORT}...")
+
+    #     while not stop_event.is_set():
+    #         try:
+    #             conn, addr = server_socket.accept()  # This can timeout
+    #             conn.settimeout(2.0)  # Add timeout for recv()
+    #             with conn:
+    #                 print(f"Connection received from {addr}")
+    #                 message = conn.recv(1024).decode().strip()
+    #                 if message:
+    #                     print(f"Message from host: {message}")
+    #                     # Your existing message handling code...
+    #                     if message == "3":
+    #                         progress_update = 0.0
+    #                     elif message == "4":
+    #                         send_cphd_files_list()  # Send CPHD files back to host
+    #                     elif message.startswith("SIZE:"):
+    #                         progress_update = 0.0
+    #                         filename = message.split(":", 1)[1]
+    #                         file_path = cphd_files.get(filename)
                             
-            except socket.timeout:
-                # This is expected and allows checking stop_event
-                continue
-            except Exception as e:
-                if not stop_event.is_set():
-                    print(f"Error in message listener: {e}")
-                break
+    #                         if file_path and os.path.exists(file_path):
+    #                             file_size = os.path.getsize(file_path)
+    #                             metadata = get_metadata_from_json(os.path.dirname(file_path))
+                                
+    #                             file_size_str = f"{file_size / 1_000_000:.2f} MB" if file_size >= 1_000_000 else f"{file_size} bytes"
+                                
+    #                             response = {"filename": filename, "size": file_size_str, "metadata": metadata}
+    #                             print(f"Response: {response}")
+                                
+    #                             try:
+    #                                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as size_sock:
+    #                                     size_sock.connect((HOST_IP, IMAGE_PORT))
+    #                                     size_sock.sendall(json.dumps(response).encode())
+    #                             except Exception as e:
+    #                                 print(f"Error sending file size and metadata: {e}")
+    #                     elif message.startswith("RUN:"):
+    #                         filename = message.split(":", 1)[1]
+    #                         file_path = cphd_files.get(filename)
+                            
+    #                         if file_path and os.path.exists(file_path):
+    #                             threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
+
+    #                     elif message == "run_small_obj_detect":
+    #                         threading.Thread(target=run_small_object_detection, daemon=True).start()
+                            
+    #         except socket.timeout:
+    #             # This is expected and allows checking stop_event
+    #             continue
+    #         except Exception as e:
+    #             if not stop_event.is_set():
+    #                 print(f"Error in message listener: {e}")
+    #             break
                 
-    finally:
-        server_socket.close()
-        print("Message listener stopped")
+    # finally:
+    #     server_socket.close()
+    #     print("Message listener stopped")
 
 # Function to run the iperf3 server
 def run_iperf3_server():
@@ -581,7 +789,7 @@ def get_ai_metrics():
     return ai_temp, ai_freq, ai_run_metrics
 
 def get_system_info():
-    global ai_run_metrics_raw,  global_pwr_var
+    global ai_run_metrics_raw, global_pwr_var
 
     per_core_usage = psutil.cpu_percent(interval=0.1, percpu=True)
     core_usage = {f"core_{i}_usage": usage for i, usage in enumerate(per_core_usage)}
@@ -650,6 +858,7 @@ def get_system_info():
 
   
     ai_total_pwr = get_power_from_sensor("ina220-i2c-0-44")
+    ai_total_pwr2 = ai_total_pwr
     ratio_power_p = ai_total_pwr/4
 
     if ratio_power_p < global_pwr_var:
@@ -676,7 +885,7 @@ def get_system_info():
 
     ai_run_metrics_raw = None
 
-    imu_data = get_imu_data();
+    imu_data = get_imu_data()
 
     system_info = {
         "memory_usage": memory_usage,
@@ -696,7 +905,7 @@ def get_system_info():
         "progress_update": progress_update,
         "ai_temps": ai_temps,
         "ai_freqs": ai_freqs,
-        "ai_total_pwr": ai_total_pwr,
+        "ai_total_pwr": ai_total_pwr2,
         "ai_run_metrics": ai_run_metrics,
         "per_ai_core_pwrs": ai_core_power,
         "imu_data": imu_data
