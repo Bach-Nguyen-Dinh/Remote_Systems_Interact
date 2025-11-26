@@ -52,6 +52,12 @@ SAVE_PATH_IPERF_VIRTUAL = os.path.join(CURR_DIR, "iperf3_end_result_virtual.json
 SMALL_OBJ_INPUT_DIR = "/home/matthew/Remote_Systems_Interact/small_obj_detect/data1/image"
 SMALL_OBJ_OUTPUT_DIR = "/home/matthew/Remote_Systems_Interact/small_obj_detect/data1/predictions"
 
+AI_SMOKE_INPUT_DIR = "/home/matthew/Downloads/SmokeNet-Data/validation/opt_web_img"
+AI_SMOKE_OUTPUT_DIR = "/home/matthew/Downloads/SmokeNet-Data/classification/opt_web_img"
+
+AI_SHIP_INPUT_DIR = "/home/matthew/modified_ai_ship/ship/short_example/opt_web_img"
+AI_SHIP_OUTPUT_DIR = "/home/matthew/modified_ai_ship/ship/output_segment/opt_web_img"
+
 # Gyro parameters
 CALIBRATION_TIME = 10.0  # seconds to collect stationary gyro data
 alpha = 0.2              # low-pass filter coefficient
@@ -60,6 +66,12 @@ MIN_DIFF = 0.05          # minimum change threshold (deg/s)
 # Global variable
 connected_clients = []
 latest_small_obj_progress = {}
+latest_ai_smoke_progress = {}
+latest_ai_ship_progress = {}
+
+latest_ai_core_usage = 0.0
+ai_smoke_baseline_usage = 0.0
+ai_ship_baseline_usage = 0.0
 
 message = ""
 cphd_file_list = []  # Global list to store CPHD file names
@@ -105,8 +117,18 @@ def broadcast_to_clients(data):
     """Broadcast data to all connected clients"""
     # This could be implemented with WebSockets or Server-Sent Events
     # For simplicity, we'll store the latest update and serve it via HTTP
-    global latest_small_obj_progress
-    latest_small_obj_progress = data
+    global latest_small_obj_progress, latest_ai_smoke_progress, latest_ai_ship_progress
+
+    # Route to appropriate storage based on message type
+    if data.get("type", "").startswith("ai_smoke"):
+        latest_ai_smoke_progress = data
+    if data.get("type", "").startswith("ai_ship"):
+        latest_ai_ship_progress = data
+    elif data.get("type", "").startswith("small_obj_detect"):
+        latest_small_obj_progress = data
+    else:
+        # Default to small_obj for backward compatibility
+        latest_small_obj_progress = data
 
 def start_server():
     global message, cphd_file_list, cphd_file_properties, tif_file_properties
@@ -203,13 +225,13 @@ def start_server():
                             # Update the dictionary to store the formatted size
                             tif_file_properties = received_data
 
-                        else:
-                            print(f"Received unknown data: {received_data}")
-
-                        if "type" in received_data and received_data["type"].startswith("small_obj_detect"):
-                            print(f"Small object detection update: {received_data}")
+                        elif "type" in received_data:
+                            print(f"Application update: {received_data}")
                             # Broadcast to all connected clients (like index grafana)
                             broadcast_to_clients(received_data)
+
+                        else:
+                            print(f"Received unknown data: {received_data}")
 
                     except json.JSONDecodeError as e:
                         print(f"Error decoding received data: {e}")
@@ -247,6 +269,7 @@ def run_http_server():
 def receive_metrics():
     global _last_time, _angles
     global _gyro_filtered, _gyro_bias, _calibration_start, _calibration_samples, _calibrated
+    global latest_ai_core_usage
     
     client = InfluxDBClient(INFLUXDB_HOST, INFLUXDB_PORT, INFLUXDB_USER, INFLUXDB_PASSWORD, INFLUXDB_DB)
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -322,6 +345,7 @@ def receive_metrics():
                         ai_usage = float(system_info["ai_run_metrics"].get(ai_core_key, 0))
                         per_ai_core_usage[ai_core_key] = ai_usage
                         total_ai_core_usage += ai_usage*0.25
+                    latest_ai_core_usage = total_ai_core_usage
 
                     # print(total_ai_core_usage)
                     # Prepare data for InfluxDB
@@ -466,7 +490,8 @@ def receive_metrics():
 @app.route('/send_message', methods=['POST'])
 def send_message():
     global message, netTestDuration
-    global latest_small_obj_progress
+    global latest_small_obj_progress, latest_ai_smoke_progress, latest_ai_ship_progress
+    global ai_smoke_baseline_usage, ai_ship_baseline_usage, latest_ai_core_usage
 
     data = request.get_json()
     message = data.get("message", "Default message from host")
@@ -528,6 +553,26 @@ def send_message():
         return forward_message_to_target(message)
     elif message == "clear_small_obj_detect":
         latest_small_obj_progress = {}
+        return jsonify({"status": "cleared"})
+
+    # Handle ai smoke
+    elif message.startswith("run_ai_smoke"):
+        # Clear previous progress
+        latest_ai_smoke_progress = {}
+        ai_smoke_baseline_usage = latest_ai_core_usage
+        return forward_message_to_target(message)
+    elif message == "clear_ai_smoke":
+        latest_ai_smoke_progress = {}
+        return jsonify({"status": "cleared"})
+
+    # Handle ai ship
+    elif message.startswith("run_ai_ship"):
+        # Clear previous progress
+        latest_ai_ship_progress = {}
+        ai_ship_baseline_usage = latest_ai_core_usage
+        return forward_message_to_target(message)
+    elif message == "clear_ai_ship":
+        latest_ai_ship_progress = {}
         return jsonify({"status": "cleared"})
 
     return forward_message_to_target(message)   
@@ -750,9 +795,9 @@ def validate_image(image_type, filename):
             directory = SMALL_OBJ_OUTPUT_DIR
         else:
             return jsonify({"valid": False, "error": "Invalid image type"}), 400
-        
+
         filepath = os.path.join(directory, filename)
-        
+
         if os.path.isfile(filepath) and os.access(filepath, os.R_OK):
             file_size = os.path.getsize(filepath)
             return jsonify({
@@ -763,9 +808,212 @@ def validate_image(image_type, filename):
             })
         else:
             return jsonify({"valid": False, "error": "File not accessible"}), 404
-            
+
     except Exception as e:
         return jsonify({"valid": False, "error": str(e)}), 500
+
+# ===================================================
+# ==                 AI smoke route                ==
+# ===================================================
+@app.route('/ai_smoke/image_list', methods=['GET'])
+def get_ai_smoke_image_list():
+    """Get list of all input and output images with validation"""
+    input_images = []
+    output_images = []
+
+    # Helper function to validate and get image info
+    def get_valid_images(directory, image_type):
+        images = []
+        if os.path.exists(directory):
+            for filename in os.listdir(directory):
+                if filename.endswith('.webp'):
+                    filepath = os.path.join(directory, filename)
+                    try:
+                        # Verify file exists and is readable
+                        if os.path.isfile(filepath) and os.access(filepath, os.R_OK):
+                            file_size = os.path.getsize(filepath)
+                            # Only include files that have content
+                            if file_size > 0:
+                                images.append({
+                                    'filename': filename,
+                                    'size': file_size,
+                                    'type': image_type
+                                })
+                            else:
+                                print(f"Warning: Empty file {filepath}")
+                        else:
+                            print(f"Warning: Cannot read file {filepath}")
+                    except Exception as e:
+                        print(f"Error checking file {filepath}: {e}")
+
+        return images
+
+    input_images = get_valid_images(AI_SMOKE_INPUT_DIR, 'input')
+    output_images = get_valid_images(AI_SMOKE_OUTPUT_DIR, 'output')
+
+    return jsonify({
+        "input_images": [img['filename'] for img in input_images],
+        "output_images": [img['filename'] for img in output_images],
+        "input_images_info": input_images,
+        "output_images_info": output_images,
+        "total_input": len(input_images),
+        "total_output": len(output_images)
+    })
+
+@app.route('/ai_smoke/validate_image/<image_type>/<filename>')
+def validate_ai_smoke_image(image_type, filename):
+    """Validate that a specific image exists and is accessible"""
+    try:
+        if image_type == 'input':
+            directory = AI_SMOKE_INPUT_DIR
+        elif image_type == 'output':
+            directory = AI_SMOKE_OUTPUT_DIR
+        else:
+            return jsonify({"valid": False, "error": "Invalid image type"}), 400
+
+        filepath = os.path.join(directory, filename)
+
+        if os.path.isfile(filepath) and os.access(filepath, os.R_OK):
+            file_size = os.path.getsize(filepath)
+            return jsonify({
+                "valid": True,
+                "filename": filename,
+                "size": file_size,
+                "path": filepath
+            })
+        else:
+            return jsonify({"valid": False, "error": "File not accessible"}), 404
+
+    except Exception as e:
+        return jsonify({"valid": False, "error": str(e)}), 500
+
+@app.route('/ai_smoke/images/input/<filename>')
+def serve_ai_smoke_input_image(filename):
+    """Serve input images for AI smoke detection"""
+    return send_from_directory(AI_SMOKE_INPUT_DIR, filename)
+
+@app.route('/ai_smoke/images/output/<filename>')
+def serve_ai_smoke_output_image(filename):
+    """Serve output images for AI smoke detection"""
+    return send_from_directory(AI_SMOKE_OUTPUT_DIR, filename)
+
+@app.route('/ai_smoke/progress', methods=['GET'])
+def get_ai_smoke_progress():
+    """Get the latest AI smoke detection progress"""
+    global latest_ai_smoke_progress
+    return jsonify(latest_ai_smoke_progress)
+
+@app.route('/ai_smoke/ai_core_usage', methods=['GET'])
+def get_ai_smoke_ai_core_usage():
+    """Get the current total AI core usage"""
+    global latest_ai_core_usage, ai_smoke_baseline_usage
+    return jsonify({
+        "total_ai_usage": latest_ai_core_usage,
+        "baseline": ai_smoke_baseline_usage
+    })
+
+# ===================================================
+# ==                 AI ship route                 ==
+# ===================================================
+@app.route('/ai_ship/image_list', methods=['GET'])
+def get_ai_ship_image_list():
+    """Get list of all input and output images with validation"""
+    input_images = []
+    output_images = []
+
+    # Helper function to validate and get image info
+    def get_valid_images(directory, image_type):
+        images = []
+        if os.path.exists(directory):
+            for filename in os.listdir(directory):
+                if filename.endswith('.webp'):
+                    filepath = os.path.join(directory, filename)
+                    try:
+                        # Verify file exists and is readable
+                        if os.path.isfile(filepath) and os.access(filepath, os.R_OK):
+                            file_size = os.path.getsize(filepath)
+                            # Only include files that have content
+                            if file_size > 0:
+                                images.append({
+                                    'filename': filename,
+                                    'size': file_size,
+                                    'type': image_type
+                                })
+                            else:
+                                print(f"Warning: Empty file {filepath}")
+                        else:
+                            print(f"Warning: Cannot read file {filepath}")
+                    except Exception as e:
+                        print(f"Error checking file {filepath}: {e}")
+
+        return images
+
+    input_images = get_valid_images(AI_SHIP_INPUT_DIR, 'input')
+    output_images = get_valid_images(AI_SHIP_OUTPUT_DIR, 'output')
+
+    input_images.sort(key=lambda x: x['filename'])
+    output_images.sort(key=lambda x: x['filename'])
+
+    return jsonify({
+        "input_images": [img['filename'] for img in input_images],
+        "output_images": [img['filename'] for img in output_images],
+        "input_images_info": input_images,
+        "output_images_info": output_images,
+        "total_input": len(input_images),
+        "total_output": len(output_images)
+    })
+
+@app.route('/ai_ship/validate_image/<image_type>/<filename>')
+def validate_ai_ship_image(image_type, filename):
+    """Validate that a specific image exists and is accessible"""
+    try:
+        if image_type == 'input':
+            directory = AI_SHIP_INPUT_DIR
+        elif image_type == 'output':
+            directory = AI_SHIP_OUTPUT_DIR
+        else:
+            return jsonify({"valid": False, "error": "Invalid image type"}), 400
+
+        filepath = os.path.join(directory, filename)
+
+        if os.path.isfile(filepath) and os.access(filepath, os.R_OK):
+            file_size = os.path.getsize(filepath)
+            return jsonify({
+                "valid": True,
+                "filename": filename,
+                "size": file_size,
+                "path": filepath
+            })
+        else:
+            return jsonify({"valid": False, "error": "File not accessible"}), 404
+
+    except Exception as e:
+        return jsonify({"valid": False, "error": str(e)}), 500
+
+@app.route('/ai_ship/images/input/<filename>')
+def serve_ai_ship_input_image(filename):
+    """Serve input images for AI ship detection"""
+    return send_from_directory(AI_SHIP_INPUT_DIR, filename)
+
+@app.route('/ai_ship/images/output/<filename>')
+def serve_ai_ship_output_image(filename):
+    """Serve output images for AI smoke detection"""
+    return send_from_directory(AI_SHIP_OUTPUT_DIR, filename)
+
+@app.route('/ai_ship/progress', methods=['GET'])
+def get_ai_ship_progress():
+    """Get the latest AI smoke detection progress"""
+    global latest_ai_ship_progress
+    return jsonify(latest_ai_ship_progress)
+
+@app.route('/ai_ship/ai_core_usage', methods=['GET'])
+def get_ai_ship_ai_core_usage():
+    """Get the current total AI core usage"""
+    global latest_ai_core_usage, ai_ship_baseline_usage
+    return jsonify({
+        "total_ai_usage": latest_ai_core_usage,
+        "baseline": ai_ship_baseline_usage
+    })
 
 # Function to run Flask server
 def run_flask_server():
