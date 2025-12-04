@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Land Navigation Interface</title>
     <style>
-        .landNav-widget-body {
+        .autoNav-widget-body {
             font-family: Arial, sans-serif;
             /* margin: 20px; */
             /* background-color: #f5f5f5; */
         }
         
-        .landNav-widget-button-container button {
+        .autoNav-widget-button-container button {
             background-color: #007bff;
             color: white;
             border: none;
@@ -22,16 +22,16 @@
             font-size: 16px;
         }
         
-        .landNav-widget-button-container button:hover {
+        .autoNav-widget-button-container button:hover {
             background-color: #0056b3;
         }
         
-        .landNav-widget-button-container button:disabled {
+        .autoNav-widget-button-container button:disabled {
             background-color: #6c757d;
             cursor: not-allowed;
         }
         
-        .landNav-widget-status-bar {
+        .autoNav-widget-status-bar {
             background-color: #171b1f00;
             padding: 10px;
             border-radius: 4px;
@@ -40,35 +40,55 @@
             /* font-weight: bold; */
         }
         
-        /* .landNav-widget-status-bar.running {
+        /* .autoNav-widget-status-bar.running {
             background-color: #d4edda;
             color: #155724;
         }
         
-        .landNav-widget-status-bar.error {
+        .autoNav-widget-status-bar.error {
             background-color: #f8d7da;
             color: #721c24;
         } */
         
-        .landNav-widget-image-display {
+        .autoNav-widget-image-display {
             display: flex;
             gap: 20px;
             justify-content: center;
             margin-bottom: 20px;
         }
-        
-        .landNav-widget-image-panel {
+
+        .autoNav-widget-column-container {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+        }
+
+        .autoNav-widget-left-column {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            width: 600px;
+            flex-shrink: 0;
+        }
+
+        .autoNav-widget-right-column {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+        }
+
+        .autoNav-widget-image-panel {
             flex: 1;
             /* max-width: 500px; */
             text-align: center;
         }
         
-        .landNav-widget-image-panel h3 {
+        .autoNav-widget-image-panel h3 {
             margin-bottom: 10px;
             /* color: #333; */
         }
         
-        .landNav-widget-image-container {
+        .autoNav-widget-image-container {
             border: 0.5px solid #2e3136;
             border-radius: 3px;
             /* padding: 10px; */
@@ -78,8 +98,8 @@
             align-items: center;
             justify-content: center;
         }
-        
-        .landNav-widget-image-container img {
+
+        .autoNav-widget-image-container img {
             /* max-width: 100%; */
             max-height: 500px;
             object-fit: cover;
@@ -87,22 +107,60 @@
             width: 925px;
             height: 500px;
         }
+
+        /* Left column images (GPS, Feature, Depth) - fixed size */
+        .autoNav-widget-left-column .autoNav-widget-image-container {
+            min-height: 300px;
+            height: 300px;
+        }
+
+        .autoNav-widget-left-column .autoNav-widget-image-container img {
+            width: 400px;
+            height: 300px;
+            max-height: 300px;
+        }
+
+        /* Right column LIDAR image - fills column */
+        .autoNav-widget-right-column {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+        }
+
+        .autoNav-widget-right-column .autoNav-widget-image-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .autoNav-widget-right-column .autoNav-widget-image-container {
+            flex: 1;
+            min-height: unset;
+            height: 100%;
+        }
+
+        .autoNav-widget-right-column .autoNav-widget-image-container img {
+            width: 100%;
+            height: 100%;
+            max-height: unset;
+            object-fit: contain;
+        }
         
-        .landNav-widget-image-placeholder {
+        .autoNav-widget-image-placeholder {
             color: #666;
             font-style: italic;
         }
-        .landNav-widget-control-panel {
+        .autoNav-widget-control-panel {
             display: flex;
         }
         
-        .landNav-widget-button-container {
+        .autoNav-widget-button-container {
             flex: 1;
-            /* margin-bottom: 20px; */
+            margin-top: 20px;
             text-align: center;
         }
         
-        .landNav-widget-progress-info {
+        .autoNav-widget-progress-info {
             flex: 1;
             background-color: #171b1f00;
             /* padding: 15px; */
@@ -110,7 +168,7 @@
             /* margin-top: 20px; */
         }
         
-        .landNav-widget-container {
+        .autoNav-widget-container {
             /* max-width: 1200px; */
             margin: 0 auto;
             /* background-color: white; */
@@ -119,12 +177,12 @@
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
         
-        .landNav-widget-progress-info h4 {
+        .autoNav-widget-progress-info h4 {
             margin-top: 0;
             /* color: #495057; */
         }
         
-        .landNav-widget-loading {
+        .autoNav-widget-loading {
             display: inline-block;
             width: 20px;
             height: 20px;
@@ -140,61 +198,66 @@
         }
     </style>
 </head>
-<body class="landNav-widget-body">
-    <div class="landNav-widget-container">
-        <div class="landNav-widget-image-display">
-            <div class="landNav-widget-image-panel">
-                <h3>GPS</h3>
-                <div class="landNav-widget-image-container">
-                    <div id="gpsImageContainer" class="landNav-widget-image-placeholder">
-                        Loading...
+<body class="autoNav-widget-body">
+    <div class="autoNav-widget-container">
+        <div class="autoNav-widget-column-container">
+            <!-- Left Column: GPS, Feature, Depth stacked vertically -->
+            <div class="autoNav-widget-left-column">
+                <div class="autoNav-widget-image-panel">
+                    <h5>GPS</h5>
+                    <div class="autoNav-widget-image-container">
+                        <div id="gpsImageContainer" class="autoNav-widget-image-placeholder">
+                            No data
+                        </div>
                     </div>
+                    <p id="gpsImageInfo"></p>
                 </div>
-                <p id="gpsImageInfo"></p>
+                <div class="autoNav-widget-image-panel">
+                    <h5>Features</h5>
+                    <div class="autoNav-widget-image-container">
+                        <div id="featureImageContainer" class="autoNav-widget-image-placeholder">
+                            No data
+                        </div>
+                    </div>
+                    <p id="featureImageInfo"></p>
+                </div>
+                <div class="autoNav-widget-image-panel">
+                    <h5>Depth</h5>
+                    <div class="autoNav-widget-image-container">
+                        <div id="depthImageContainer" class="autoNav-widget-image-placeholder">
+                            No data
+                        </div>
+                    </div>
+                    <p id="depthImageInfo"></p>
+                </div>
             </div>
-            <div class="landNav-widget-image-panel">
-                <h3>Feature</h3>
-                <div class="landNav-widget-image-container">
-                    <div id="featureImageContainer" class="landNav-widget-image-placeholder">
-                        Loading...
+
+            <!-- Right Column: LIDAR -->
+            <div class="autoNav-widget-right-column">
+                <div class="autoNav-widget-image-panel">
+                    <h5>LIDAR</h5>
+                    <div class="autoNav-widget-image-container">
+                        <div id="lidarImageContainer" class="autoNav-widget-image-placeholder">
+                            No data
+                        </div>
                     </div>
+                    <p id="lidarImageInfo"></p>
                 </div>
-                <p id="featureImageInfo"></p>
-            </div>
-            <div class="landNav-widget-image-panel">
-                <h3>Depth</h3>
-                <div class="landNav-widget-image-container">
-                    <div id="depthImageContainer" class="landNav-widget-image-placeholder">
-                        Loading...
-                    </div>
-                </div>
-                <p id="depthImageInfo"></p>
-            </div>
-        </div>
-        
-        <div class="landNav-widget-image-display">            
-            <div class="landNav-widget-image-panel">
-                <h3>LIDAR</h3>
-                <div class="landNav-widget-image-container">
-                    <div id="lidarImageContainer" class="landNav-widget-image-placeholder">
-                        Loading...
-                    </div>
-                </div>
-                <p id="lidarImageInfo"></p>
             </div>
         </div>
 
-        <div class="landNav-widget-control-panel">
-            <div class="landNav-widget-button-container">
-                <button id="fetchBtn" onclick="preloadImages()">Fetch</button>
-                <button id="runBtn" onclick="run_small_obj_detect()">Run</button>
-                <button id="clearBtn" onclick="clear_small_obj_detect()">Clear</button>
+        <div class="autoNav-widget-control-panel">
+            <div class="autoNav-widget-button-container">
+                <button id="fetchBtn_autoNav" onclick="preloadImages()">Fetch</button>
+                <button id="runBtn_autoNav" onclick="run_auto_nav()">Run</button>
+                <button id="stopBtn_autoNav" onclick="stop_auto_nav()">Stop</button>
+                <button id="clearBtn_autoNav" onclick="clear_auto_nav()">Clear</button>
 
-                <div id="statusBar" class="landNav-widget-status-bar">Ready to start processing</div>
+                <div id="statusBar" class="autoNav-widget-status-bar">Ready to start processing</div>
                 <p><strong>Processing Time:</strong> <span id="processingTime">-</span></p>
             </div>
         
-            <!-- <div class="landNav-widget-progress-info">
+            <!-- <div class="autoNav-widget-progress-info">
                 <h4>Processing Information</h4>
                 <p><strong>Current Status:</strong> <span id="processStatus">Idle</span></p>
                 <p><strong>Latest Output:</strong> <span id="latestOutput">None</span></p>
@@ -204,21 +267,25 @@
     </div>
 
     <script>
-        let landNavInputImageCache = {};
-        let landNavOutputImageCache = {};
+        let autoNavGpsImageCache = {};
+        let autoNavFeaturesImageCache = {};
+        let autoNavDepthImageCache = {};
+        let autoNavLidarImageCache = {};
         
     (function() {
         'use strict';
         const FLASK_HOST = "localhost";
         const FLASK_PORT = 5001;
         
-        // let imageCache = {};
-        let landNavInputImageCache = {};
-        let landNavOutputImageCache = {};
+        // let autoNavGpsImageCache = {};
+        // let autoNavFeaturesImageCache = {};
+        // let autoNavDepthImageCache = {};
+        // let autoNavLidarImageCache = {};
         
         let isRunning = false;
         let startTime = null;
         let pollInterval = null;
+        let displayInterval = null;
         
         // // Preload all images when page loads
         // window.addEventListener('load', function() {
@@ -226,24 +293,45 @@
         // });
 
         function clearImages() {
-            document.getElementById('inputImageContainer').innerHTML = '<div class="landNav-widget-image-placeholder">Loading...</div>';
-            document.getElementById('outputImageContainer').innerHTML = '<div class="landNav-widget-image-placeholder">Loading...</div>';
-            document.getElementById('inputImageInfo').textContent = '';
-            document.getElementById('outputImageInfo').textContent = '';
+            document.getElementById('gpsImageContainer').innerHTML = '<div class="autoNav-widget-image-placeholder">No data</div>';
+            document.getElementById('featureImageContainer').innerHTML = '<div class="autoNav-widget-image-placeholder">No data</div>';
+            document.getElementById('depthImageContainer').innerHTML = '<div class="autoNav-widget-image-placeholder">No data</div>';
+            document.getElementById('lidarImageContainer').innerHTML = '<div class="autoNav-widget-image-placeholder">No data</div>';
+            document.getElementById('gpsImageInfo').textContent = '';
+            document.getElementById('featureImageInfo').textContent = '';
+            document.getElementById('depthImageInfo').textContent = '';
+            document.getElementById('lidarImageInfo').textContent = '';
         }
 
         function updateStatus(message, type = '') {
             const statusBar = document.getElementById('statusBar');
             statusBar.textContent = message;
-            statusBar.className = `landNav-widget-status-bar ${type}`;
+            statusBar.className = `autoNav-widget-status-bar ${type}`;
         }
 
         function updateButtons() {
-            const runBtn = document.getElementById('runBtn');
-            const clearBtn = document.getElementById('clearBtn');
-            
-            runBtn.disabled = isRunning;
-            runBtn.textContent = isRunning ? 'Processing...' : 'Run';
+            const fetchBtn_autoNav = document.getElementById('fetchBtn_autoNav');
+            const runBtn_autoNav = document.getElementById('runBtn_autoNav');
+            const stopBtn_autoNav = document.getElementById('stopBtn_autoNav');
+            const clearBtn_autoNav = document.getElementById('clearBtn_autoNav');
+
+            // Check if images are already in memory
+            const hasImagesInMemory = Object.keys(autoNavGpsImageCache).length > 0 &&
+                                      Object.keys(autoNavFeaturesImageCache).length > 0 &&
+                                      Object.keys(autoNavDepthImageCache).length > 0 &&
+                                      Object.keys(autoNavLidarImageCache).length > 0;
+
+            // Fetch button: disabled if running or already fetched
+            fetchBtn_autoNav.disabled = isRunning || hasImagesInMemory;
+
+            // Run button: enabled if images in memory and not running
+            runBtn_autoNav.disabled = !hasImagesInMemory || isRunning;
+
+            // Stop button: enabled only while running
+            stopBtn_autoNav.disabled = !isRunning;
+
+            // Clear button: disabled while running
+            clearBtn_autoNav.disabled = isRunning;
         }
 
         function updateProcessingTime() {
@@ -258,19 +346,19 @@
         
         window.preloadImages = async function() {
             try {
-                console.log('Starting enhanced image load...');
+                console.log('Starting image preload...');
                 updateStatus('Loading image list...', 'running');
-                
-                const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/image_list`);
+
+                const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/auto_nav/image_list`);
                 if (!response.ok) {
                     throw new Error(`Failed to fetch image list: ${response.status}`);
                 }
-                
+
                 const data = await response.json();
                 console.log('Image list received:', data);
-                
-                const totalImages = data.input_images.length + data.output_images.length;
-                updateStatus(`Loading input images...`, 'running');
+
+                const totalImages = data.total_gps + data.total_features + data.total_depth + data.total_lidar;
+                updateStatus(`Loading ${totalImages} images...`, 'running');
                 
                 // Enhanced image loading with retry mechanism
                 function loadImageWithRetry(src, filename, imageType, maxRetries = 3, timeout = 15000) {
@@ -290,10 +378,14 @@
                                 // Validate that the image actually loaded with content
                                 if (img.naturalWidth > 0 && img.naturalHeight > 0) {
                                     // Store in appropriate cache
-                                    if (imageType === 'input') {
-                                        landNavInputImageCache[filename] = img;
-                                    } else {
-                                        landNavOutputImageCache[filename] = img;
+                                    if (imageType === 'gps_img') {
+                                        autoNavGpsImageCache[filename] = img;
+                                    } else if (imageType === 'features_img') {
+                                        autoNavFeaturesImageCache[filename] = img;
+                                    } else if (imageType === 'depth_img') {
+                                        autoNavDepthImageCache[filename] = img;
+                                    } else if (imageType === 'lidar_img') {
+                                        autoNavLidarImageCache[filename] = img;
                                     }
                                     resolve({ success: true, filename, imageType, attempts });
                                 } else {
@@ -319,7 +411,8 @@
                             
                             // Set timeout for this attempt
                             timeoutId = setTimeout(() => {
-                                console.warn(`⚠ Timeout loading: ${filename} (${imageType}) (attempt ${attempts})`);                                img.src = ''; // Cancel the request
+                                console.warn(`⚠ Timeout loading: ${filename} (${imageType}) (attempt ${attempts})`);
+                                img.src = ''; // Cancel the request
                                 
                                 if (attempts < maxRetries) {
                                     setTimeout(attemptLoad, 1000 * attempts); // Progressive delay
@@ -338,7 +431,7 @@
                 // Validate images exist on server before attempting to load
                 async function validateImageExists(filename, type) {
                     try {
-                        const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/validate_image/${type}/${filename}`);
+                        const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/auto_nav/validate_image/${type}/${filename}`);
                         if (response.ok) {
                             const result = await response.json();
                             return result.valid;
@@ -353,28 +446,51 @@
                 const loadPromises = [];
                 let validatedCount = 0;
                 
-                // Process input images
-                // Process input images
-                for (const filename of data.input_images) {
-                    const isValid = await validateImageExists(filename, 'input');
+                // Process gps images
+                for (const filename of data.gps_images) {
+                    const isValid = await validateImageExists(filename, 'gps_img');
                     if (isValid) {
-                        const src = `http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/images/input/${filename}`;
-                        loadPromises.push(loadImageWithRetry(src, filename, 'input'));
+                        const src = `http://${FLASK_HOST}:${FLASK_PORT}/auto_nav/images/gps/${filename}`;
+                        loadPromises.push(loadImageWithRetry(src, filename, 'gps_img'));
                         validatedCount++;
                     } else {
                         console.warn(`Skipping invalid input image: ${filename}`);
                     }
                 }
 
-                // Process output images
-                for (const filename of data.output_images) {
-                    const isValid = await validateImageExists(filename, 'output');
+                // Process features images
+                for (const filename of data.features_images) {
+                    const isValid = await validateImageExists(filename, 'features_img');
                     if (isValid) {
-                        const src = `http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/images/output/${filename}`;
-                        loadPromises.push(loadImageWithRetry(src, filename, 'output'));
+                        const src = `http://${FLASK_HOST}:${FLASK_PORT}/auto_nav/images/features/${filename}`;
+                        loadPromises.push(loadImageWithRetry(src, filename, 'features_img'));
                         validatedCount++;
                     } else {
                         console.warn(`Skipping invalid output image: ${filename}`);
+                    }
+                }
+
+                // Process depth images
+                for (const filename of data.depth_images) {
+                    const isValid = await validateImageExists(filename, 'depth_img');
+                    if (isValid) {
+                        const src = `http://${FLASK_HOST}:${FLASK_PORT}/auto_nav/images/depth/${filename}`;
+                        loadPromises.push(loadImageWithRetry(src, filename, 'depth_img'));
+                        validatedCount++;
+                    } else {
+                        console.warn(`Skipping invalid input image: ${filename}`);
+                    }
+                }
+
+                // Process lidar images
+                for (const filename of data.lidar_images) {
+                    const isValid = await validateImageExists(filename, 'lidar_img');
+                    if (isValid) {
+                        const src = `http://${FLASK_HOST}:${FLASK_PORT}/auto_nav/images/lidar/${filename}`;
+                        loadPromises.push(loadImageWithRetry(src, filename, 'lidar_img'));
+                        validatedCount++;
+                    } else {
+                        console.warn(`Skipping invalid input image: ${filename}`);
                     }
                 }
                 
@@ -427,26 +543,16 @@
                 }
                 
                 const successRate = Math.round((successful.length / validatedCount) * 100);
-                
+
                 if (failed.length === 0) {
-                    // updateStatus(`All input images loaded successfully (${successful.length}/${validatedCount})`, 'ready');
-                    updateStatus(`All input images loaded successfully`, 'ready');
+                    updateStatus(`All images loaded successfully (${successful.length} images)`, 'ready');
                 } else if (successful.length > 0) {
-                    // updateStatus(`Images loaded: ${successful.length}/${validatedCount} (${successRate}%) - ${failed.length} failed`, 'ready');
-                    updateStatus(`All input images loaded successfully`, 'ready');
+                    updateStatus(`Images loaded: ${successful.length}/${validatedCount} (${successRate}%)`, 'ready');
                 } else {
-                    updateStatus('Failed to load input images - check console for details', 'error');
+                    updateStatus('Failed to load images - check console for details', 'error');
                 }
-                
-                // // Store validation results for later use
-                // window.imageValidationResults = {
-                //     total: validatedCount,
-                //     successful: successful.length,
-                //     failed: failed.length,
-                //     successRate: successRate
-                // };
-                
-                // console.log('Enhanced image preload completed - ready for display');
+
+                updateButtons();
 
                 // Store validation results for later use
                 window.imageValidationResults = {
@@ -456,7 +562,13 @@
                     successRate: successRate
                 };
 
-                console.log('Input image load completed - ready for display');
+                console.log('Image preload completed - ready for display');
+                console.log('Cache status:', {
+                    gps: Object.keys(autoNavGpsImageCache).length,
+                    features: Object.keys(autoNavFeaturesImageCache).length,
+                    depth: Object.keys(autoNavDepthImageCache).length,
+                    lidar: Object.keys(autoNavLidarImageCache).length
+                });
                 
                 // numToCheck = 300;
                 // // Validate first 100 input images
@@ -493,7 +605,7 @@
         //     // Check images 1.webp through 100.webp
         //     for (let i = 1; i <= numToCheck; i++) {
         //         const filename = `${i}.webp`;
-        //         if (landNavInputImageCache[filename]) {
+        //         if (autoNavGpsImageCache[filename]) {
         //             presentImages.push(filename);
         //         } else {
         //             missingImages.push(filename);
@@ -536,197 +648,221 @@
         //     };
         // }
 
-        window.run_small_obj_detect = function() {
+        window.run_auto_nav = function() {
             if (isRunning) return;
-            
+
             isRunning = true;
             startTime = new Date();
-            
-            updateStatus('Starting small object detection...', 'running');
+
+            updateStatus('Starting autonomous navigation display...', 'running');
             updateButtons();
-            
-            // Clear previous images
-            clearImages();
-            
-            try {
-                fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify({ message: "run_small_obj_detect" })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    console.log("Command sent successfully:", data);
-                    startProgressPolling();
-                })
-                .catch(error => {
-                    console.error("Error sending command:", error);
-                    updateStatus('Error starting detection', 'error');
-                    isRunning = false;
-                    updateButtons();
-                });
-            } catch (error) {
-                console.error("Error:", error);
-                updateStatus('Error starting detection', 'error');
+
+            // Start cycling through images
+            startImageDisplay();
+
+            // Optionally notify backend
+            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ message: "run_auto_nav" })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log("Run command sent successfully:", data);
+            })
+            .catch(error => {
+                console.error("Error sending run command:", error);
+            });
+        }
+
+        function startImageDisplay() {
+            // IMPORTANT: Clear any existing interval first to prevent multiple intervals running
+            if (displayInterval) {
+                clearInterval(displayInterval);
+                displayInterval = null;
+            }
+
+            // Get all image filenames from caches and sort NUMERICALLY
+            const gpsImages = Object.keys(autoNavGpsImageCache).sort((a, b) => {
+                const numA = parseInt(a.replace('.webp', ''));
+                const numB = parseInt(b.replace('.webp', ''));
+                return numA - numB;
+            });
+            const featuresImages = Object.keys(autoNavFeaturesImageCache).sort((a, b) => {
+                const numA = parseInt(a.replace('.webp', ''));
+                const numB = parseInt(b.replace('.webp', ''));
+                return numA - numB;
+            });
+            const depthImages = Object.keys(autoNavDepthImageCache).sort((a, b) => {
+                const numA = parseInt(a.replace('.webp', ''));
+                const numB = parseInt(b.replace('.webp', ''));
+                return numA - numB;
+            });
+            const lidarImages = Object.keys(autoNavLidarImageCache).sort((a, b) => {
+                const numA = parseInt(a.replace('.webp', ''));
+                const numB = parseInt(b.replace('.webp', ''));
+                return numA - numB;
+            });
+
+            console.log('Starting image display with cached images:');
+            console.log(`GPS: ${gpsImages.length}, Features: ${featuresImages.length}, Depth: ${depthImages.length}, LIDAR: ${lidarImages.length}`);
+
+            // Check if we have images in all caches
+            if (gpsImages.length === 0 || featuresImages.length === 0 ||
+                depthImages.length === 0 || lidarImages.length === 0) {
+                console.error('Missing images in one or more caches');
+                updateStatus('Error: Missing images in cache', 'error');
                 isRunning = false;
                 updateButtons();
+                return;
             }
+
+            // Use minimum length to prevent misalignment when arrays have different sizes
+            const minLength = Math.min(gpsImages.length, featuresImages.length,
+                                       depthImages.length, lidarImages.length);
+            console.log(`Using minimum length of ${minLength} images to ensure alignment`);
+
+            let currentIndex = 0;
+
+            function displayNextSet() {
+                if (!isRunning) return;
+
+                // Display images at current index (cycling through minimum length)
+                const gpsFilename = gpsImages[currentIndex % minLength];
+                const featuresFilename = featuresImages[currentIndex % minLength];
+                const depthFilename = depthImages[currentIndex % minLength];
+                const lidarFilename = lidarImages[currentIndex % minLength];
+
+                // Debug logging
+                console.log(`Displaying index ${currentIndex}: GPS=${gpsFilename}`);
+
+                displayImages(gpsFilename, featuresFilename, depthFilename, lidarFilename);
+
+                updateProcessingTime();
+
+                currentIndex++;
+
+                // Reset index when we've cycled through all images
+                if (currentIndex >= minLength) {
+                    console.log(`Resetting index from ${currentIndex} to 0`);
+                    currentIndex = 0;
+                }
+            }
+
+            // Display first set immediately
+            displayNextSet();
+
+            displayInterval = setInterval(displayNextSet, 40);
         }
-        
-        window.clear_small_obj_detect = function() {
-            stopProgressPolling();
+
+        window.stop_auto_nav = function() {
+            if (!isRunning) return;
+
+            isRunning = false;
+
+            // Stop the display interval
+            if (displayInterval) {
+                clearInterval(displayInterval);
+                displayInterval = null;
+            }
+
+            updateStatus('Stopped', 'ready');
+            updateButtons();
+        }
+
+        window.clear_auto_nav = function() {
+            // Stop everything first
             isRunning = false;
             startTime = null;
-            
+
+            // Stop the display interval
+            if (displayInterval) {
+                clearInterval(displayInterval);
+                displayInterval = null;
+            }
+
+            // DO NOT clear image caches - keep them in memory for faster restart
+            // Only clear the displayed images
+
             clearImages();
-            updateStatus('Cleared', 'ready');
+            updateStatus('Ready to start processing', 'ready');
             updateButtons();
-            
-            // document.getElementById('processStatus').textContent = 'Idle';
-            // document.getElementById('latestOutput').textContent = 'None';
+
             document.getElementById('processingTime').textContent = '-';
-            
+
             // Send clear command to server
             fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json"
                 },
-                body: JSON.stringify({ message: "clear_small_obj_detect" })
+                body: JSON.stringify({ message: "clear_auto_nav" })
             })
             .catch(error => console.error("Error sending clear command:", error));
         }
-        
-        function startProgressPolling() {
-            if (pollInterval) clearInterval(pollInterval);
-            
-            pollInterval = setInterval(async () => {
-                try {
-                    const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/small_obj_detect/progress`);
-                    const data = await response.json();
-                    
-                    if (data.type) {
-                        handleProgressUpdate(data);
-                    }
-                } catch (error) {
-                    console.error('Error polling progress:', error);
-                }
-            }, 30);
-        }
-        
-        function stopProgressPolling() {
-            if (pollInterval) {
-                clearInterval(pollInterval);
-                pollInterval = null;
-            }
-        }
-        
-        function handleProgressUpdate(data) {
-            console.log('Progress update:', data);
-            
-            switch (data.type) {
-                case 'small_obj_detect_start':
-                    updateStatus('Detection started', 'running');
-                    // document.getElementById('processStatus').textContent = 'Running';
-                    break;
-                    
-                case 'small_obj_detect_progress':
-                    // Log what we're trying to display
-                    // console.log(`Attempting1111 input=${data.input_image}, output=${data.output_image}`);
-                    
-                    // Check if images exist in cache before displaying
-                    if (!landNavInputImageCache[data.input_image]) {
-                        console.warn(`Input image ${data.input_image} not found in input cache`);
-                    }
-                    if (!landNavOutputImageCache[data.output_image]) {
-                        console.warn(`Output image ${data.output_image} not found in output cache`);
-                    }
-                                        
-                    displayImagePair(data.input_image, data.output_image);
-                    // console.log(`Attempting2222 input=${data.input_image}, output=${data.output_image}`);
-                    // document.getElementById('latestOutput').textContent = data.output_image;
 
-                    updateProcessingTime();
-                    // console.log(`Attempting3333 input=${data.input_image}, output=${data.output_image}`);
+        function displayImages(gpsFilename, featuresFilename, depthFilename, lidarFilename) {
+            const gpsContainer = document.getElementById('gpsImageContainer');
+            const featuresContainer = document.getElementById('featureImageContainer');
+            const depthContainer = document.getElementById('depthImageContainer');
+            const lidarContainer = document.getElementById('lidarImageContainer');
+            const gpsInfo = document.getElementById('gpsImageInfo');
+            const featuresInfo = document.getElementById('featureImageInfo');
+            const depthInfo = document.getElementById('depthImageInfo');
+            const lidarInfo = document.getElementById('lidarImageInfo');
 
-                    break;
-                    
-                case 'small_obj_detect_complete':
-                    updateStatus('Detection completed successfully', 'ready');
-                    // document.getElementById('processStatus').textContent = 'Completed';
-                    isRunning = false;
-                    updateButtons();
-                    stopProgressPolling();
-                    break;
-                    
-                case 'small_obj_detect_error':
-                    updateStatus(`Error: ${data.error}`, 'error');
-                    // document.getElementById('processStatus').textContent = 'Error';
-                    isRunning = false;
-                    updateButtons();
-                    stopProgressPolling();
-                    break;
-            }
-        }
-        
-        function displayImagePair(inputFilename, outputFilename) {
-            console.log(`Displaying images: input=${inputFilename}, output=${outputFilename}`);
-            const inputContainer = document.getElementById('inputImageContainer');
-            const outputContainer = document.getElementById('outputImageContainer');
-            const inputInfo = document.getElementById('inputImageInfo');
-            const outputInfo = document.getElementById('outputImageInfo');
-            
             // Function to create and display image with fallback
             function displayImage(filename, type, container, infoElement) {
                 let cachedImg;
-                
+
                 // Get image from appropriate cache
-                if (type === 'input') {
-                    cachedImg = landNavInputImageCache[filename];
-                } else {
-                    cachedImg = landNavOutputImageCache[filename];
+                if (type === 'gps') {
+                    cachedImg = autoNavGpsImageCache[filename];
+                } else if (type === 'features') {
+                    cachedImg = autoNavFeaturesImageCache[filename];
+                } else if (type === 'depth') {
+                    cachedImg = autoNavDepthImageCache[filename];
+                } else if (type === 'lidar') {
+                    cachedImg = autoNavLidarImageCache[filename];
                 }
-                
+
                 if (cachedImg && cachedImg.complete && cachedImg.naturalWidth > 0) {
-                    // Create a new image element to display
+                    // Clear container FIRST to remove any existing images
+                    container.innerHTML = '';
+
+                    // Then create and append new image element
                     const displayImg = document.createElement('img');
                     displayImg.src = cachedImg.src;
-                    // displayImg.style.maxWidth = '100%';
-                    // displayImg.style.maxHeight = '400px';
-                    // displayImg.style.borderRadius = '4px';
-                    
-                    container.innerHTML = '';
                     container.appendChild(displayImg);
-                    // infoElement.textContent = `${type.charAt(0).toUpperCase() + type.slice(1)}: ${filename}`;
-                    infoElement.textContent = ``;
-                    
+                    infoElement.textContent = '';
+
                     // Add error handling for display
                     displayImg.onerror = () => {
                         console.error(`Failed to display ${type} image: ${filename}`);
-                        container.innerHTML = `<div class="landNav-widget-image-placeholder">Failed to display ${type} image</div>`;
+                        container.innerHTML = `<div class="autoNav-widget-image-placeholder">Failed to display ${type} image</div>`;
                     };
-                    
+
                     return true;
                 } else {
                     console.warn(`${type} image not available in cache: ${filename}`);
-                    container.innerHTML = `<div class="landNav-widget-image-placeholder">${type.charAt(0).toUpperCase() + type.slice(1)} image not available</div>`;
+                    container.innerHTML = `<div class="autoNav-widget-image-placeholder">${type} image not available</div>`;
                     return false;
                 }
             }
-            
-            // Display both images
-            const inputDisplayed = displayImage(inputFilename, 'input', inputContainer, inputInfo);
-            const outputDisplayed = displayImage(outputFilename, 'output', outputContainer, outputInfo);
-            
-            // Log display status
-            if (inputDisplayed && outputDisplayed) {
-                console.log(`Successfully displayed both images: ${inputFilename} and ${outputFilename}`);
-            } else {
-                console.warn(`Partial display: input=${inputDisplayed}, output=${outputDisplayed}`);
-            }
+
+            // Display all four images
+            displayImage(gpsFilename, 'gps', gpsContainer, gpsInfo);
+            displayImage(featuresFilename, 'features', featuresContainer, featuresInfo);
+            displayImage(depthFilename, 'depth', depthContainer, depthInfo);
+            displayImage(lidarFilename, 'lidar', lidarContainer, lidarInfo);
         }
+
+        // Initialize button states on page load
+        window.addEventListener('load', function() {
+            updateButtons();
+        });
 
     })(); // End of IIFE
     </script>
