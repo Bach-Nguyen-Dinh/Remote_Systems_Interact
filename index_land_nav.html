@@ -204,28 +204,22 @@
             <div class="autoNav-widget-left-column">
                 <div class="autoNav-widget-image-panel">
                     <h5>GPS</h5>
-                    <div class="autoNav-widget-image-container">
-                        <div id="gpsImageContainer" class="autoNav-widget-image-placeholder">
-                            No data
-                        </div>
+                    <div class="autoNav-widget-image-container" id="gpsImageContainer">
+                        <div class="autoNav-widget-image-placeholder">No data</div>
                     </div>
                     <p id="gpsImageInfo"></p>
                 </div>
                 <div class="autoNav-widget-image-panel">
                     <h5>Features</h5>
-                    <div class="autoNav-widget-image-container">
-                        <div id="featureImageContainer" class="autoNav-widget-image-placeholder">
-                            No data
-                        </div>
+                    <div class="autoNav-widget-image-container" id="featureImageContainer">
+                        <div class="autoNav-widget-image-placeholder">No data</div>
                     </div>
                     <p id="featureImageInfo"></p>
                 </div>
                 <div class="autoNav-widget-image-panel">
                     <h5>Depth</h5>
-                    <div class="autoNav-widget-image-container">
-                        <div id="depthImageContainer" class="autoNav-widget-image-placeholder">
-                            No data
-                        </div>
+                    <div class="autoNav-widget-image-container" id="depthImageContainer">
+                        <div class="autoNav-widget-image-placeholder">No data</div>
                     </div>
                     <p id="depthImageInfo"></p>
                 </div>
@@ -235,10 +229,8 @@
             <div class="autoNav-widget-right-column">
                 <div class="autoNav-widget-image-panel">
                     <h5>LIDAR</h5>
-                    <div class="autoNav-widget-image-container">
-                        <div id="lidarImageContainer" class="autoNav-widget-image-placeholder">
-                            No data
-                        </div>
+                    <div class="autoNav-widget-image-container" id="lidarImageContainer">
+                        <div class="autoNav-widget-image-placeholder">No data</div>
                     </div>
                     <p id="lidarImageInfo"></p>
                 </div>
@@ -285,7 +277,7 @@
         let startTime = null;
         let pollInterval = null;
         let displayInterval = null;
-        
+
         // // Preload all images when page loads
         // window.addEventListener('load', function() {
         //     preloadImages();
@@ -850,7 +842,7 @@
             const depthInfo = document.getElementById('depthImageInfo');
             const lidarInfo = document.getElementById('lidarImageInfo');
 
-            // Function to create and display image with fallback
+            // Function to display image - reuses same img element (Option 5)
             function displayImage(filename, type, container, infoElement) {
                 let cachedImg;
 
@@ -866,21 +858,27 @@
                 }
 
                 if (cachedImg && cachedImg.complete && cachedImg.naturalWidth > 0) {
-                    // Clear container FIRST to remove any existing images
-                    container.innerHTML = '';
+                    // Check if img element already exists in container
+                    let displayImg = container.querySelector('img');
 
-                    // Then create and append new image element
-                    const displayImg = document.createElement('img');
-                    displayImg.src = cachedImg.src;
-                    container.appendChild(displayImg);
+                    if (displayImg) {
+                        // Reuse existing img element - just swap src
+                        displayImg.src = cachedImg.src;
+                    } else {
+                        // First time: create new img element
+                        container.innerHTML = '';
+                        displayImg = document.createElement('img');
+                        displayImg.src = cachedImg.src;
+                        container.appendChild(displayImg);
+
+                        // Add error handling
+                        displayImg.onerror = () => {
+                            console.error(`Failed to display ${type} image: ${filename}`);
+                            container.innerHTML = `<div class="autoNav-widget-image-placeholder">Failed to display ${type} image</div>`;
+                        };
+                    }
+
                     infoElement.textContent = '';
-
-                    // Add error handling for display
-                    displayImg.onerror = () => {
-                        console.error(`Failed to display ${type} image: ${filename}`);
-                        container.innerHTML = `<div class="autoNav-widget-image-placeholder">Failed to display ${type} image</div>`;
-                    };
-
                     return true;
                 } else {
                     console.warn(`${type} image not available in cache: ${filename}`);
