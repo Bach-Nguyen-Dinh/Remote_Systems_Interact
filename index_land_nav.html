@@ -683,27 +683,65 @@
                 displayInterval = null;
             }
 
-            // Get all image filenames from caches and sort NUMERICALLY
-            const gpsImages = Object.keys(autoNavGpsImageCache).sort((a, b) => {
-                const numA = parseInt(a.replace('.webp', ''));
-                const numB = parseInt(b.replace('.webp', ''));
-                return numA - numB;
-            });
-            const featuresImages = Object.keys(autoNavFeaturesImageCache).sort((a, b) => {
-                const numA = parseInt(a.replace('.webp', ''));
-                const numB = parseInt(b.replace('.webp', ''));
-                return numA - numB;
-            });
-            const depthImages = Object.keys(autoNavDepthImageCache).sort((a, b) => {
-                const numA = parseInt(a.replace('.webp', ''));
-                const numB = parseInt(b.replace('.webp', ''));
-                return numA - numB;
-            });
-            const lidarImages = Object.keys(autoNavLidarImageCache).sort((a, b) => {
-                const numA = parseInt(a.replace('.webp', ''));
-                const numB = parseInt(b.replace('.webp', ''));
-                return numA - numB;
-            });
+            // Smart sorting function that detects naming patterns and sorts accordingly
+            function smartSort(filenameArray) {
+                if (filenameArray.length === 0) return [];
+
+                // Detect the naming pattern from the first file
+                const sample = filenameArray[0];
+
+                // Pattern 1: Timestamp-based (e.g., vins_depth_1317020576.190.webp)
+                // Extract floating-point timestamp at the end
+                const timestampPattern = /_(\d+\.\d+)\.webp$/;
+
+                // Pattern 2: Simple numeric (e.g., 1.webp, 2.webp, 100.webp)
+                const simpleNumPattern = /^(\d+)\.webp$/;
+
+                // Pattern 3: Number with suffix letter (e.g., gps_map_3s.webp, image_40s.webp)
+                const numWithSuffixPattern = /_(\d+)[a-z]\.webp$/;
+
+                // Pattern 4: Prefix with number (e.g., image_123.webp)
+                const prefixNumPattern = /_(\d+)\.webp$/;
+
+                if (timestampPattern.test(sample)) {
+                    // Sort by timestamp (floating point)
+                    return filenameArray.sort((a, b) => {
+                        const timestampA = parseFloat(a.match(timestampPattern)[1]);
+                        const timestampB = parseFloat(b.match(timestampPattern)[1]);
+                        return timestampA - timestampB;
+                    });
+                } else if (simpleNumPattern.test(sample)) {
+                    // Sort by simple number
+                    return filenameArray.sort((a, b) => {
+                        const numA = parseInt(a.match(simpleNumPattern)[1]);
+                        const numB = parseInt(b.match(simpleNumPattern)[1]);
+                        return numA - numB;
+                    });
+                } else if (numWithSuffixPattern.test(sample)) {
+                    // Sort by number (ignoring suffix letter like 's')
+                    return filenameArray.sort((a, b) => {
+                        const numA = parseInt(a.match(numWithSuffixPattern)[1]);
+                        const numB = parseInt(b.match(numWithSuffixPattern)[1]);
+                        return numA - numB;
+                    });
+                } else if (prefixNumPattern.test(sample)) {
+                    // Sort by number after prefix
+                    return filenameArray.sort((a, b) => {
+                        const numA = parseInt(a.match(prefixNumPattern)[1]);
+                        const numB = parseInt(b.match(prefixNumPattern)[1]);
+                        return numA - numB;
+                    });
+                } else {
+                    // Fallback: alphabetical sort
+                    return filenameArray.sort();
+                }
+            }
+
+            // Apply smart sorting to all image caches
+            const gpsImages = smartSort(Object.keys(autoNavGpsImageCache));
+            const featuresImages = smartSort(Object.keys(autoNavFeaturesImageCache));
+            const depthImages = smartSort(Object.keys(autoNavDepthImageCache));
+            const lidarImages = smartSort(Object.keys(autoNavLidarImageCache));
 
             console.log('Starting image display with cached images:');
             console.log(`GPS: ${gpsImages.length}, Features: ${featuresImages.length}, Depth: ${depthImages.length}, LIDAR: ${lidarImages.length}`);
@@ -735,7 +773,7 @@
                 const lidarFilename = lidarImages[currentIndex % minLength];
 
                 // Debug logging
-                console.log(`Displaying index ${currentIndex}: GPS=${gpsFilename}`);
+                console.log(`Displaying index ${currentIndex}: features=${featuresFilename}`);
 
                 displayImages(gpsFilename, featuresFilename, depthFilename, lidarFilename);
 
@@ -753,7 +791,7 @@
             // Display first set immediately
             displayNextSet();
 
-            displayInterval = setInterval(displayNextSet, 40);
+            displayInterval = setInterval(displayNextSet, 100);
         }
 
         window.stop_auto_nav = function() {
