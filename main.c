@@ -12,11 +12,18 @@ void ctrl_c_event(int sig)
 {
     (void)sig;
     write(STDOUT_FILENO, "\nCTRL+C received. Force exit.\n", 30);
-    _exit(1);   // immediate termination (like kill -9)
+    _exit(1);
+}
+
+// Get current time in seconds (wall clock)
+static double get_time_seconds(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
 int main() {
-    // Initialize sensor
 	IIM42652_axis_t accel_data;
 	IIM42652_axis_t gyro_data;
 
@@ -29,10 +36,8 @@ int main() {
 	sa.sa_flags = 0;
 	sigaction(SIGINT, &sa, NULL);
 
-	//Open sensor
 	iim42652_open();
 
-	//Check sensor availability
 	if (iim42652_avail()) {
 		printf("Sensor not found check your connections!\n");
 		goto err;	
@@ -83,9 +88,11 @@ int main() {
 
     FusionAhrsSetSettings(&ahrs, &settings);
 
-    // This loop should repeat for each new gyroscope measurement
+    // Timing
+    double previousTime = get_time_seconds();
+
+    // Main loop
     while (true) {
-        // Read sensors
 		iim42652_ex_idle();
 		iim42652_accelerometer_enable();
 		iim42652_gyroscope_enable();
@@ -95,69 +102,37 @@ int main() {
 		iim42652_get_accel_data(&accel_data);
 		iim42652_get_gyro_data(&gyro_data);
 
-		/*
-		 * ±16 g  : 2048  LSB/g
-		 * ±8 g   : 4096  LSB/g
-		 * ±4 g   : 8192  LSB/g
-		 * ±2 g   : 16384 LSB/g
-		*/
-		acc_x = (float)accel_data.x / 2048;
-		acc_y = (float)accel_data.y / 2048;
-		acc_z = (float)accel_data.z / 2048;
-
-		printf("accel_x: %f\n", acc_x);
-		printf("accel_y: %f\n", acc_y);
-		printf("accel_z: %f\n", acc_z);
-
-		/*
-		* ±2000 º/s    : 16.4   LSB/(º/s)
-		* ±1000 º/s    : 32.8   LSB/(º/s)
-		* ±500  º/s    : 65.5   LSB/(º/s)
-		* ±250  º/s    : 131    LSB/(º/s)
-		* ±125  º/s    : 262    LSB/(º/s)
-		* ±62.5  º/s   : 524.3  LSB/(º/s)
-		* ±31.25  º/s  : 1048.6 LSB/(º/s)
-		* ±15.625 º/s  : 2097.2 LSB/(º/s)
-		*/
-		gyro_x = (float)gyro_data.x / 16.4;
-		gyro_y = (float)gyro_data.y / 16.4;
-		gyro_z = (float)gyro_data.z / 16.4;
-
-		printf("gyro_x: %f\n", gyro_x);
-		printf("gyro_y: %f\n", gyro_y);
-		printf("gyro_z: %f\n", gyro_z);
-
-        const clock_t timestamp = clock();
-        FusionVector gyroscope = {
-            {gyro_x, gyro_y, gyro_z}
-        };
-        FusionVector accelerometer = {
-            {acc_x, acc_y, acc_z}
-        };
-
 		iim42652_accelerometer_disable();
 		iim42652_gyroscope_disable();
 		iim42652_idle();
 
-        // Apply calibration
-        gyroscope = FusionModelInertial(gyroscope, gyroscopeMisalignment, gyroscopeSensitivity, gyroscopeOffset);
+        // Convert to physical units
+        acc_x = (float)accel_data.x / 2048.0f;
+        acc_y = (float)accel_data.y / 2048.0f;
+        acc_z = (float)accel_data.z / 2048.0f;
 
-        accelerometer = FusionModelInertial(accelerometer, accelerometerMisalignment, accelerometerSensitivity, accelerometerOffset);
+        gyro_x = (float)gyro_data.x / 16.4f;
+        gyro_y = (float)gyro_data.y / 16.4f;
+        gyro_z = (float)gyro_data.z / 16.4f;
 
-        // Update bias algorithm
-        gyroscope = FusionBiasUpdate(&bias, gyroscope);
+        FusionVector gyroscope = {{gyro_x, gyro_y, gyro_z}};
+        FusionVector accelerometer = {{acc_x, acc_y, acc_z}};
 
-        // Calculate delta time to compensate for gyroscope sample clock errors
-        static clock_t previousTimestamp = 0;
-        static int firstIteration = 1;
-        float deltaTime;
-        if (firstIteration) {
-            deltaTime = 1.0f / FUSION_SAMPLE_RATE;  // Use nominal sample period for first iteration
-            firstIteration = 0;
-        } else {
-            deltaTime = (float) (timestamp - previousTimestamp) / (float) CLOCKS_PER_SEC;
+        // Apply calibration offsets
+        gyroscope = FusionModelInertial(gyroscope, gyroscopeMisalignment,
+                                        gyroscopeSensitivity, gyroscopeOffset);
+        accelerometer = FusionModelInertial(accelerometer, accelerometerMisalignment,
+                                            accelerometerSensitivity, accelerometerOffset);
+
+        // Calculate delta time using wall clock
+        double currentTime = get_time_seconds();
+        float deltaTime = (float)(currentTime - previousTime);
+        previousTime = currentTime;
+
+        // Sanity check deltaTime
+        if (deltaTime <= 0.0f || deltaTime > 1.0f) {
+            deltaTime = 1.0f / FUSION_SAMPLE_RATE;
         }
-        previousTimestamp = timestamp;
 
         // Update AHRS algorithm
         FusionAhrsUpdateNoMagnetometer(&ahrs, gyroscope, accelerometer, deltaTime);
