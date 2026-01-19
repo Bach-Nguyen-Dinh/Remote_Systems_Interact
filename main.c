@@ -1,10 +1,13 @@
 #define _GNU_SOURCE
 #include "main.h"
 
-#define FUSION_SAMPLE_RATE (100) // Hz (adjust based on actual IMU sample rate ~300ms = ~3.3Hz)
-#define FUSION_GYRO_RANGE 2000.0  // deg/s
-#define FUSION_GAIN 0.5  // AHRS algorithm gain
-#define FUSION_ACCEL_REJECTION 10.0  // Acceleration rejection threshold
+#define SAMPLE_PERIOD_US (100 * 1000)  // 100ms = 10Hz actual sample rate
+#define FUSION_SAMPLE_RATE (10)        // Hz - must match actual rate!
+#define FUSION_GYRO_RANGE 2000.0       // deg/s
+#define FUSION_GAIN 0.1                // Lower gain = trust accelerometer more
+#define FUSION_ACCEL_REJECTION 10.0    // Acceleration rejection threshold
+
+#define CALIBRATION_SAMPLES 100        // 10 seconds at 10Hz
 
 volatile sig_atomic_t flag = 0;
 
@@ -24,24 +27,24 @@ static double get_time_seconds(void)
 }
 
 int main() {
-	IIM42652_axis_t accel_data;
-	IIM42652_axis_t gyro_data;
+    IIM42652_axis_t accel_data;
+    IIM42652_axis_t gyro_data;
 
-	float acc_x, acc_y, acc_z;
-	float gyro_x, gyro_y, gyro_z;
+    float acc_x, acc_y, acc_z;
+    float gyro_x, gyro_y, gyro_z;
 
-	struct sigaction sa;
-	sa.sa_handler = ctrl_c_event;
-	sigemptyset(&sa.sa_mask);
-	sa.sa_flags = 0;
-	sigaction(SIGINT, &sa, NULL);
+    struct sigaction sa;
+    sa.sa_handler = ctrl_c_event;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
 
-	iim42652_open();
+    iim42652_open();
 
-	if (iim42652_avail()) {
-		printf("Sensor not found check your connections!\n");
-		goto err;	
-	}
+    if (iim42652_avail()) {
+        printf("Sensor not found check your connections!\n");
+        goto err;
+    }
 
     // ========== DYNAMIC CALIBRATION PHASE ==========
     printf("=== Calibration Phase ===\n");
@@ -111,16 +114,16 @@ int main() {
 
     // Identity matrices (no misalignment correction)
     const FusionMatrix gyroscopeMisalignment = {
-        {1.0f, 0.0f, 0.0f, 
-        0.0f, 1.0f, 0.0f, 
-        0.0f, 0.0f, 1.0f}
+        {1.0f, 0.0f, 0.0f,
+         0.0f, 1.0f, 0.0f,
+         0.0f, 0.0f, 1.0f}
     };
     const FusionVector gyroscopeSensitivity = {{1.0f, 1.0f, 1.0f}};
 
     const FusionMatrix accelerometerMisalignment = {
-        {1.0f, 0.0f, 0.0f, 
-        0.0f, 1.0f, 0.0f, 
-        0.0f, 0.0f, 1.0f}
+        {1.0f, 0.0f, 0.0f,
+         0.0f, 1.0f, 0.0f,
+         0.0f, 0.0f, 1.0f}
     };
     const FusionVector accelerometerSensitivity = {{1.0f, 1.0f, 1.0f}};
 
@@ -135,7 +138,7 @@ int main() {
         .gyroscopeRange = FUSION_GYRO_RANGE,
         .accelerationRejection = FUSION_ACCEL_REJECTION,
         .magneticRejection = 10.0f,
-        .recoveryTriggerPeriod = 5 * FUSION_SAMPLE_RATE, /* 5 seconds */
+        .recoveryTriggerPeriod = 5 * FUSION_SAMPLE_RATE,
     };
     FusionAhrsSetSettings(&ahrs, &settings);
 
@@ -144,18 +147,18 @@ int main() {
 
     // Main loop
     while (true) {
-		iim42652_ex_idle();
-		iim42652_accelerometer_enable();
-		iim42652_gyroscope_enable();
+        iim42652_ex_idle();
+        iim42652_accelerometer_enable();
+        iim42652_gyroscope_enable();
 
-		usleep(100 * 1000);
+        usleep(SAMPLE_PERIOD_US);
 
-		iim42652_get_accel_data(&accel_data);
-		iim42652_get_gyro_data(&gyro_data);
+        iim42652_get_accel_data(&accel_data);
+        iim42652_get_gyro_data(&gyro_data);
 
-		iim42652_accelerometer_disable();
-		iim42652_gyroscope_disable();
-		iim42652_idle();
+        iim42652_accelerometer_disable();
+        iim42652_gyroscope_disable();
+        iim42652_idle();
 
         // Convert to physical units
         acc_x = (float)accel_data.x / 2048.0f;
@@ -185,22 +188,21 @@ int main() {
             deltaTime = 1.0f / FUSION_SAMPLE_RATE;
         }
 
-        // Update AHRS algorithm
+        // Update AHRS
         FusionAhrsUpdateNoMagnetometer(&ahrs, gyroscope, accelerometer, deltaTime);
 
-        // Print AHRS outputs
+        // Get outputs
         const FusionEuler euler = FusionQuaternionToEuler(FusionAhrsGetQuaternion(&ahrs));
-
         const FusionVector earth = FusionAhrsGetEarthAcceleration(&ahrs);
 
-        printf("Roll %0.1f, Pitch %0.1f, Yaw %0.1f, X %0.1f, Y %0.1f, Z %0.1f\n",
-               euler.angle.roll, euler.angle.pitch, euler.angle.yaw,
-               earth.axis.x, earth.axis.y, earth.axis.z);
+        // Print calibrated gyro values and AHRS output
+        printf("Gyro(cal): X=%+6.2f Y=%+6.2f Z=%+6.2f | Roll %+6.1f, Pitch %+6.1f, Yaw %+6.1f\n",
+               gyroscope.axis.x, gyroscope.axis.y, gyroscope.axis.z,
+               euler.angle.roll, euler.angle.pitch, euler.angle.yaw);
     }
 
-    err:
-        //Close sensor
-        iim42652_close();
-        return 0;
+err:
+    //Close sensor
+    iim42652_close();
+    return 0;
 }
-
