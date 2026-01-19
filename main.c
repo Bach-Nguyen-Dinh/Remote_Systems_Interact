@@ -43,37 +43,89 @@ int main() {
 		goto err;	
 	}
 
-    // Calibration parameters (replace with actual calibration data)
+    // ========== DYNAMIC CALIBRATION PHASE ==========
+    printf("=== Calibration Phase ===\n");
+    printf("Keep the sensor STILL for 10 seconds...\n");
+
+    float gyro_sum_x = 0.0f, gyro_sum_y = 0.0f, gyro_sum_z = 0.0f;
+    float accel_sum_x = 0.0f, accel_sum_y = 0.0f, accel_sum_z = 0.0f;
+
+    for (int i = 0; i < CALIBRATION_SAMPLES; i++) {
+        iim42652_ex_idle();
+        iim42652_accelerometer_enable();
+        iim42652_gyroscope_enable();
+
+        usleep(SAMPLE_PERIOD_US);
+
+        iim42652_get_accel_data(&accel_data);
+        iim42652_get_gyro_data(&gyro_data);
+
+        iim42652_accelerometer_disable();
+        iim42652_gyroscope_disable();
+        iim42652_idle();
+
+        // Convert to physical units
+        acc_x = (float)accel_data.x / 2048.0f;
+        acc_y = (float)accel_data.y / 2048.0f;
+        acc_z = (float)accel_data.z / 2048.0f;
+
+        gyro_x = (float)gyro_data.x / 16.4f;
+        gyro_y = (float)gyro_data.y / 16.4f;
+        gyro_z = (float)gyro_data.z / 16.4f;
+
+        gyro_sum_x += gyro_x;
+        gyro_sum_y += gyro_y;
+        gyro_sum_z += gyro_z;
+
+        accel_sum_x += acc_x;
+        accel_sum_y += acc_y;
+        accel_sum_z += acc_z;
+
+        // Progress indicator
+        if ((i + 1) % 10 == 0) {
+            printf("Calibrating... %d%%\n", (i + 1) * 100 / CALIBRATION_SAMPLES);
+        }
+    }
+
+    // Calculate gyroscope offset (average bias at rest)
+    FusionVector gyroscopeOffset = {
+        {gyro_sum_x / CALIBRATION_SAMPLES,
+         gyro_sum_y / CALIBRATION_SAMPLES,
+         gyro_sum_z / CALIBRATION_SAMPLES}
+    };
+
+    // Calculate accelerometer offset (should be ~0, 0, -1g when flat)
+    // We only correct X and Y, Z should read -1g (or +1g depending on orientation)
+    FusionVector accelerometerOffset = {
+        {accel_sum_x / CALIBRATION_SAMPLES,
+         accel_sum_y / CALIBRATION_SAMPLES,
+         0.0f}  // Don't offset Z - gravity is real
+    };
+
+    printf("=== Calibration Complete ===\n");
+    printf("Gyro offset: X=%.3f, Y=%.3f, Z=%.3f deg/s\n",
+           gyroscopeOffset.axis.x, gyroscopeOffset.axis.y, gyroscopeOffset.axis.z);
+    printf("Accel offset: X=%.4f, Y=%.4f g\n",
+           accelerometerOffset.axis.x, accelerometerOffset.axis.y);
+    printf("============================\n\n");
+
+    // Identity matrices (no misalignment correction)
     const FusionMatrix gyroscopeMisalignment = {
         {1.0f, 0.0f, 0.0f, 
         0.0f, 1.0f, 0.0f, 
         0.0f, 0.0f, 1.0f}
     };
-    const FusionVector gyroscopeSensitivity = {
-        {1.0f, 1.0f, 1.0f}
-    };
-    // Measured gyroscope bias at rest (calibrate for your sensor)
-    const FusionVector gyroscopeOffset = {
-        {0.8f, -1.8f, 0.3f}
-    };
+    const FusionVector gyroscopeSensitivity = {{1.0f, 1.0f, 1.0f}};
 
     const FusionMatrix accelerometerMisalignment = {
         {1.0f, 0.0f, 0.0f, 
         0.0f, 1.0f, 0.0f, 
         0.0f, 0.0f, 1.0f}
     };
-    const FusionVector accelerometerSensitivity = {
-        {1.0f, 1.0f, 1.0f}
-    };
-    const FusionVector accelerometerOffset = {
-        {0.0f, 0.0f, 0.0f}
-    };
+    const FusionVector accelerometerSensitivity = {{1.0f, 1.0f, 1.0f}};
 
-    // Initialise structures
-    FusionBias bias;
+    // Initialize AHRS (no FusionBias - we handle calibration ourselves)
     FusionAhrs ahrs;
-
-    FusionBiasInitialise(&bias, FUSION_SAMPLE_RATE);
     FusionAhrsInitialise(&ahrs);
 
     // Set AHRS settings
@@ -85,7 +137,6 @@ int main() {
         .magneticRejection = 10.0f,
         .recoveryTriggerPeriod = 5 * FUSION_SAMPLE_RATE, /* 5 seconds */
     };
-
     FusionAhrsSetSettings(&ahrs, &settings);
 
     // Timing
