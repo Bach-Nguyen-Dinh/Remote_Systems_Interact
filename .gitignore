@@ -1,5 +1,8 @@
 *
+topaz_imu/.claude
 
 !.gitignore
 !*.c
 !*.py
+!topaz_imu/
+!topaz_imu/*
