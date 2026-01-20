@@ -984,8 +984,9 @@ def get_system_info():
                 temps[f"{name}_{label}"] = entry.current
     sys_temp = max(temps.values())
 
-    memory_usage = psutil.virtual_memory().percent
-    total_memory = psutil.virtual_memory().total
+    mem = psutil.virtual_memory()
+    memory_usage = (mem.used / mem.total) * 100
+    total_memory = mem.total
     swap_usage = psutil.swap_memory().percent
     total_swap = psutil.swap_memory().total
     total_disk_usage = psutil.disk_usage('/').percent   # Get disk usage for '/'
