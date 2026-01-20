@@ -58,6 +58,11 @@ AI_SMOKE_OUTPUT_DIR = "/home/matthew/Downloads/SmokeNet-Data/classification/opt_
 AI_SHIP_INPUT_DIR = "/home/matthew/modified_ai_ship/ship/short_example/opt_web_img"
 AI_SHIP_OUTPUT_DIR = "/home/matthew/modified_ai_ship/ship/output_segment/opt_web_img"
 
+AUTONOMOUS_NAV_GPS_DIR = os.path.join(CURR_DIR, "autonomous_nav/gps")
+AUTONOMOUS_NAV_FEATURES_DIR = os.path.join(CURR_DIR, "autonomous_nav/features")
+AUTONOMOUS_NAV_DEPTH_DIR = os.path.join(CURR_DIR, "autonomous_nav/depth")
+AUTONOMOUS_NAV_LIDAR_DIR = os.path.join(CURR_DIR, "autonomous_nav/lidar")
+
 # Gyro parameters
 CALIBRATION_TIME = 10.0  # seconds to collect stationary gyro data
 alpha = 0.2              # low-pass filter coefficient
@@ -68,6 +73,7 @@ connected_clients = []
 latest_small_obj_progress = {}
 latest_ai_smoke_progress = {}
 latest_ai_ship_progress = {}
+latest_auto_nav_progress = {}
 
 latest_ai_core_usage = 0.0
 ai_smoke_baseline_usage = 0.0
@@ -117,13 +123,15 @@ def broadcast_to_clients(data):
     """Broadcast data to all connected clients"""
     # This could be implemented with WebSockets or Server-Sent Events
     # For simplicity, we'll store the latest update and serve it via HTTP
-    global latest_small_obj_progress, latest_ai_smoke_progress, latest_ai_ship_progress
+    global latest_small_obj_progress, latest_ai_smoke_progress, latest_ai_ship_progress, latest_auto_nav_progress
 
     # Route to appropriate storage based on message type
     if data.get("type", "").startswith("ai_smoke"):
         latest_ai_smoke_progress = data
     if data.get("type", "").startswith("ai_ship"):
         latest_ai_ship_progress = data
+    elif data.get("type", "").startswith("auto_nav"):
+        latest_auto_nav_progress = data
     elif data.get("type", "").startswith("small_obj_detect"):
         latest_small_obj_progress = data
     else:
@@ -575,6 +583,14 @@ def send_message():
         latest_ai_ship_progress = {}
         return jsonify({"status": "cleared"})
 
+    # Handle autonomous navigation
+    elif message == "run_auto_nav":
+        latest_auto_nav_progress = {}
+        return forward_message_to_target(message)
+    elif message == "clear_auto_nav":
+        latest_auto_nav_progress = {}
+        return jsonify({"status": "cleared"})
+
     return forward_message_to_target(message)   
     
 def delete_all_files():
@@ -1014,6 +1030,119 @@ def get_ai_ship_ai_core_usage():
         "total_ai_usage": latest_ai_core_usage,
         "baseline": ai_ship_baseline_usage
     })
+
+# ===================================================
+# ==          Autonomous Navigation route          ==
+# ===================================================
+@app.route('/auto_nav/image_list', methods=['GET'])
+def get_auto_nav_image_list():
+    """Get list of all GPS, Features, Depth, and LIDAR images"""
+
+    def get_valid_images(directory):
+        """Helper function to validate and get image info"""
+        images = []
+        if os.path.exists(directory):
+            for filename in os.listdir(directory):
+                if filename.endswith('.webp'):
+                    filepath = os.path.join(directory, filename)
+                    try:
+                        if os.path.isfile(filepath) and os.access(filepath, os.R_OK):
+                            file_size = os.path.getsize(filepath)
+                            if file_size > 0:
+                                images.append({
+                                    'filename': filename,
+                                    'size': file_size
+                                })
+                            else:
+                                print(f"Warning: Empty file {filepath}")
+                        else:
+                            print(f"Warning: Cannot read file {filepath}")
+                    except Exception as e:
+                        print(f"Error checking file {filepath}: {e}")
+        return images
+
+    gps_images = get_valid_images(AUTONOMOUS_NAV_GPS_DIR)
+    features_images = get_valid_images(AUTONOMOUS_NAV_FEATURES_DIR)
+    depth_images = get_valid_images(AUTONOMOUS_NAV_DEPTH_DIR)
+    lidar_images = get_valid_images(AUTONOMOUS_NAV_LIDAR_DIR)
+
+    # Sort all images by filename
+    gps_images.sort(key=lambda x: x['filename'])
+    features_images.sort(key=lambda x: x['filename'])
+    depth_images.sort(key=lambda x: x['filename'])
+    lidar_images.sort(key=lambda x: x['filename'])
+
+    return jsonify({
+        "gps_images": [img['filename'] for img in gps_images],
+        "features_images": [img['filename'] for img in features_images],
+        "depth_images": [img['filename'] for img in depth_images],
+        "lidar_images": [img['filename'] for img in lidar_images],
+        "gps_images_info": gps_images,
+        "features_images_info": features_images,
+        "depth_images_info": depth_images,
+        "lidar_images_info": lidar_images,
+        "total_gps": len(gps_images),
+        "total_features": len(features_images),
+        "total_depth": len(depth_images),
+        "total_lidar": len(lidar_images)
+    })
+
+@app.route('/auto_nav/validate_image/<image_type>/<filename>')
+def validate_auto_nav_image(image_type, filename):
+    """Validate that a specific image exists and is accessible"""
+    try:
+        directory_map = {
+            'gps_img': AUTONOMOUS_NAV_GPS_DIR,
+            'features_img': AUTONOMOUS_NAV_FEATURES_DIR,
+            'depth_img': AUTONOMOUS_NAV_DEPTH_DIR,
+            'lidar_img': AUTONOMOUS_NAV_LIDAR_DIR
+        }
+
+        directory = directory_map.get(image_type)
+        if not directory:
+            return jsonify({"valid": False, "error": "Invalid image type"}), 400
+
+        filepath = os.path.join(directory, filename)
+
+        if os.path.isfile(filepath) and os.access(filepath, os.R_OK):
+            file_size = os.path.getsize(filepath)
+            return jsonify({
+                "valid": True,
+                "filename": filename,
+                "size": file_size,
+                "path": filepath
+            })
+        else:
+            return jsonify({"valid": False, "error": "File not accessible"}), 404
+
+    except Exception as e:
+        return jsonify({"valid": False, "error": str(e)}), 500
+
+@app.route('/auto_nav/images/gps/<filename>')
+def serve_auto_nav_gps_image(filename):
+    """Serve GPS images"""
+    return send_from_directory(AUTONOMOUS_NAV_GPS_DIR, filename)
+
+@app.route('/auto_nav/images/features/<filename>')
+def serve_auto_nav_features_image(filename):
+    """Serve Features images"""
+    return send_from_directory(AUTONOMOUS_NAV_FEATURES_DIR, filename)
+
+@app.route('/auto_nav/images/depth/<filename>')
+def serve_auto_nav_depth_image(filename):
+    """Serve Depth images"""
+    return send_from_directory(AUTONOMOUS_NAV_DEPTH_DIR, filename)
+
+@app.route('/auto_nav/images/lidar/<filename>')
+def serve_auto_nav_lidar_image(filename):
+    """Serve LIDAR images"""
+    return send_from_directory(AUTONOMOUS_NAV_LIDAR_DIR, filename)
+
+@app.route('/auto_nav/progress', methods=['GET'])
+def get_auto_nav_progress():
+    """Get the latest autonomous navigation progress"""
+    global latest_auto_nav_progress
+    return jsonify(latest_auto_nav_progress)
 
 # Function to run Flask server
 def run_flask_server():

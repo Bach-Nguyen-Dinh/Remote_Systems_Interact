@@ -157,7 +157,8 @@
     <div class="container">
 
         <div class="image-container">
-            <img id="processedImage1" src="" alt="&nbsp;&nbsp;&nbsp;Loading ...">
+            <!-- <img id="processedImage1" src="" alt="&nbsp;&nbsp;&nbsp;Loading ..."> -->
+            <img id="processedImage1">
         </div>
     </div>
 
@@ -172,6 +173,9 @@
         let testDurationUpEthAdt = null;
         let sarProcTimer = null;  // SAR run flag
         let sarProcStartTime = null;  // store the start time for SAR processing
+        let progressImageInterval = null;  // Timer for progress image cycling
+        let progressImageIndex = 0;  // Current progress image index
+        let progressImageCount = 0;  // Total count of progress images
         
         function fetchFileList() {
             const statusElement = document.getElementById("status");
@@ -300,6 +304,51 @@
                 });
         }
 
+        async function startProgressImageDisplay() {
+            // Get the count of available progress images
+            try {
+                const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/sar_progress_images/count`);
+                const data = await response.json();
+                progressImageCount = data.count;
+
+                if (progressImageCount === 0) {
+                    console.log("No progress images available");
+                    return;
+                }
+
+                // Reset index
+                progressImageIndex = 0;
+
+                // Display first image immediately
+                displayProgressImage(progressImageIndex);
+
+                // Start cycling through images every 1.6 seconds
+                progressImageInterval = setInterval(() => {
+                    progressImageIndex++;
+                    if (progressImageIndex >= progressImageCount) {
+                        progressImageIndex = 0;  // Loop back to start
+                    }
+                    displayProgressImage(progressImageIndex);
+                }, 1500);
+
+            } catch (error) {
+                console.error("Error fetching progress image count:", error);
+            }
+        }
+
+        function displayProgressImage(index) {
+            const imageElement = document.getElementById("processedImage1");
+            imageElement.src = `http://${FLASK_HOST}:${FLASK_PORT}/sar_progress_images/${index}?t=${Date.now()}`;
+            imageElement.style.display = "block";
+        }
+
+        function stopProgressImageDisplay() {
+            if (progressImageInterval) {
+                clearInterval(progressImageInterval);
+                progressImageInterval = null;
+            }
+        }
+
         function sendLoad() {
             const selectedOption = document.getElementById("menuDropdown").value;
             const statusElement = document.getElementById("status");
@@ -377,6 +426,11 @@
                     const elapsed = (Date.now() - sarProcStartTime) / 1000;
                     document.getElementById("sarProcTime").textContent = elapsed.toFixed(2) + "s";
                 }, 100);
+
+                // Wait 3s then start displaying progress images
+                setTimeout(() => {
+                    startProgressImageDisplay();
+                }, 3000);
         
                 // Set timeout
                 const startTime = Date.now();
@@ -398,6 +452,9 @@
                             sarProcTimer = null;
                         }
 
+                        // STOP progress image display
+                        stopProgressImageDisplay();
+
                         // Calculate final elapsed time
                         const finalElapsed = (Date.now() - sarProcStartTime) / 1000;
                         document.getElementById("sarProcTime").textContent = finalElapsed.toFixed(2) + "s";
@@ -408,8 +465,13 @@
                         document.getElementById("sizeCompared").textContent = data.files.size_compared + "%";
                         // document.getElementById("sarProcTime").textContent = data.files.sar_proc_time + "s";
         
-                        // Fetch the image after properties are updated
-                        fetchProcessedFile();
+                        // // Fetch the image after properties are updated
+                        // fetchProcessedFile();
+
+                        // Wait 2 seconds, then fetch and display the colorized image
+                        setTimeout(() => {
+                            fetchColorizedImage();
+                        }, 2000);
         
                         // Update the last processed filename
                         lastTifFilename = data.files.tif_filename;
@@ -434,6 +496,15 @@
 
         function resetMenu() {
             lastTifFilename = "lastFile";
+
+            // Stop progress image display if running
+            stopProgressImageDisplay();
+
+            // Stop processing timer if running
+            if (sarProcTimer) {
+                clearInterval(sarProcTimer);
+                sarProcTimer = null;
+            }
 
             fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
                 method: "POST",

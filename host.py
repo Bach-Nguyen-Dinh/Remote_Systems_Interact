@@ -354,6 +354,31 @@ def serve_sar_colored_image():
     except FileNotFoundError:
         return "Directory not found", 404
 
+@app.route('/sar_progress_images/<int:index>')
+def serve_sar_progress_image(index):
+    """Serve a specific SAR progress image by index."""
+    sar_progress_path = os.path.join(CURR_DIR, "SAR_progress_images")
+    try:
+        filename = f"{index}.webp"
+        filepath = os.path.join(sar_progress_path, filename)
+        if os.path.exists(filepath):
+            return send_from_directory(sar_progress_path, filename)
+        else:
+            return "Image not found", 404
+    except Exception as e:
+        return f"Error: {str(e)}", 500
+
+@app.route('/sar_progress_images/count')
+def get_sar_progress_count():
+    """Get the count of available SAR progress images."""
+    sar_progress_path = os.path.join(CURR_DIR, "SAR_progress_images")
+    try:
+        files = [f for f in os.listdir(sar_progress_path) if f.lower().endswith('.webp') and f[:-5].isdigit()]
+        count = len(files)
+        return jsonify({"count": count})
+    except FileNotFoundError:
+        return jsonify({"count": 0})
+
 # Function to run iperf3 and capture the results
 def run_iperf3(file_path, message):
     netTestDuration = message.split(":", 1)[1]
