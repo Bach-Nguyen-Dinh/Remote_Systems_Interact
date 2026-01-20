@@ -24,16 +24,16 @@ AI_SHIP_PATH = "/home/user/modified_ai_ship/ship/ai_ship.py"
 RESIZED_IMAGE_PATH = "/home/user/demo/optimized_image.webp"  # Temporary resized image path
 DEMO_PATH = "/home/user/demo/"
 
-HOST_IP = "10.42.1.1"
+HOST_IP = "10.42.0.1"
 SYSINFO_PORT = 12345
 IMAGE_PORT = 55555
+TIME_BEFORE_RETRY = 1.0
 
 LISTEN_IP = "0.0.0.0"
 LISTEN_PORT = 54321
 SOCK_TOUT = 3
 
-AI_IP = "127.0.0.1"
-AI_PORT = 8888
+INTERNAL_STREAM_IP = "127.0.0.1"
 RECV_BUFFER = 65536    # 64KB, should be enough for typical JSON payloads
 SOCKET_TIMEOUT = 1.0   # seconds - allows clean shutdown checks
 
@@ -50,9 +50,14 @@ SAVE_PATH_IPERF_LW_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_LwEthAdt.
 SAVE_PATH_IPERF_UP_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_UpEthAdt.json")
 
 AI_METRIC_PATH = "/home/user/ai_tool/status"
-IMU_EXECUTABLE_PATH = "/home/user/topaz_imu/iim42652"
-
+AI_PORT = 8888
 NUM_AI_CORE = 4
+
+# IMU Fusion daemon configuration
+IMU_EXECUTABLE_PATH = "/home/user/Remote_Systems_Interact/topaz_imu/main"
+IMU_UDP_PORT = 8889
+IMU_SAMPLE_RATE = 10   # Hz
+IMU_CALIBRATION_SAMPLES = 100  # ~10 seconds at 10Hz
 
 # Global variable
 progress_update = 0.0
@@ -71,20 +76,200 @@ ai_ship_running = False
 ai_run_metrics_raw = None
 ai_run_metrics_lock = threading.Lock()  # Add thread safety
 
+# IMU data state (updated by listener thread)
+imu_data_raw = None
+imu_data_lock = threading.Lock()
+imu_calibration_status = {"state": "idle", "progress": 0}
+imu_daemon_process = None
+
 stop_event = threading.Event()
 
 def signal_handler(sig, frame):
     stop_event.set()
+    stop_imu_daemon()
+
+# ===================================================
+# ==            IMU Daemon Management              ==
+# ===================================================
+
+def start_imu_daemon():
+    """Start the IMU fusion daemon process"""
+    global imu_daemon_process, imu_calibration_status
+
+    if imu_daemon_process is not None and imu_daemon_process.poll() is None:
+        print("IMU daemon already running, stopping first...")
+        stop_imu_daemon()
+
+    imu_calibration_status = {"state": "starting", "progress": 0}
+
+    try:
+        cmd = [
+            "sudo",
+            IMU_EXECUTABLE_PATH,
+            "--rate", str(IMU_SAMPLE_RATE),
+            "--cal", str(IMU_CALIBRATION_SAMPLES),
+            "--host", str(INTERNAL_STREAM_IP),
+            "--port", str(IMU_UDP_PORT)
+        ]
+        print(f"Starting IMU daemon: {' '.join(cmd)}")
+
+        imu_daemon_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            preexec_fn=os.setsid  # Create new process group for clean termination
+        )
+        print(f"IMU daemon started with PID {imu_daemon_process.pid}")
+        return True
+
+    except FileNotFoundError:
+        print(f"IMU executable not found: {IMU_EXECUTABLE_PATH}")
+        imu_calibration_status = {"state": "error", "progress": 0, "error": "executable not found"}
+        return False
+    except Exception as e:
+        print(f"Error starting IMU daemon: {e}")
+        imu_calibration_status = {"state": "error", "progress": 0, "error": str(e)}
+        return False
+
+def stop_imu_daemon():
+    """Stop the IMU fusion daemon process"""
+    global imu_daemon_process, imu_calibration_status
+
+    if imu_daemon_process is None:
+        return
+
+    if imu_daemon_process.poll() is None:
+        print(f"Stopping IMU daemon (PID {imu_daemon_process.pid})...")
+        try:
+            # Send SIGTERM to process group
+            os.killpg(os.getpgid(imu_daemon_process.pid), signal.SIGTERM)
+            try:
+                imu_daemon_process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                # Force kill if SIGTERM didn't work
+                os.killpg(os.getpgid(imu_daemon_process.pid), signal.SIGKILL)
+                imu_daemon_process.wait(timeout=1)
+            print("IMU daemon stopped")
+        except Exception as e:
+            print(f"Error stopping IMU daemon: {e}")
+
+    imu_daemon_process = None
+    imu_calibration_status = {"state": "idle", "progress": 0}
+
+def restart_imu_daemon():
+    """Restart the IMU daemon (for recalibration)"""
+    print("Restarting IMU daemon for recalibration...")
+    stop_imu_daemon()
+    time.sleep(0.5)  # Brief pause before restart
+    return start_imu_daemon()
+
+def listener_imu_data():
+    """UDP listener for IMU data from the daemon"""
+    global imu_data_raw, imu_calibration_status
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind((INTERNAL_STREAM_IP, IMU_UDP_PORT))
+        print(f"IMU data listener bound to {INTERNAL_STREAM_IP}:{IMU_UDP_PORT}")
+    except Exception as e:
+        print(f"Failed to bind IMU listener to {INTERNAL_STREAM_IP}:{IMU_UDP_PORT}: {e}")
+        return
+    
+    sock.settimeout(SOCKET_TIMEOUT)
+
+    while not stop_event.is_set():
+        try:
+            data, addr = sock.recvfrom(RECV_BUFFER)
+            print(data)
+            try:
+                msg = json.loads(data.decode("utf-8"))
+                msg_type = msg.get("type", "")
+
+                if msg_type == "calibration_start":
+                    imu_calibration_status = {
+                        "state": "calibrating",
+                        "progress": 0,
+                        "duration_sec": msg.get("duration_sec", 0)
+                    }
+                    print(f"IMU calibration started ({msg.get('duration_sec', 0):.1f}s)")
+
+                elif msg_type == "calibration_progress":
+                    imu_calibration_status["progress"] = msg.get("progress", 0)
+
+                elif msg_type == "calibration_complete":
+                    imu_calibration_status = {
+                        "state": "running",
+                        "progress": 100,
+                        "gyro_offset": msg.get("gyro_offset", [0, 0, 0]),
+                        "accel_offset": msg.get("accel_offset", [0, 0, 0])
+                    }
+                    print(f"IMU calibration complete. Gyro offset: {msg.get('gyro_offset')}")
+
+                elif msg_type == "imu_data":
+                    with imu_data_lock:
+                        imu_data_raw = msg
+
+                elif msg_type == "shutdown":
+                    print("IMU daemon shutdown notification received")
+                    imu_calibration_status = {"state": "shutdown", "progress": 0}
+
+            except json.JSONDecodeError as e:
+                print(f"IMU JSON decode error: {e}")
+
+        except socket.timeout:
+            continue
+        except Exception as e:
+            if not stop_event.is_set():
+                print(f"IMU listener error: {e}")
+            break
+
+    sock.close()
+    print("IMU data listener stopped")
+
+def get_imu_data():
+    """Get the latest IMU data from the daemon"""
+    global imu_data_raw
+
+    # Default values if no data available
+    default_data = {
+        "accel_x": 0.0, "accel_y": 0.0, "accel_z": 0.0,
+        "gyro_x": 0.0, "gyro_y": 0.0, "gyro_z": 0.0,
+        "roll": 0.0, "pitch": 0.0, "yaw": 0.0,
+        "calibration_state": imu_calibration_status.get("state", "idle"),
+        "calibration_progress": imu_calibration_status.get("progress", 0)
+    }
+
+    with imu_data_lock:
+        if imu_data_raw is None:
+            return default_data
+
+        # Extract raw values
+        raw_gyro = imu_data_raw.get("raw_gyro", [0, 0, 0])
+        raw_accel = imu_data_raw.get("raw_accel", [0, 0, 0])
+
+        return {
+            "accel_x": raw_accel[0] if len(raw_accel) > 0 else 0.0,
+            "accel_y": raw_accel[1] if len(raw_accel) > 1 else 0.0,
+            "accel_z": raw_accel[2] if len(raw_accel) > 2 else 0.0,
+            "gyro_x": raw_gyro[0] if len(raw_gyro) > 0 else 0.0,
+            "gyro_y": raw_gyro[1] if len(raw_gyro) > 1 else 0.0,
+            "gyro_z": raw_gyro[2] if len(raw_gyro) > 2 else 0.0,
+            "roll": imu_data_raw.get("roll", 0.0),
+            "pitch": imu_data_raw.get("pitch", 0.0),
+            "yaw": imu_data_raw.get("yaw", 0.0),
+            "calibration_state": imu_calibration_status.get("state", "idle"),
+            "calibration_progress": imu_calibration_status.get("progress", 0)
+        }
 
 def listener_ai_run():
     global ai_run_metrics_raw  # Declare global variable
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        sock.bind((AI_IP, AI_PORT))
-        print(f"AI metrics listener bound to {AI_IP}:{AI_PORT}")
+        sock.bind((INTERNAL_STREAM_IP, AI_PORT))
+        print(f"AI metrics listener bound to {INTERNAL_STREAM_IP}:{AI_PORT}")
     except Exception as e:
-        print(f"Failed to bind to {AI_IP}:{AI_PORT}: {e}")
+        print(f"Failed to bind to {INTERNAL_STREAM_IP}:{AI_PORT}: {e}")
         return
     
     sock.settimeout(SOCKET_TIMEOUT)
@@ -548,6 +733,10 @@ def listen_for_messages():
                                 ai_core_run_ai_ship = 1
                         threading.Thread(target=run_ai_ship, daemon=True).start()
 
+                    elif message == "recalibrate_imu":
+                        print("IMU recalibration requested by host")
+                        threading.Thread(target=restart_imu_daemon, daemon=True).start()
+
         except socket.timeout:
             # This is expected and allows checking stop_event
             continue
@@ -679,35 +868,6 @@ def get_power_from_sensor(sensor_name):
     except subprocess.CalledProcessError as e:
         print("Error running sensors:", e)
         return None
-
-def get_imu_data():
-    try:
-        result = subprocess.run(
-            [IMU_EXECUTABLE_PATH],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        imu_data = {
-            "accel_x": 0.0, "accel_y": 0.0, "accel_z": 0.0,
-            "gyro_x": 0.0, "gyro_y": 0.0, "gyro_z": 0.0
-        }
-        for line in result.stdout.strip().splitlines():
-            parts = line.strip().split(':')
-            if len(parts) == 2:
-                key, val = parts[0].strip(), parts[1].strip()
-                key = key.lower().replace(' ', '_')  # e.g. "Accel X" → "accel_x"
-                try:
-                    imu_data[key] = float(val)
-                except ValueError:
-                    pass
-        return imu_data
-    except Exception as e:
-        print(f"IMU read error: {e}")
-        return {
-            "accel_x": 0.0, "accel_y": 0.0, "accel_z": 0.0,
-            "gyro_x": 0.0, "gyro_y": 0.0, "gyro_z": 0.0
-        }
 
 def get_ai_metrics():
     global ai_run_metrics_raw
@@ -911,13 +1071,13 @@ def get_system_info():
         "imu_data": imu_data
     }
     # print(f"System Info: {system_info}")
-    
     return system_info
 
-# All the thread
+# All the threads
 threading.Thread(target=listen_for_messages, daemon=True).start()
 threading.Thread(target=run_iperf3_server, daemon=True).start()
 threading.Thread(target=listener_ai_run, daemon=True).start()
+threading.Thread(target=listener_imu_data, daemon=True).start()
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
@@ -926,12 +1086,16 @@ while not stop_event.is_set():
     try:
         client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         client_socket.settimeout(SOCK_TOUT)
-        
+
         print("Attempting to connect to host system...")
         client_socket.connect((HOST_IP, SYSINFO_PORT))
         print("Connected to host system!")
-        
-        while not stop_event.is_set():  # ← FIX: Check stop_event
+
+        # Start/restart IMU daemon for fresh calibration on each connection
+        print("Starting IMU daemon for this connection...")
+        start_imu_daemon()
+
+        while not stop_event.is_set():
             try:
                 system_info = get_system_info()
                 client_socket.sendall((json.dumps(system_info) + "\n").encode())
@@ -943,8 +1107,10 @@ while not stop_event.is_set():
     except (socket.error, socket.timeout, ConnectionRefusedError) as e:
         if not stop_event.is_set():  # Only print if not shutting down
             print(f"Connection failed: {e}. Retrying in 1 second...")
-            stop_event.wait(timeout=1.0)  # Use wait() instead of sleep()
-    
+            stop_event.wait(timeout=TIME_BEFORE_RETRY)
+
     finally:
         if 'client_socket' in locals() and client_socket.fileno() != -1:
             client_socket.close()
+        # Stop IMU daemon when connection is lost
+        stop_imu_daemon()
