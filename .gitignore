@@ -1,8 +1,13 @@
 *
-topaz_imu/.claude
 
 !.gitignore
 !*.c
 !*.py
 !topaz_imu/
 !topaz_imu/*
+
+# topaz_imu specific ignores
+topaz_imu/.claude
+topaz_imu/CLAUDE.md
+topaz_imu/main
+topaz_imu/sensor_iim42652/iim42652
