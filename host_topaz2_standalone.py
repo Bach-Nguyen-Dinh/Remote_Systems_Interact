@@ -3,6 +3,7 @@ import json
 import time
 import socket
 import os
+import sys
 import threading
 import subprocess
 from http.server import SimpleHTTPRequestHandler, HTTPServer
@@ -16,7 +17,7 @@ DATA_PORT = 55555
 IMAGE_PORT = 8080
 FLASK_PORT = 5001
 
-TARGET_IP = "10.42.1.7"  # Target system IP
+TARGET_IP = "10.42.0.7"  # Target system IP
 TARGET_PORT = 54321       # Target system port
 
 INFLUXDB_HOST = "localhost"
@@ -63,12 +64,7 @@ AUTONOMOUS_NAV_FEATURES_DIR = os.path.join(CURR_DIR, "autonomous_nav/features")
 AUTONOMOUS_NAV_DEPTH_DIR = os.path.join(CURR_DIR, "autonomous_nav/depth")
 AUTONOMOUS_NAV_LIDAR_DIR = os.path.join(CURR_DIR, "autonomous_nav/lidar")
 
-# Gyro parameters
-CALIBRATION_TIME = 10.0  # seconds to collect stationary gyro data
-alpha = 0.2              # low-pass filter coefficient
-MIN_DIFF = 0.05          # minimum change threshold (deg/s)
-
-# Global variable
+# Global variables
 connected_clients = []
 latest_small_obj_progress = {}
 latest_ai_smoke_progress = {}
@@ -94,25 +90,6 @@ final_results = {
     "receiver_loss": ""
 }
 netTestDuration = 0
-
-# Persistent variables to keep track of angle integration
-_last_time = None
-_angles = {"angle_x": 0.0, "angle_y": 0.0, "angle_z": 0.0}
-
-if "_gyro_filtered" not in locals():
-    _gyro_filtered = {"x": 0.0, "y": 0.0, "z": 0.0}
-if "_gyro_filtered_prev" not in locals():
-    _gyro_filtered_prev = {"x": 0.0, "y": 0.0, "z": 0.0}
-if "_gyro_bias" not in locals():
-    _gyro_bias = {"x": 0.0, "y": 0.0, "z": 0.0}
-if "_gyro_prev" not in locals():
-    _gyro_prev = {"x": 0.0, "y": 0.0, "z": 0.0}
-if "_calibration_start" not in locals():
-    _calibration_start = None
-if "_calibration_samples" not in locals():
-    _calibration_samples = []
-if "_calibrated" not in locals():
-    _calibrated = False
 
 # Initialize Flask
 app = Flask(__name__)
@@ -275,31 +252,19 @@ def run_http_server():
 
 # Function to receive system metrics and store them in InfluxDB
 def receive_metrics():
-    global _last_time, _angles
-    global _gyro_filtered, _gyro_bias, _calibration_start, _calibration_samples, _calibrated
     global latest_ai_core_usage
-    
+
     client = InfluxDBClient(INFLUXDB_HOST, INFLUXDB_PORT, INFLUXDB_USER, INFLUXDB_PASSWORD, INFLUXDB_DB)
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((HOST_IP, SYSINFO_PORT))
     server_socket.listen(1)
 
     print("System metrics server listening for connections...")
-    
+
     while True:
         client_socket, client_address = server_socket.accept()
         print(f"Connection established with {client_address}")
-
-        # ===== Reset calibration on new connection =====
-        print("Resetting gyro calibration for new device connection...")
-        _calibration_start = None
-        _calibration_samples = []
-        _calibrated = False
-        _angles = {"angle_x": 0.0, "angle_y": 0.0, "angle_z": 0.0}
-        _gyro_filtered = {"x": 0.0, "y": 0.0, "z": 0.0}
-        _gyro_bias = {"x": 0.0, "y": 0.0, "z": 0.0}
-        _gyro_prev = {"x": 0.0, "y": 0.0, "z": 0.0}
-        _last_time = None
+        print("IMU fusion is now processed on target device")
 
         buffer = ""
         while True:
@@ -361,99 +326,22 @@ def receive_metrics():
                         f"ai_core_{i}_pwr": float(system_info["per_ai_core_pwrs"].get(f"ai_core_{i}_pwr", 0))
                         for i in range(4)
                     }
+
+                    # Extract IMU data (fusion processed on target, received as roll/pitch/yaw)
+                    imu_info = system_info.get("imu_data", {})
                     imu_data = {
-                        "accel_x": float(system_info["imu_data"].get("accel_x", 0.0) or 0.0),
-                        "accel_y": float(system_info["imu_data"].get("accel_y", 0.0) or 0.0),
-                        "accel_z": float(system_info["imu_data"].get("accel_z", 0.0) or 0.0),
-                        "gyro_x": float(system_info["imu_data"].get("gyro_x", 0.0) or 0.0),
-                        "gyro_y": float(system_info["imu_data"].get("gyro_y", 0.0) or 0.0),
-                        "gyro_z": float(system_info["imu_data"].get("gyro_z", 0.0) or 0.0),
-                        "angle_x": _angles["angle_x"],
-                        "angle_y": _angles["angle_y"],
-                        "angle_z": _angles["angle_z"],
-                        "gyro_x_filtered": _gyro_filtered["x"],
-                        "gyro_y_filtered": _gyro_filtered["y"],
-                        "gyro_z_filtered": _gyro_filtered["z"]
+                        "accel_x": float(imu_info.get("accel_x", 0.0) or 0.0),
+                        "accel_y": float(imu_info.get("accel_y", 0.0) or 0.0),
+                        "accel_z": float(imu_info.get("accel_z", 0.0) or 0.0),
+                        "gyro_x": float(imu_info.get("gyro_x", 0.0) or 0.0),
+                        "gyro_y": float(imu_info.get("gyro_y", 0.0) or 0.0),
+                        "gyro_z": float(imu_info.get("gyro_z", 0.0) or 0.0),
+                        "angle_x": float(imu_info.get("roll", 0.0) or 0.0),   # Roll (from target fusion)
+                        "angle_y": float(imu_info.get("pitch", 0.0) or 0.0),  # Pitch (from target fusion)
+                        "angle_z": float(imu_info.get("yaw", 0.0) or 0.0),    # Yaw (from target fusion)
+                        "imu_calibration_state": imu_info.get("calibration_state", "unknown"),
+                        "imu_calibration_progress": float(imu_info.get("calibration_progress", 0) or 0)
                     }
-                    now = time.time()
-                    if _last_time is not None:
-                        dt = now - _last_time
-
-                        # --- Step 1: Calibration phase ---
-                        if not _calibrated:
-                            if _calibration_start is None:
-                                _calibration_start = now
-
-                            _calibration_samples.append(
-                                (imu_data["gyro_x"], imu_data["gyro_y"], imu_data["gyro_z"])
-                            )
-
-                            # If calibration time not over → keep angles at zero
-                            elapsed = now - _calibration_start
-                            if elapsed < CALIBRATION_TIME:
-                                imu_data["angle_x"] = 0.0
-                                imu_data["angle_y"] = 0.0
-                                imu_data["angle_z"] = 0.0
-                            else:
-                                # Compute average gyro bias
-                                n = len(_calibration_samples)
-                                avg_x = sum(s[0] for s in _calibration_samples) / n
-                                avg_y = sum(s[1] for s in _calibration_samples) / n
-                                avg_z = sum(s[2] for s in _calibration_samples) / n
-                                _gyro_bias = {"x": avg_x, "y": avg_y, "z": avg_z}
-                                
-                                # Initialize filtered values to zero after calibration
-                                _gyro_filtered = {"x": 0.0, "y": 0.0, "z": 0.0}
-                                _gyro_filtered_prev = {"x": 0.0, "y": 0.0, "z": 0.0}
-
-                                _calibrated = True
-
-                        # --- Step 2: Apply gyro offset and filter (only after calibration) ---
-                        if _calibrated:
-                            gyro_x_corr = imu_data["gyro_x"] - _gyro_bias["x"]
-                            gyro_y_corr = imu_data["gyro_y"] - _gyro_bias["y"]
-                            gyro_z_corr = imu_data["gyro_z"] - _gyro_bias["z"]
-
-                            # --- Threshold: Small value AND small change = likely noise ---
-                            # If the value is small AND it's not changing much, zero it out
-                            # This handles stationary drift while preserving slow constant rotation
-                            if abs(gyro_x_corr) < MIN_DIFF and abs(gyro_x_corr - _gyro_prev["x"]) < MIN_DIFF * 0.5:
-                                gyro_x_corr = 0.0
-                            if abs(gyro_y_corr) < MIN_DIFF and abs(gyro_y_corr - _gyro_prev["y"]) < MIN_DIFF * 0.5:
-                                gyro_y_corr = 0.0
-                            if abs(gyro_z_corr) < MIN_DIFF and abs(gyro_z_corr - _gyro_prev["z"]) < MIN_DIFF * 0.5:
-                                gyro_z_corr = 0.0
-
-                            # Update previous gyro readings
-                            _gyro_prev["x"] = gyro_x_corr
-                            _gyro_prev["y"] = gyro_y_corr
-                            _gyro_prev["z"] = gyro_z_corr
-
-                            # --- Low-pass filter for gyro ---
-                            # α (alpha) controls the cutoff frequency — smaller = smoother, larger = more responsive
-                            _gyro_filtered_prev = _gyro_filtered.copy()
-
-                            _gyro_filtered["x"] = alpha * gyro_x_corr + (1 - alpha) * _gyro_filtered["x"]
-                            _gyro_filtered["y"] = alpha * gyro_y_corr + (1 - alpha) * _gyro_filtered["y"]
-                            _gyro_filtered["z"] = alpha * gyro_z_corr + (1 - alpha) * _gyro_filtered["z"]
-
-                            # --- Integrate the *average* of filtered values between samples ---
-                            # use the trapezoidal rule
-                            imu_data["angle_x"] += 0.5 * (_gyro_filtered["x"] + _gyro_filtered_prev["x"]) * dt
-                            imu_data["angle_y"] += 0.5 * (_gyro_filtered["y"] + _gyro_filtered_prev["y"]) * dt
-                            imu_data["angle_z"] += 0.5 * (_gyro_filtered["z"] + _gyro_filtered_prev["z"]) * dt
-
-                            # Wrap angles to [-180, 180)
-                            imu_data["angle_x"] = (imu_data["angle_x"] + 180.0) % 360.0 - 180.0
-                            imu_data["angle_y"] = (imu_data["angle_y"] + 180.0) % 360.0 - 180.0
-                            imu_data["angle_z"] = (imu_data["angle_z"] + 180.0) % 360.0 - 180.0
-
-                            # Update stored angles
-                            _angles["angle_x"] = imu_data["angle_x"]
-                            _angles["angle_y"] = imu_data["angle_y"]
-                            _angles["angle_z"] = imu_data["angle_z"]
-
-                    _last_time = now
 
                     json_body = [
                         {
@@ -486,6 +374,7 @@ def receive_metrics():
                             "time": int(time.time() * 1e9)  # Nanoseconds
                         }
                     ]
+                    print(imu_data)
 
                     # Write data to InfluxDB
                     client.write_points(json_body)
@@ -1143,6 +1032,14 @@ def get_auto_nav_progress():
     """Get the latest autonomous navigation progress"""
     global latest_auto_nav_progress
     return jsonify(latest_auto_nav_progress)
+
+# ===================================================
+# ==                IMU Control route              ==
+# ===================================================
+@app.route('/imu/recalibrate', methods=['POST'])
+def recalibrate_imu():
+    """Trigger IMU recalibration on target device"""
+    return forward_message_to_target("recalibrate_imu")
 
 # Function to run Flask server
 def run_flask_server():
