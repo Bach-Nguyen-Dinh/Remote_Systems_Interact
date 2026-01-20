@@ -180,7 +180,7 @@ def listener_imu_data():
     while not stop_event.is_set():
         try:
             data, addr = sock.recvfrom(RECV_BUFFER)
-            print(data)
+            # print(data)
             try:
                 msg = json.loads(data.decode("utf-8"))
                 msg_type = msg.get("type", "")
