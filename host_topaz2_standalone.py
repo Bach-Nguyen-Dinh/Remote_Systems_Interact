@@ -374,7 +374,7 @@ def receive_metrics():
                             "time": int(time.time() * 1e9)  # Nanoseconds
                         }
                     ]
-                    print(imu_data)
+                    # print(imu_data)
 
                     # Write data to InfluxDB
                     client.write_points(json_body)
