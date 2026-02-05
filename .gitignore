@@ -5,6 +5,7 @@
 !*.py
 !topaz_imu/
 !topaz_imu/*
+!setup_nat*
 
 # topaz_imu specific ignores
 topaz_imu/.claude
