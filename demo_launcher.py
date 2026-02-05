@@ -294,10 +294,116 @@ class DemoLauncher:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to launch demo:\n{e}")
 
+    def kill_host_processes(self, demo_name):
+        """Kill local host processes for the given demo."""
+        processes = HOST_PROCESSES.get(demo_name, [])
+        for proc_name in processes:
+            try:
+                # Use SIGKILL (-9) to force kill
+                subprocess.run(
+                    ["pkill", "-9", "-f", proc_name],
+                    capture_output=True,
+                    timeout=5
+                )
+                print(f"Killed host process: {proc_name}")
+            except Exception as e:
+                print(f"Error killing {proc_name}: {e}")
+
+        # Also kill any processes holding the ports used by host scripts
+        # HPC uses: 5000 (Flask), 12345 (metrics), 55555 (images), 29102 (nettest)
+        # Topaz Standalone uses: 5001 (Flask), 12345 (metrics), 55555 (data), 8080 (images)
+        # Dual Topaz uses: 5001 (Flask), 12346 (metrics), 55556 (images), 29103 (nettest)
+        ports_to_free = []
+        if demo_name == "HPC Standalone":
+            ports_to_free = [5000, 12345, 55555, 29102]
+        elif demo_name == "Topaz Standalone":
+            ports_to_free = [5001, 12345, 55555, 8080]
+        elif demo_name == "Dual Target (HPC + Topaz)":
+            ports_to_free = [5000, 5001, 12345, 12346, 55555, 55556, 29102, 29103, 8080]
+
+        for port in ports_to_free:
+            try:
+                # Find and kill process using this port
+                result = subprocess.run(
+                    ["fuser", "-k", f"{port}/tcp"],
+                    capture_output=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    print(f"Freed port {port}")
+            except Exception as e:
+                pass  # Port might not be in use, that's fine
+
+        # Brief pause to let processes fully terminate
+        time.sleep(0.5)
+
+    def kill_target_processes(self, demo_name):
+        """SSH to targets and kill target processes and their children (iperf3, etc)."""
+        try:
+            import paramiko
+        except ImportError:
+            print("paramiko not available - cannot kill remote targets")
+            return
+
+        targets_to_kill = []
+
+        if demo_name == "HPC Standalone":
+            targets_to_kill.append(("hpc", TARGETS["hpc"]["process"], [5201]))  # iperf3 default port
+        elif demo_name == "Topaz Standalone":
+            targets_to_kill.append(("topaz", TARGETS["topaz"]["process_standalone"], [8888, 8889, 5201]))  # AI UDP + IMU UDP + iperf3
+        elif demo_name == "Dual Target (HPC + Topaz)":
+            targets_to_kill.append(("hpc", TARGETS["hpc"]["process"], [5201]))
+            targets_to_kill.append(("topaz", TARGETS["topaz"]["process_dual"], [8888, 8889, 5201]))
+
+        for target_key, process_name, ports in targets_to_kill:
+            target = TARGETS[target_key]
+            try:
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(
+                    target["host"],
+                    username=target["user"],
+                    password=target["password"],
+                    timeout=5
+                )
+
+                # Build list of kill commands
+                commands = [
+                    f"pkill -9 -f '{process_name}'",
+                    "pkill -9 iperf3",
+                    "pkill -9 -f 'ai_tool'",  # AI tool processes
+                    "pkill -9 -f 'iim42652'",  # IMU process (old name)
+                    "pkill -9 -f 'ai_server.py'",  # AI smoke detection
+                    "pkill -9 -f 'ai_ship.py'",  # AI ship detection
+                    "pkill -9 -f 'topaz_imu/main'",  # IMU daemon
+                    "pkill -9 -f 'RSS'",  # Small object detection
+                ]
+
+                # Add fuser commands to free ports
+                for port in ports:
+                    commands.append(f"fuser -k {port}/tcp 2>/dev/null || true")
+                    commands.append(f"fuser -k {port}/udp 2>/dev/null || true")
+
+                # Execute all commands
+                for cmd in commands:
+                    full_cmd = f"echo '{target['password']}' | sudo -S {cmd}"
+                    ssh.exec_command(full_cmd)
+                    time.sleep(0.1)
+
+                # Wait a bit for processes to die
+                time.sleep(0.5)
+
+                ssh.close()
+                print(f"Killed target process on {target['host']}: {process_name} (and child processes)")
+            except Exception as e:
+                print(f"Error killing target on {target['host']}: {e}")
+
     def stop_demo(self):
         if self.current_process:
+            demo_name = self.current_demo
+
+            # First kill the launcher script process group
             try:
-                # Kill entire process group
                 os.killpg(os.getpgid(self.current_process.pid), signal.SIGTERM)
                 self.current_process.wait(timeout=5)
             except:
@@ -305,6 +411,16 @@ class DemoLauncher:
                     os.killpg(os.getpgid(self.current_process.pid), signal.SIGKILL)
                 except:
                     pass
+
+            # Kill host processes
+            if demo_name:
+                self.kill_host_processes(demo_name)
+                # Kill target processes in background thread to avoid blocking UI
+                threading.Thread(
+                    target=self.kill_target_processes,
+                    args=(demo_name,),
+                    daemon=True
+                ).start()
 
             self.current_process = None
             self.current_demo = None
