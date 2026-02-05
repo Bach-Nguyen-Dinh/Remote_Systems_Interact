@@ -18,6 +18,11 @@ DEMOS = {
     "Dual Target (HPC + Topaz)": os.path.join(CURR_DIR, "launch_dual_target_demo.py"),
 }
 
+# Network profile configuration
+NETWORK_INTERFACE = "enx98fc84e12360"
+TOPAZ_PROFILE = "enx98fc84e12360-static"
+DEFAULT_PROFILE = "Profile 1"
+
 
 class DemoLauncher:
     def __init__(self):
@@ -74,10 +79,32 @@ class DemoLauncher:
         )
         self.stop_btn.pack(pady=10)
 
+    def switch_network_profile(self, demo_name):
+        """Switch network profile based on selected demo."""
+        if demo_name == "Topaz Standalone":
+            profile = TOPAZ_PROFILE
+        else:
+            profile = DEFAULT_PROFILE
+
+        try:
+            subprocess.run(
+                ["nmcli", "connection", "up", profile],
+                check=True,
+                capture_output=True,
+                timeout=10
+            )
+        except subprocess.CalledProcessError as e:
+            messagebox.showwarning("Network", f"Failed to switch to profile '{profile}':\n{e.stderr.decode()}")
+        except Exception as e:
+            messagebox.showwarning("Network", f"Network switch error: {e}")
+
     def launch_demo(self, name, script):
         # Stop current demo if running
         if self.current_process:
             self.stop_demo()
+
+        # Switch network profile before launching
+        self.switch_network_profile(name)
 
         # Launch new demo
         try:
