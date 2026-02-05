@@ -21,8 +21,8 @@ TARGET_USER = "sarthak"
 TARGET_PASSWORD = "password"
 TARGET_SCRIPT = "/home/sarthak/Remote_Systems_Interact/target_hpc_ubuntu.py"
 
-# Grafana Dashboard URL
-GRAFANA_URL = "http://localhost:3000/d/debfk50vlpszerasdfd/1ed47f7?orgId=1&from=now-5m&to=now&timezone=browser&refresh=1s&kiosk=1"
+# Dashboard wrapper (sends heartbeats to demo launcher)
+DASHBOARD_WRAPPER = os.path.join(CURR_DIR, "dashboard_wrapper_hpc.html")
 
 # Timing
 STARTUP_DELAY = 5  # seconds to wait between host and target startup
@@ -80,7 +80,7 @@ def launch_target_script_via_ssh():
 def open_grafana_interface():
     """Open Grafana interface in default browser"""
     print("Opening Grafana interface...")
-    webbrowser.open(GRAFANA_URL)
+    webbrowser.open(f"file://{DASHBOARD_WRAPPER}")
     print("Grafana interface opened in browser")
 
 
@@ -112,7 +112,7 @@ def main():
     print(f"\nTarget Script:")
     print(f"  - HPC target: {TARGET_USER}@{TARGET_HOST}")
     print(f"\nGrafana Dashboard:")
-    print(f"  - {GRAFANA_URL[:60]}...")
+    print(f"  - {DASHBOARD_WRAPPER}")
     print("\n" + "-" * 60)
     print("This script will keep running. Press Ctrl+C to exit.")
     print("Note: Stopping this script won't stop the host/target processes.")

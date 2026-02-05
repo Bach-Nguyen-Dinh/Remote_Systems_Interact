@@ -49,9 +49,9 @@ TOPAZ_USER = "user"
 TOPAZ_PASSWORD = "user"
 TOPAZ_TARGET_SCRIPT = "/home/user/Remote_Systems_Interact/target_topaz2.py"
 
-# Grafana Dashboard URLs
-GRAFANA_URL_HPC = "http://localhost:3000/d/debfk50vlpszerasdfd/1ed47f7?orgId=1&from=now-5m&to=now&timezone=browser&refresh=1s&kiosk=1"
-GRAFANA_URL_TOPAZ = "http://localhost:3000/d/debfk50vlpszasdasdf/system-monitor-and-control-topaz-land-nav?orgId=1&from=now-5m&to=now&timezone=browser&refresh=1s&kiosk=1"
+# Dashboard wrappers (send heartbeats to demo launcher)
+DASHBOARD_WRAPPER_HPC = os.path.join(CURR_DIR, "dashboard_wrapper_hpc.html")
+DASHBOARD_WRAPPER_TOPAZ = os.path.join(CURR_DIR, "dashboard_wrapper_topaz.html")
 
 # Timing
 STARTUP_DELAY = 5  # seconds between host and target startup
@@ -306,12 +306,12 @@ def open_grafana_dashboards():
     print("=" * 60)
 
     print("  Opening HPC dashboard...")
-    webbrowser.open(GRAFANA_URL_HPC)
+    webbrowser.open(f"file://{DASHBOARD_WRAPPER_HPC}")
 
     time.sleep(1)  # Brief pause between opening tabs
 
     print("  Opening Topaz dashboard...")
-    webbrowser.open(GRAFANA_URL_TOPAZ)
+    webbrowser.open(f"file://{DASHBOARD_WRAPPER_TOPAZ}")
 
     print("  ✓ Dashboards opened in browser")
 
@@ -359,8 +359,8 @@ def main():
     print(f"  - HPC target:        {HPC_USER}@{HPC_HOST}")
     print(f"  - Topaz target:      {TOPAZ_USER}@{TOPAZ_HOST}")
     print(f"\nGrafana Dashboards:")
-    print(f"  - HPC:   {GRAFANA_URL_HPC[:60]}...")
-    print(f"  - Topaz: {GRAFANA_URL_TOPAZ[:60]}...")
+    print(f"  - HPC:   {DASHBOARD_WRAPPER_HPC}")
+    print(f"  - Topaz: {DASHBOARD_WRAPPER_TOPAZ}")
     print("\n" + "-" * 60)
     print("This script will keep running. Press Ctrl+C to exit.")
     print("Note: Stopping this script won't stop the host/target processes.")

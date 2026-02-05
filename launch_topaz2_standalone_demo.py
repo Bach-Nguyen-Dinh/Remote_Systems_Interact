@@ -12,11 +12,15 @@ import sys
 
 # Configuration - change these if needed
 HOST_SCRIPT = "/home/matthew/Remote_Systems_Interact/host_topaz2_standalone.py"
-TARGET_HOST = "10.42.0.7"
+TARGET_HOST = "10.42.1.7"
 TARGET_USER = "user"
 TARGET_PASSWORD = "user"  # Change this if password changes
 TARGET_SCRIPT = "/home/user/Remote_Systems_Interact/target_topaz2_standalone.py"
-GRAFANA_URL = "http://localhost:3000/d/debfk50vlpszasdasdf/system-monitor-and-control-topaz-land-nav?orgId=1&from=now-5m&to=now&timezone=browser&refresh=1s&kiosk"
+
+# Dashboard wrapper (sends heartbeats to demo launcher)
+import os
+CURR_DIR = os.path.dirname(os.path.abspath(__file__))
+DASHBOARD_WRAPPER = os.path.join(CURR_DIR, "dashboard_wrapper_topaz.html")
 STARTUP_DELAY = 5  # seconds to wait between host and target startup
 
 
@@ -82,7 +86,7 @@ def launch_target_script_via_ssh():
 def open_grafana_interface():
     """Open Grafana interface in default browser"""
     print("Opening Grafana interface...")
-    webbrowser.open(GRAFANA_URL)
+    webbrowser.open(f"file://{DASHBOARD_WRAPPER}")
     print("Grafana interface opened in browser")
 
 
@@ -106,7 +110,7 @@ def main():
     print("=" * 60)
     print(f"Host script PID: {host_process.pid}")
     print(f"Target script: Running on {TARGET_HOST}")
-    print(f"Grafana: {GRAFANA_URL}")
+    print(f"Grafana: {DASHBOARD_WRAPPER}")
     print("\nThis script will keep running. Press Ctrl+C to exit.")
     print("Note: Stopping this script won't stop the host/target processes.")
     print("=" * 60)
