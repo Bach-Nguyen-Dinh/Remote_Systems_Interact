@@ -12,6 +12,8 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import signal
 
+from imu_manager import IMUManager
+
 RSS_EXECUTABLE_PATH = "/home/user/Small-Object-Detection/Utils/RSS"
 INPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Image"
 OUTPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Predictions"
@@ -29,13 +31,13 @@ SYSINFO_PORT = 12346  # Port for system metrics
 NETTEST_PORT = 29103
 IMAGE_PORT = 55556
 FLASK_PORT = 5001
+TIME_BEFORE_RETRY = 1.0
 
 LISTEN_IP = "0.0.0.0"
 LISTEN_PORT = 54322
 SOCK_TOUT = 3
 
-AI_IP = "127.0.0.1"
-AI_PORT = 8888
+INTERNAL_STREAM_IP = "127.0.0.1"
 RECV_BUFFER = 65536    # 64KB, should be enough for typical JSON payloads
 SOCKET_TIMEOUT = 1.0   # seconds - allows clean shutdown checks
 
@@ -54,9 +56,17 @@ SAVE_PATH_IPERF_LW_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_LwEthAdt.
 SAVE_PATH_IPERF_UP_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_UpEthAdt.json")
 
 AI_METRIC_PATH = "/home/user/ai_tool/status"
-IMU_EXECUTABLE_PATH = "/home/user/topaz_imu/iim42652"
-
+AI_PORT = 8888
 NUM_AI_CORE = 4
+
+# IMU Fusion daemon configuration
+IMU_EXECUTABLE_PATH = "/home/user/Remote_Systems_Interact/topaz_imu/main"
+IMU_UDP_PORT = 8889
+IMU_SAMPLE_RATE = 10   # Hz
+IMU_CALIBRATION_SAMPLES = 100  # ~10 seconds at 10Hz
+
+# IMU Manager instance (initialized after stop_event is created)
+imu_manager = None
 
 # Global variable
 progress_update = 0.0
@@ -79,16 +89,18 @@ stop_event = threading.Event()
 
 def signal_handler(sig, frame):
     stop_event.set()
+    if imu_manager is not None:
+        imu_manager.stop()
 
 def listener_ai_run():
     global ai_run_metrics_raw  # Declare global variable
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        sock.bind((AI_IP, AI_PORT))
-        print(f"AI metrics listener bound to {AI_IP}:{AI_PORT}")
+        sock.bind((INTERNAL_STREAM_IP, AI_PORT))
+        print(f"AI metrics listener bound to {INTERNAL_STREAM_IP}:{AI_PORT}")
     except Exception as e:
-        print(f"Failed to bind to {AI_IP}:{AI_PORT}: {e}")
+        print(f"Failed to bind to {INTERNAL_STREAM_IP}:{AI_PORT}: {e}")
         return
     
     sock.settimeout(SOCKET_TIMEOUT)
@@ -547,83 +559,99 @@ def listen_for_messages():
     
     print(f"Listening for messages on {LISTEN_IP}:{LISTEN_PORT}...")
     
-    while True:
-        conn, addr = server_socket.accept()
-        with conn:
-            print(f"Connection received from {addr}")
-            message = conn.recv(1024).decode().strip()
-            if message:
-                print(f"Message from host: {message}")
-                # if message == "2":
-                #     threading.Thread(target=handle_image_sending, args=(IMAGE_PATH_1,), daemon=True).start()
-                # elif message == "1":
-                #     send_image(IMAGE_PATH_2)
-                if message == "3":
-                    progress_update = 0.0
-                elif message == "4":
-                    send_cphd_files_list()  # Send CPHD files back to host
-                elif message.startswith("SIZE:"):
-                    progress_update = 0.0
-                    filename = message.split(":", 1)[1]
-                    file_path = cphd_files.get(filename)
-                    
-                    if file_path and os.path.exists(file_path):
-                        file_size = os.path.getsize(file_path)
-                        metadata = get_metadata_from_json(os.path.dirname(file_path))
+    while not stop_event.is_set():
+        try:
+            conn, addr = server_socket.accept()
+            with conn:
+                print(f"Connection received from {addr}")
+                message = conn.recv(1024).decode().strip()
+                if message:
+                    print(f"Message from host: {message}")
+                    # if message == "2":
+                    #     threading.Thread(target=handle_image_sending, args=(IMAGE_PATH_1,), daemon=True).start()
+                    # elif message == "1":
+                    #     send_image(IMAGE_PATH_2)
+                    if message == "3":
+                        progress_update = 0.0
+                    elif message == "4":
+                        send_cphd_files_list()  # Send CPHD files back to host
+                    elif message.startswith("SIZE:"):
+                        progress_update = 0.0
+                        filename = message.split(":", 1)[1]
+                        file_path = cphd_files.get(filename)
                         
-                        file_size_str = f"{file_size / 1_000_000:.2f} MB" if file_size >= 1_000_000 else f"{file_size} bytes"
+                        if file_path and os.path.exists(file_path):
+                            file_size = os.path.getsize(file_path)
+                            metadata = get_metadata_from_json(os.path.dirname(file_path))
+                            
+                            file_size_str = f"{file_size / 1_000_000:.2f} MB" if file_size >= 1_000_000 else f"{file_size} bytes"
+                            
+                            response = {"filename": filename, "size": file_size_str, "metadata": metadata}
+                            print(f"Response: {response}")
+                            
+                            try:
+                                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as size_sock:
+                                    size_sock.connect((HOST_IP, IMAGE_PORT))
+                                    size_sock.sendall(json.dumps(response).encode())
+                            except Exception as e:
+                                print(f"Error sending file size and metadata: {e}")
+                    elif message.startswith("RUN:"):
+                        filename = message.split(":", 1)[1]
+                        file_path = cphd_files.get(filename)
                         
-                        response = {"filename": filename, "size": file_size_str, "metadata": metadata}
-                        print(f"Response: {response}")
-                        
+                        if file_path and os.path.exists(file_path):
+                            threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
+                    # elif message.startswith("NETRUN:"):
+                    #     try:
+                    #         print("Run net test")  # Debug print
+                    #         parts = message.strip().split(":", 2)
+                    #         if len(parts) != 3:
+                    #             raise ValueError(f"Unexpected NETRUN format: {message}")
+                            
+                    #         _, netTestDuration, netTestInterface = parts
+                    #         print(f"Parsed: duration={netTestDuration}, interface={netTestInterface}")  # More debug info
+                    #         threading.Thread(target=handle_netrun_test, args=(netTestDuration, netTestInterface,), daemon=True).start()
+                    #     except Exception as e:
+                    #         print(f"Error in NETRUN handler: {e}")
+                    elif message.startswith("BW"):
                         try:
-                            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as size_sock:
-                                size_sock.connect((HOST_IP, IMAGE_PORT))
-                                size_sock.sendall(json.dumps(response).encode())
-                        except Exception as e:
-                            print(f"Error sending file size and metadata: {e}")
-                elif message.startswith("RUN:"):
-                    filename = message.split(":", 1)[1]
-                    file_path = cphd_files.get(filename)
-                    
-                    if file_path and os.path.exists(file_path):
-                        threading.Thread(target=process_cphd_file, args=(file_path,), daemon=True).start()
-                # elif message.startswith("NETRUN:"):
-                #     try:
-                #         print("Run net test")  # Debug print
-                #         parts = message.strip().split(":", 2)
-                #         if len(parts) != 3:
-                #             raise ValueError(f"Unexpected NETRUN format: {message}")
-                        
-                #         _, netTestDuration, netTestInterface = parts
-                #         print(f"Parsed: duration={netTestDuration}, interface={netTestInterface}")  # More debug info
-                #         threading.Thread(target=handle_netrun_test, args=(netTestDuration, netTestInterface,), daemon=True).start()
-                #     except Exception as e:
-                #         print(f"Error in NETRUN handler: {e}")
-                elif message.startswith("BW"):
-                    try:
-                        BW = int(message.split(":")[1])
-                    except ValueError:
-                        print("Invalid BW format, expected integer after BW:")
+                            BW = int(message.split(":")[1])
+                        except ValueError:
+                            print("Invalid BW format, expected integer after BW:")
 
-                elif message == "run_small_obj_detect":
-                    threading.Thread(target=run_small_object_detection, daemon=True).start()
-                elif message.startswith("run_ai_smoke"):
-                    if ":" in message:
-                        ai_core_run_ai_smoke = int(message.split(":")[1])
-                        if ai_core_run_ai_smoke > NUM_AI_CORE:
-                            ai_core_run_ai_smoke = NUM_AI_CORE
-                        elif ai_core_run_ai_smoke <= 0:
-                            ai_core_run_ai_smoke = 1
-                    threading.Thread(target=run_ai_smoke, daemon=True).start()
-                elif message.startswith("run_ai_ship"):
-                    if ":" in message:
-                        ai_core_run_ai_ship = int(message.split(":")[1])
-                        if ai_core_run_ai_ship > NUM_AI_CORE:
-                            ai_core_run_ai_ship = NUM_AI_CORE
-                        elif ai_core_run_ai_ship <= 0:
-                            ai_core_run_ai_ship = 1
-                    threading.Thread(target=run_ai_ship, daemon=True).start()
+                    elif message == "run_small_obj_detect":
+                        threading.Thread(target=run_small_object_detection, daemon=True).start()
+                    elif message.startswith("run_ai_smoke"):
+                        if ":" in message:
+                            ai_core_run_ai_smoke = int(message.split(":")[1])
+                            if ai_core_run_ai_smoke > NUM_AI_CORE:
+                                ai_core_run_ai_smoke = NUM_AI_CORE
+                            elif ai_core_run_ai_smoke <= 0:
+                                ai_core_run_ai_smoke = 1
+                        threading.Thread(target=run_ai_smoke, daemon=True).start()
+                    elif message.startswith("run_ai_ship"):
+                        if ":" in message:
+                            ai_core_run_ai_ship = int(message.split(":")[1])
+                            if ai_core_run_ai_ship > NUM_AI_CORE:
+                                ai_core_run_ai_ship = NUM_AI_CORE
+                            elif ai_core_run_ai_ship <= 0:
+                                ai_core_run_ai_ship = 1
+                        threading.Thread(target=run_ai_ship, daemon=True).start()
+                    elif message == "recalibrate_imu":
+                        print("IMU recalibration requested by host")
+                        if imu_manager is not None:
+                            threading.Thread(target=imu_manager.restart, daemon=True).start()
+
+        except socket.timeout:
+            # This is expected and allows checking stop_event
+            continue
+        except Exception as e:
+            if not stop_event.is_set():
+                print(f"Error in message listener: {e}")
+            break
+    
+    server_socket.close()
+    print("Message listener stopped")
 
 # # Function to run the iperf3 server
 # def run_iperf3_server():
@@ -879,7 +907,6 @@ def get_system_info():
     cpu_power = get_power_from_sensor("ina220-i2c-0-40")
     # print(f"CPU Power: {cpu_power} W" if cpu_power is not None else "CPU Power: N/A")
 
-  
     ai_total_pwr = get_power_from_sensor("ina220-i2c-0-44")
     ai_total_pwr2 = ai_total_pwr
     ratio_power_p = ai_total_pwr/4
@@ -908,7 +935,12 @@ def get_system_info():
 
     ai_run_metrics_raw = None
 
-    imu_data = get_imu_data()
+    imu_data = imu_manager.get_data() if imu_manager is not None else {
+        "accel_x": 0.0, "accel_y": 0.0, "accel_z": 0.0,
+        "gyro_x": 0.0, "gyro_y": 0.0, "gyro_z": 0.0,
+        "roll": 0.0, "pitch": 0.0, "yaw": 0.0,
+        "calibration_state": "idle", "calibration_progress": 0
+    }
     # print(imu_data)
 
     system_info = {
@@ -938,37 +970,61 @@ def get_system_info():
     
     return system_info
 
-# All the thread
-threading.Thread(target=listen_for_messages, daemon=True).start()
-threading.Thread(target=run_iperf3_server, daemon=True).start()
-threading.Thread(target=listener_ai_run, daemon=True).start()
+def main():
+    global imu_manager  # Required to update the module-level variable
 
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+    # Initialize IMU Manager (shares stop_event with main program)
+    imu_manager = IMUManager(
+        executable_path=IMU_EXECUTABLE_PATH,
+        udp_port=IMU_UDP_PORT,
+        sample_rate=IMU_SAMPLE_RATE,
+        calibration_samples=IMU_CALIBRATION_SAMPLES,
+        listen_ip=INTERNAL_STREAM_IP,
+        recv_buffer=RECV_BUFFER,
+        socket_timeout=SOCKET_TIMEOUT,
+        stop_event=stop_event
+    )
+    # All the threads
+    threading.Thread(target=listen_for_messages, daemon=True).start()
+    threading.Thread(target=run_iperf3_server, daemon=True).start()
+    threading.Thread(target=listener_ai_run, daemon=True).start()
+    # Note: IMU listener thread is managed internally by IMUManager
 
-while not stop_event.is_set():
-    try:
-        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        client_socket.settimeout(SOCK_TOUT)
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    while not stop_event.is_set():
+        try:
+            client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client_socket.settimeout(SOCK_TOUT)
+            
+            print("Attempting to connect to host system...")
+            client_socket.connect((HOST_IP, SYSINFO_PORT))
+            print("Connected to host system!")
+
+            # Start/restart IMU daemon for fresh calibration on each connection
+            print("Starting IMU daemon for this connection...")
+            imu_manager.start()
+            
+            while not stop_event.is_set():  # ← FIX: Check stop_event
+                try:
+                    system_info = get_system_info()
+                    client_socket.sendall((json.dumps(system_info) + "\n").encode())
+                    time.sleep(0.3)
+                except (socket.error, BrokenPipeError) as e:
+                    print(f"Connection lost: {e}")
+                    break  # Break to outer loop to reconnect
+
+        except (socket.error, socket.timeout, ConnectionRefusedError) as e:
+            if not stop_event.is_set():  # Only print if not shutting down
+                print(f"Connection failed: {e}. Retrying in 1 second...")
+                stop_event.wait(timeout=TIME_BEFORE_RETRY)  # Use wait() instead of sleep()
         
-        print("Attempting to connect to host system...")
-        client_socket.connect((HOST_IP, SYSINFO_PORT))
-        print("Connected to host system!")
-        
-        while not stop_event.is_set():  # ← FIX: Check stop_event
-            try:
-                system_info = get_system_info()
-                client_socket.sendall((json.dumps(system_info) + "\n").encode())
-                time.sleep(0.3)
-            except (socket.error, BrokenPipeError) as e:
-                print(f"Connection lost: {e}")
-                break  # Break to outer loop to reconnect
+        finally:
+            if 'client_socket' in locals() and client_socket.fileno() != -1:
+                client_socket.close()
+            # Stop IMU daemon when connection is lost
+            imu_manager.stop()
 
-    except (socket.error, socket.timeout, ConnectionRefusedError) as e:
-        if not stop_event.is_set():  # Only print if not shutting down
-            print(f"Connection failed: {e}. Retrying in 1 second...")
-            stop_event.wait(timeout=1.0)  # Use wait() instead of sleep()
-    
-    finally:
-        if 'client_socket' in locals() and client_socket.fileno() != -1:
-            client_socket.close()
+if __name__ == "__main__":
+    main()
