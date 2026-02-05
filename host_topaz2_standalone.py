@@ -17,7 +17,7 @@ DATA_PORT = 55555
 IMAGE_PORT = 8080
 FLASK_PORT = 5001
 
-TARGET_IP = "10.42.0.7"  # Target system IP
+TARGET_IP = "10.42.1.7"  # Target system IP
 TARGET_PORT = 54321       # Target system port
 
 INFLUXDB_HOST = "localhost"
