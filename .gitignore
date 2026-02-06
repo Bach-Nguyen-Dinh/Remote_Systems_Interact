@@ -6,6 +6,8 @@
 !topaz_imu/
 !topaz_imu/*
 !setup_nat*
+!setup_webcam.sh
+!display_demo.sh
 
 # topaz_imu specific ignores
 topaz_imu/.claude
