@@ -14,4 +14,4 @@ sudo iptables -t nat -A POSTROUTING -o enp4s0f0 -j MASQUERADE
 sudo iptables -A FORWARD -i enp4s0f0 -o enp6s0 -j ACCEPT
 sudo iptables -A FORWARD -i wlo1 -o enp4s0f0 -m state --state ESTABLISHED,RELATED -j ACCEPT
 
-sudo ip route add 10.42.1.0/24 via 10.42.1.1 dev enp4s0f0
+sudo ip route replace 10.42.1.0/24 via 10.42.1.1 dev enp4s0f0
