@@ -139,6 +139,7 @@ class NATManager:
                 return True  # Continue even with warnings
 
         except subprocess.TimeoutExpired:
+            process.kill()
             print(f"  ✗ NAT setup on host timed out")
             return False
         except Exception as e:
