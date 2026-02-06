@@ -561,38 +561,58 @@ class DemoLauncher:
         if self.current_process:
             demo_name = self.current_demo
 
-            # First kill the launcher script process group
-            try:
-                os.killpg(os.getpgid(self.current_process.pid), signal.SIGTERM)
-                self.current_process.wait(timeout=5)
-            except:
-                try:
-                    os.killpg(os.getpgid(self.current_process.pid), signal.SIGKILL)
-                except:
-                    pass
-
-            # Kill host processes
-            if demo_name:
-                self.kill_host_processes(demo_name)
-                # Kill target processes in background thread to avoid blocking UI
-                threading.Thread(
-                    target=self.kill_target_processes,
-                    args=(demo_name,),
-                    daemon=True
-                ).start()
-
-            self.current_process = None
-            self.current_demo = None
-            self.expected_tabs = []
-            self.heartbeats = {}
-            self.update_status(None, running=False)
-
-            # Reset button colors
+            # Show stopping state and disable buttons while cleanup runs
+            self.update_status(demo_name, stopping=True)
+            self.stop_btn.config(state=tk.DISABLED)
             for btn in self.buttons.values():
-                btn.config(bg="#d9d9d9", fg="black")
+                btn.config(state=tk.DISABLED)
 
-    def update_status(self, demo_name, running):
-        if running:
+            # Run full cleanup in background thread to avoid freezing the UI
+            threading.Thread(
+                target=self._stop_demo_cleanup,
+                args=(demo_name,),
+                daemon=True
+            ).start()
+
+    def _stop_demo_cleanup(self, demo_name):
+        """Run all demo cleanup steps, then update UI when done."""
+        # Kill the launcher script process group
+        try:
+            os.killpg(os.getpgid(self.current_process.pid), signal.SIGTERM)
+            self.current_process.wait(timeout=5)
+        except:
+            try:
+                os.killpg(os.getpgid(self.current_process.pid), signal.SIGKILL)
+            except:
+                pass
+
+        # Kill host processes and free ports (synchronous)
+        if demo_name:
+            self.kill_host_processes(demo_name)
+            # Kill target processes (synchronous - wait for SSH cleanup to finish)
+            self.kill_target_processes(demo_name)
+
+        # All cleanup done - update UI from main thread
+        self.root.after(0, self._stop_demo_finalize)
+
+    def _stop_demo_finalize(self):
+        """Called on main thread after all cleanup is done."""
+        self.current_process = None
+        self.current_demo = None
+        self.expected_tabs = []
+        self.heartbeats = {}
+        self.update_status(None, running=False)
+
+        # Reset button colors and re-enable
+        for btn in self.buttons.values():
+            btn.config(bg="#d9d9d9", fg="black", state=tk.NORMAL)
+
+    def update_status(self, demo_name, running=False, stopping=False):
+        if stopping:
+            self.status_indicator.itemconfig(self.indicator_circle, fill="orange")
+            self.status_label.config(text=f"Stopping: {demo_name}...")
+            self.stop_btn.config(state=tk.DISABLED)
+        elif running:
             self.status_indicator.itemconfig(self.indicator_circle, fill="green")
             self.status_label.config(text=f"Demo: {demo_name}")
             self.stop_btn.config(state=tk.NORMAL)
