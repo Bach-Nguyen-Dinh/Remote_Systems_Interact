@@ -22,7 +22,7 @@ WAIT_ROUTE_EFFECT = 1
 # Network Setup Functions
 # =============================================================================
 
-class NAT_manager:
+class NATManager:
     def __init__(
         self,
         ping_count: int=PING_COUNT,
@@ -76,6 +76,7 @@ class NAT_manager:
         """SSH to HPC target and run NAT setup script with sudo."""
         print(f"\nSetting up NAT on HPC target ({self.hpc_host})...")
 
+        ssh = None
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -90,14 +91,13 @@ class NAT_manager:
 
             if exit_status == 0:
                 print(f"  ✓ NAT setup on HPC completed successfully")
+                return True
             else:
                 error_output = stderr.read().decode().strip()
-                print(f"  ! NAT setup on HPC returned exit code {exit_status}")
+                print(f"  ✗ NAT setup on HPC failed with exit code {exit_status}")
                 if error_output:
                     print(f"    Error: {error_output}")
-
-            ssh.close()
-            return True
+                return False
 
         except paramiko.AuthenticationException:
             print(f"  ✗ Authentication failed for {self.hpc_user}@{self.hpc_host}")
@@ -105,6 +105,9 @@ class NAT_manager:
         except Exception as e:
             print(f"  ✗ Error setting up NAT on HPC: {e}")
             return False
+        finally:
+            if ssh:
+                ssh.close()
 
 
     def run_nat_setup_on_host(self) -> bool:
