@@ -31,17 +31,13 @@ import os
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 HOST_HPC_SCRIPT = os.path.join(CURR_DIR, "host.py")
 HOST_TOPAZ_SCRIPT = os.path.join(CURR_DIR, "host_topaz2.py")
-SETUP_NAT_HOST_SCRIPT = os.path.join(CURR_DIR, "setup_nat_host.sh")
-
-# Local sudo password for running NAT setup
-HOST_SUDO_PASSWORD = "cXqW$90&10"
+LAUNCH_NAT_SETUP_SCRIPT = os.path.join(CURR_DIR, "launch_nat_setup.py")
 
 # HPC Target Configuration
 HPC_HOST = "10.42.0.101"
 HPC_USER = "sarthak"
 HPC_PASSWORD = "password"
 HPC_TARGET_SCRIPT = "/home/sarthak/Remote_Systems_Interact/target_hpc_ubuntu.py"
-HPC_NAT_SETUP_SCRIPT = "/home/sarthak/Remote_Systems_Interact/setup_nat_target_hpc_ubuntu.sh"
 
 # Topaz Target Configuration
 TOPAZ_HOST = "10.42.1.7"
@@ -55,146 +51,6 @@ DASHBOARD_WRAPPER_TOPAZ = os.path.join(CURR_DIR, "dashboard_wrapper_topaz.html")
 
 # Timing
 STARTUP_DELAY = 5  # seconds between host and target startup
-PING_TIMEOUT = 5   # seconds for ping verification
-PING_COUNT = 3     # number of pings for verification
-
-# =============================================================================
-# Network Setup Functions
-# =============================================================================
-
-def ping_host(ip_address, count=PING_COUNT, timeout=PING_TIMEOUT):
-    """Ping a host to verify connectivity."""
-    print(f"  Pinging {ip_address}...")
-    try:
-        result = subprocess.run(
-            ["ping", "-c", str(count), "-W", str(timeout), ip_address],
-            capture_output=True,
-            text=True,
-            timeout=timeout * count + 5
-        )
-        if result.returncode == 0:
-            print(f"  ✓ {ip_address} is reachable")
-            return True
-        else:
-            print(f"  ✗ {ip_address} is not reachable")
-            return False
-    except subprocess.TimeoutExpired:
-        print(f"  ✗ Ping to {ip_address} timed out")
-        return False
-    except Exception as e:
-        print(f"  ✗ Error pinging {ip_address}: {e}")
-        return False
-
-
-def run_nat_setup_on_hpc():
-    """SSH to HPC target and run NAT setup script with sudo."""
-    print(f"\nSetting up NAT on HPC target ({HPC_HOST})...")
-
-    try:
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(HPC_HOST, username=HPC_USER, password=HPC_PASSWORD, timeout=10)
-
-        # Run NAT setup script with sudo
-        command = f"echo '{HPC_PASSWORD}' | sudo -S bash {HPC_NAT_SETUP_SCRIPT}"
-        stdin, stdout, stderr = ssh.exec_command(command)
-
-        # Wait for command to complete
-        exit_status = stdout.channel.recv_exit_status()
-
-        if exit_status == 0:
-            print(f"  ✓ NAT setup on HPC completed successfully")
-        else:
-            error_output = stderr.read().decode().strip()
-            print(f"  ! NAT setup on HPC returned exit code {exit_status}")
-            if error_output:
-                print(f"    Error: {error_output}")
-
-        ssh.close()
-        return True
-
-    except paramiko.AuthenticationException:
-        print(f"  ✗ Authentication failed for {HPC_USER}@{HPC_HOST}")
-        return False
-    except Exception as e:
-        print(f"  ✗ Error setting up NAT on HPC: {e}")
-        return False
-
-
-def run_nat_setup_on_host():
-    """Run NAT setup script on the host machine with sudo."""
-    print(f"\nSetting up NAT on host...")
-
-    try:
-        # Use sudo -S to read password from stdin
-        process = subprocess.Popen(
-            ["sudo", "-S", "bash", SETUP_NAT_HOST_SCRIPT],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-
-        stdout, stderr = process.communicate(input=HOST_SUDO_PASSWORD + "\n", timeout=30)
-
-        if process.returncode == 0:
-            print(f"  ✓ NAT setup on host completed successfully")
-            return True
-        else:
-            print(f"  ! NAT setup on host returned exit code {process.returncode}")
-            if stderr:
-                # Filter out the password prompt from stderr
-                error_lines = [l for l in stderr.split('\n') if l and 'password' not in l.lower()]
-                if error_lines:
-                    print(f"    Error: {' '.join(error_lines)}")
-            return True  # Continue even with warnings
-
-    except subprocess.TimeoutExpired:
-        print(f"  ✗ NAT setup on host timed out")
-        return False
-    except Exception as e:
-        print(f"  ✗ Error setting up NAT on host: {e}")
-        return False
-
-
-def setup_network():
-    """Set up network routing between host and both targets."""
-    print("\n" + "=" * 60)
-    print("NETWORK SETUP")
-    print("=" * 60)
-
-    # Step 1: Verify direct connection to HPC
-    print("\nStep 1: Verifying direct connection to HPC target...")
-    if not ping_host(HPC_HOST):
-        print("\nERROR: Cannot reach HPC target. Please check:")
-        print(f"  - Network cable connection to {HPC_HOST}")
-        print(f"  - IP configuration on interface enx98fc84e12360")
-        return False
-
-    # Step 2: Run NAT setup on HPC first (required before host NAT)
-    print("\nStep 2: Setting up NAT routing on HPC target...")
-    if not run_nat_setup_on_hpc():
-        print("\nERROR: Failed to set up NAT on HPC target")
-        return False
-
-    # Step 3: Run NAT setup on host
-    print("\nStep 3: Setting up NAT routing on host...")
-    if not run_nat_setup_on_host():
-        print("\nERROR: Failed to set up NAT on host")
-        return False
-
-    # Step 4: Verify connection to Topaz through HPC
-    print("\nStep 4: Verifying connection to Topaz target (via HPC)...")
-    time.sleep(1)  # Brief pause for routing to take effect
-    if not ping_host(TOPAZ_HOST):
-        print("\nERROR: Cannot reach Topaz target through HPC. Please check:")
-        print(f"  - Network configuration on HPC target")
-        print(f"  - Connection between HPC and Topaz")
-        return False
-
-    print("\n✓ Network setup completed successfully!")
-    return True
-
 
 # =============================================================================
 # Host Script Functions
@@ -331,8 +187,9 @@ def main():
     print("  4. Open Grafana dashboards in browser")
     print("")
 
-    # Step 1: Network setup
-    if not setup_network():
+    # Step 1: Network setup via launch_nat_setup.py
+    result = subprocess.run([sys.executable, LAUNCH_NAT_SETUP_SCRIPT])
+    if result.returncode != 0:
         print("\n" + "=" * 60)
         print("LAUNCH ABORTED - Network setup failed")
         print("=" * 60)
