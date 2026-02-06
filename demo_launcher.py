@@ -166,6 +166,7 @@ class DemoLauncher:
 
         try:
             self.heartbeat_server = HTTPServer(("127.0.0.1", HEARTBEAT_PORT), HeartbeatHandler)
+            self.heartbeat_server.timeout = 1  # handle_request() returns after 1s if no request
             self.heartbeat_thread = threading.Thread(target=self._run_heartbeat_server, daemon=True)
             self.heartbeat_thread.start()
             print(f"Heartbeat server started on port {HEARTBEAT_PORT}")
@@ -443,15 +444,16 @@ class DemoLauncher:
             self.stop_btn.config(state=tk.DISABLED)
 
     def on_close(self):
+        if self.current_process:
+            if not messagebox.askyesno("Confirm Exit", "A demo is running. Stop it and exit?"):
+                return
+            self.stop_demo()
+
         self.running = False
         if self.heartbeat_server:
-            self.heartbeat_server.shutdown()
-        if self.current_process:
-            if messagebox.askyesno("Confirm Exit", "A demo is running. Stop it and exit?"):
-                self.stop_demo()
-                self.root.destroy()
-        else:
-            self.root.destroy()
+            self.heartbeat_server.server_close()
+
+        self.root.destroy()
 
     def run(self):
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
