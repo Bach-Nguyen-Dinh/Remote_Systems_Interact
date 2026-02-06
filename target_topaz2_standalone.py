@@ -26,7 +26,7 @@ AI_SHIP_PATH = "/home/user/modified_ai_ship/ship/ai_ship.py"
 RESIZED_IMAGE_PATH = "/home/user/demo/optimized_image.webp"  # Temporary resized image path
 DEMO_PATH = "/home/user/demo/"
 
-HOST_IP = "10.42.0.1"
+HOST_IP = "10.42.1.1"
 SYSINFO_PORT = 12345
 IMAGE_PORT = 55555
 TIME_BEFORE_RETRY = 1.0
