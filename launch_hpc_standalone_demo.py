@@ -9,23 +9,16 @@ import time
 import webbrowser
 import paramiko
 import sys
-import os
 
-# Configuration
-CURR_DIR = os.path.dirname(os.path.abspath(__file__))
-HOST_SCRIPT = os.path.join(CURR_DIR, "host.py")
-
-# HPC Target Configuration
-TARGET_HOST = "10.42.0.101"
-TARGET_USER = "sarthak"
-TARGET_PASSWORD = "password"
-TARGET_SCRIPT = "/home/sarthak/Remote_Systems_Interact/target_hpc_ubuntu.py"
-
-# Dashboard wrapper (sends heartbeats to demo launcher)
-DASHBOARD_WRAPPER = os.path.join(CURR_DIR, "dashboard_wrapper_hpc.html")
-
-# Timing
-STARTUP_DELAY = 5  # seconds to wait between host and target startup
+from config_launch import (
+    HOST_HPC_SCRIPT as HOST_SCRIPT,
+    HPC_HOST as TARGET_HOST,
+    HPC_USER as TARGET_USER,
+    HPC_PASSWORD as TARGET_PASSWORD,
+    HPC_TARGET_SCRIPT as TARGET_SCRIPT,
+    DASHBOARD_WRAPPER_HPC as DASHBOARD_WRAPPER,
+    STARTUP_DELAY,
+)
 
 
 def launch_host_script():

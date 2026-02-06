@@ -10,18 +10,15 @@ import webbrowser
 import paramiko
 import sys
 
-# Configuration - change these if needed
-HOST_SCRIPT = "/home/matthew/Remote_Systems_Interact/host_topaz2_standalone.py"
-TARGET_HOST = "10.42.1.7"
-TARGET_USER = "user"
-TARGET_PASSWORD = "user"  # Change this if password changes
-TARGET_SCRIPT = "/home/user/Remote_Systems_Interact/target_topaz2_standalone.py"
-
-# Dashboard wrapper (sends heartbeats to demo launcher)
-import os
-CURR_DIR = os.path.dirname(os.path.abspath(__file__))
-DASHBOARD_WRAPPER = os.path.join(CURR_DIR, "dashboard_wrapper_topaz.html")
-STARTUP_DELAY = 5  # seconds to wait between host and target startup
+from config_launch import (
+    HOST_TOPAZ_STANDALONE_SCRIPT as HOST_SCRIPT,
+    TOPAZ_HOST as TARGET_HOST,
+    TOPAZ_USER as TARGET_USER,
+    TOPAZ_PASSWORD as TARGET_PASSWORD,
+    TOPAZ_STANDALONE_TARGET_SCRIPT as TARGET_SCRIPT,
+    DASHBOARD_WRAPPER_TOPAZ as DASHBOARD_WRAPPER,
+    STARTUP_DELAY,
+)
 
 
 def launch_host_script():

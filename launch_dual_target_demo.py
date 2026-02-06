@@ -21,36 +21,13 @@ import time
 import webbrowser
 import paramiko
 import sys
-import os
 
-# =============================================================================
-# Configuration
-# =============================================================================
-
-# Host scripts (local)
-CURR_DIR = os.path.dirname(os.path.abspath(__file__))
-HOST_HPC_SCRIPT = os.path.join(CURR_DIR, "host.py")
-HOST_TOPAZ_SCRIPT = os.path.join(CURR_DIR, "host_topaz2.py")
-LAUNCH_NAT_SETUP_SCRIPT = os.path.join(CURR_DIR, "launch_nat_setup.py")
-
-# HPC Target Configuration
-HPC_HOST = "10.42.0.101"
-HPC_USER = "sarthak"
-HPC_PASSWORD = "password"
-HPC_TARGET_SCRIPT = "/home/sarthak/Remote_Systems_Interact/target_hpc_ubuntu.py"
-
-# Topaz Target Configuration
-TOPAZ_HOST = "10.42.1.7"
-TOPAZ_USER = "user"
-TOPAZ_PASSWORD = "user"
-TOPAZ_TARGET_SCRIPT = "/home/user/Remote_Systems_Interact/target_topaz2.py"
-
-# Dashboard wrappers (send heartbeats to demo launcher)
-DASHBOARD_WRAPPER_HPC = os.path.join(CURR_DIR, "dashboard_wrapper_hpc.html")
-DASHBOARD_WRAPPER_TOPAZ = os.path.join(CURR_DIR, "dashboard_wrapper_topaz.html")
-
-# Timing
-STARTUP_DELAY = 5  # seconds between host and target startup
+from config_launch import (
+    HOST_HPC_SCRIPT, HOST_TOPAZ_SCRIPT, LAUNCH_NAT_SETUP_SCRIPT,
+    HPC_HOST, HPC_USER, HPC_PASSWORD, HPC_TARGET_SCRIPT,
+    TOPAZ_HOST, TOPAZ_USER, TOPAZ_PASSWORD, TOPAZ_TARGET_SCRIPT,
+    DASHBOARD_WRAPPER_HPC, DASHBOARD_WRAPPER_TOPAZ, STARTUP_DELAY,
+)
 
 # =============================================================================
 # Host Script Functions
