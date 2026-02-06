@@ -94,10 +94,15 @@ def main():
     print("Note: Stopping this script won't stop the host/target processes.")
     print("=" * 60)
     
-    # Keep script running
+    # Keep script running, watch for host script exit (e.g. Q pressed)
     try:
         while True:
-            time.sleep(1)
+            if host_process.poll() is not None:
+                print("\n\nHost script exited. Shutting down launcher...")
+                ssh_connection.close()
+                print("SSH connection closed.")
+                sys.exit(0)
+            time.sleep(0.5)
     except KeyboardInterrupt:
         print("\n\nShutting down launcher...")
         ssh_connection.close()
