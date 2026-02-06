@@ -17,14 +17,14 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DEMOS = {
-    "HPC Standalone": os.path.join(CURR_DIR, "launch_hpc_standalone_demo.py"),
-    "Topaz Standalone": os.path.join(CURR_DIR, "launch_topaz2_standalone_demo.py"),
-    "Dual Target (HPC + Topaz)": os.path.join(CURR_DIR, "launch_dual_target_demo.py"),
+    "Server Standalone": os.path.join(CURR_DIR, "launch_hpc_standalone_demo.py"),
+    "Pulsar Standalone": os.path.join(CURR_DIR, "launch_topaz2_standalone_demo.py"),
+    "Dual Target (Server + Pulsar)": os.path.join(CURR_DIR, "launch_dual_target_demo.py"),
 }
 
 CAMERA_SCRIPTS = {
-    "Topaz Standalone": os.path.join(CURR_DIR, "launch_camera_standalone.py"),
-    "Dual Target (HPC + Topaz)": os.path.join(CURR_DIR, "launch_camera_dual_target_demo.py"),
+    "Pulsar Standalone": os.path.join(CURR_DIR, "launch_camera_standalone.py"),
+    "Dual Target (Server + Pulsar)": os.path.join(CURR_DIR, "launch_camera_dual_target_demo.py"),
 }
 
 # Network profile configuration
@@ -55,9 +55,9 @@ TARGETS = {
 
 # Host processes to kill for each demo
 HOST_PROCESSES = {
-    "HPC Standalone": ["host.py"],
-    "Topaz Standalone": ["host_topaz2_standalone.py"],
-    "Dual Target (HPC + Topaz)": ["host.py", "host_topaz2.py"]
+    "Server Standalone": ["host.py"],
+    "Pulsar Standalone": ["host_topaz2_standalone.py"],
+    "Dual Target (Server + Pulsar)": ["host.py", "host_topaz2.py"]
 }
 
 
@@ -134,19 +134,19 @@ class DemoLauncher:
         self.buttons = {}
         self.camera_buttons = {}
 
-        # --- HPC Standalone (no camera - camera runs on Topaz only) ---
+        # --- Server Standalone (no camera - camera runs on Topaz only) ---
         hpc_frame = tk.LabelFrame(
-            self.root, text=" HPC Standalone ",
+            self.root, text=" Server Standalone ",
             font=("Arial", 11, "bold"), padx=10, pady=8
         )
         hpc_frame.pack(fill="x", padx=15, pady=4)
 
         btn_hpc = tk.Button(
-            hpc_frame, text="Launch Demo", font=("Arial", 11), height=1,
-            command=lambda: self.launch_demo("HPC Standalone", DEMOS["HPC Standalone"])
+            hpc_frame, text="Launch Interface", font=("Arial", 11), height=1,
+            command=lambda: self.launch_demo("Server Standalone", DEMOS["Server Standalone"])
         )
         btn_hpc.pack(fill="x")
-        self.buttons["HPC Standalone"] = btn_hpc
+        self.buttons["Server Standalone"] = btn_hpc
 
         # --- Topaz Standalone (demo + camera side by side) ---
         topaz_frame = tk.LabelFrame(
@@ -159,22 +159,22 @@ class DemoLauncher:
         topaz_inner.pack(fill="x")
 
         btn_topaz = tk.Button(
-            topaz_inner, text="Launch Demo", font=("Arial", 11), height=1,
-            command=lambda: self.launch_demo("Topaz Standalone", DEMOS["Topaz Standalone"])
+            topaz_inner, text="Launch Interface", font=("Arial", 11), height=1,
+            command=lambda: self.launch_demo("Pulsar Standalone", DEMOS["Pulsar Standalone"])
         )
         btn_topaz.pack(side=tk.LEFT, expand=True, fill="x", padx=(0, 3))
-        self.buttons["Topaz Standalone"] = btn_topaz
+        self.buttons["Pulsar Standalone"] = btn_topaz
 
         btn_topaz_cam = tk.Button(
             topaz_inner, text="Launch Camera", font=("Arial", 11), height=1,
-            command=lambda: self.launch_camera("Topaz Standalone")
+            command=lambda: self.launch_camera("Pulsar Standalone")
         )
         btn_topaz_cam.pack(side=tk.LEFT, expand=True, fill="x", padx=(3, 0))
-        self.camera_buttons["Topaz Standalone"] = btn_topaz_cam
+        self.camera_buttons["Pulsar Standalone"] = btn_topaz_cam
 
         # --- Dual Target (demo + camera side by side) ---
         dual_frame = tk.LabelFrame(
-            self.root, text=" Dual Target (HPC + Topaz) ",
+            self.root, text=" Dual Target (Server + Pulsar) ",
             font=("Arial", 11, "bold"), padx=10, pady=8
         )
         dual_frame.pack(fill="x", padx=15, pady=4)
@@ -183,18 +183,18 @@ class DemoLauncher:
         dual_inner.pack(fill="x")
 
         btn_dual = tk.Button(
-            dual_inner, text="Launch Demo", font=("Arial", 11), height=1,
-            command=lambda: self.launch_demo("Dual Target (HPC + Topaz)", DEMOS["Dual Target (HPC + Topaz)"])
+            dual_inner, text="Launch Interface", font=("Arial", 11), height=1,
+            command=lambda: self.launch_demo("Dual Target (Server + Pulsar)", DEMOS["Dual Target (Server + Pulsar)"])
         )
         btn_dual.pack(side=tk.LEFT, expand=True, fill="x", padx=(0, 3))
-        self.buttons["Dual Target (HPC + Topaz)"] = btn_dual
+        self.buttons["Dual Target (Server + Pulsar)"] = btn_dual
 
         btn_dual_cam = tk.Button(
             dual_inner, text="Launch Camera", font=("Arial", 11), height=1,
-            command=lambda: self.launch_camera("Dual Target (HPC + Topaz)")
+            command=lambda: self.launch_camera("Dual Target (Server + Pulsar)")
         )
         btn_dual_cam.pack(side=tk.LEFT, expand=True, fill="x", padx=(3, 0))
-        self.camera_buttons["Dual Target (HPC + Topaz)"] = btn_dual_cam
+        self.camera_buttons["Dual Target (Server + Pulsar)"] = btn_dual_cam
 
         # --- Status Section ---
         status_frame = tk.Frame(self.root)
@@ -319,7 +319,7 @@ class DemoLauncher:
 
     def switch_network_profile(self, demo_name):
         """Switch network profile based on selected demo."""
-        if demo_name == "Topaz Standalone":
+        if demo_name == "Pulsar Standalone":
             profile = TOPAZ_PROFILE
         else:
             profile = DEFAULT_PROFILE
@@ -346,9 +346,9 @@ class DemoLauncher:
 
         # Clear heartbeats and set expected tabs
         self.heartbeats = {}
-        if name == "Dual Target (HPC + Topaz)":
+        if name == "Dual Target (Server + Pulsar)":
             self.expected_tabs = ["hpc", "topaz"]
-        elif name == "HPC Standalone":
+        elif name == "Server Standalone":
             self.expected_tabs = ["hpc"]
         else:  # Topaz Standalone
             self.expected_tabs = ["topaz"]
@@ -373,7 +373,7 @@ class DemoLauncher:
             self.start_monitoring()
 
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to launch demo:\n{e}")
+            messagebox.showerror("Error", f"Failed to Launch Interface:\n{e}")
 
     def launch_camera(self, demo_name):
         """Launch camera for the given demo configuration."""
@@ -385,7 +385,7 @@ class DemoLauncher:
 
         # Dual Target: Topaz is only reachable via HPC NAT router,
         # so ensure NAT is set up before trying to SSH to Topaz.
-        if demo_name == "Dual Target (HPC + Topaz)":
+        if demo_name == "Dual Target (Server + Pulsar)":
             nat_script = os.path.join(CURR_DIR, "launch_nat_setup.py")
             result = subprocess.run(
                 ["python3", nat_script],
@@ -473,11 +473,11 @@ class DemoLauncher:
         # Topaz Standalone uses: 5001 (Flask), 12345 (metrics), 55555 (data), 8080 (images)
         # Dual Topaz uses: 5001 (Flask), 12346 (metrics), 55556 (images), 29103 (nettest)
         ports_to_free = []
-        if demo_name == "HPC Standalone":
+        if demo_name == "Server Standalone":
             ports_to_free = [5000, 12345, 55555, 29102]
-        elif demo_name == "Topaz Standalone":
+        elif demo_name == "Pulsar Standalone":
             ports_to_free = [5001, 12345, 55555, 8080]
-        elif demo_name == "Dual Target (HPC + Topaz)":
+        elif demo_name == "Dual Target (Server + Pulsar)":
             ports_to_free = [5000, 5001, 12345, 12346, 55555, 55556, 29102, 29103, 8080]
 
         for port in ports_to_free:
@@ -506,11 +506,11 @@ class DemoLauncher:
 
         targets_to_kill = []
 
-        if demo_name == "HPC Standalone":
+        if demo_name == "Server Standalone":
             targets_to_kill.append(("hpc", TARGETS["hpc"]["process"], [5201]))  # iperf3 default port
-        elif demo_name == "Topaz Standalone":
+        elif demo_name == "Pulsar Standalone":
             targets_to_kill.append(("topaz", TARGETS["topaz"]["process_standalone"], [8888, 8889, 5201]))  # AI UDP + IMU UDP + iperf3
-        elif demo_name == "Dual Target (HPC + Topaz)":
+        elif demo_name == "Dual Target (Server + Pulsar)":
             targets_to_kill.append(("hpc", TARGETS["hpc"]["process"], [5201]))
             targets_to_kill.append(("topaz", TARGETS["topaz"]["process_dual"], [8888, 8889, 5201]))
 
