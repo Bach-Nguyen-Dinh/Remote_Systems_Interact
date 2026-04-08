@@ -322,11 +322,14 @@
                 // Display first image immediately
                 displayProgressImage(progressImageIndex);
 
-                // Start cycling through images every 1.6 seconds
+                // Start cycling through images every 1.5 seconds
                 progressImageInterval = setInterval(() => {
                     progressImageIndex++;
                     if (progressImageIndex >= progressImageCount) {
-                        progressImageIndex = 0;  // Loop back to start
+                        // Stop at the last image - don't loop back
+                        progressImageIndex = progressImageCount - 1;
+                        clearInterval(progressImageInterval);
+                        progressImageInterval = null;
                     }
                     displayProgressImage(progressImageIndex);
                 }, 1500);
