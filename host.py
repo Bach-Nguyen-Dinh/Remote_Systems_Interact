@@ -219,6 +219,21 @@ def handle_system_metrics_server():
                             except (ValueError, TypeError):
                                 # Skip if value is not convertible to float
                                 continue
+                    # AI card temperature
+                    raw_ai_card_temp = system_info["ai_card_temp"] or {}
+                    ai_card_temp = {
+                        "ai_card_ext_temp": float(raw_ai_card_temp.get("ext_temp", 0)),
+                        "ai_card_int_temp_1": float(raw_ai_card_temp.get("int_temp_1", 0)),
+                        "ai_card_int_temp_2": float(raw_ai_card_temp.get("int_temp_2", 0)),
+                        "ai_card_int_temp_3": float(raw_ai_card_temp.get("int_temp_3", 0))
+                    }
+
+                    # Total power consumption
+                    cpu_power = float(system_info.get("cpu_power", 0.0))
+                    ai_card_power = float(system_info["ai_card_power"] or 0)
+                    fan_power = float(system_info["fan_power"])
+                    total_power = cpu_power + ai_card_power + fan_power
+                    total_power = total_power * 1.08 # adjust for lack of measurement of other peripherals in the system
 
                     # Prepare data for InfluxDB
                     json_body = [
@@ -239,13 +254,17 @@ def handle_system_metrics_server():
                                 "num_threads": int(system_info["num_threads"]),
                                 # "download_speed": float(system_info.get("download_speed", 0.0)),
                                 # "upload_speed": float(system_info.get("upload_speed", 0.0)),
-                                "cpu_power": float(system_info.get("cpu_power", 0.0)),
+                                "cpu_power": cpu_power,
                                 "total_disk_usage": float(system_info.get("total_disk_usage", 0.0)),
                                 "total_disk_size": float(system_info.get("total_disk_size", 0.0)),
                                 "progress_update": float(system_info.get("progress_update", 0.0)),
                                 **per_core_usage_data,
                                 **per_core_freq_data,
-                                **network_data
+                                **network_data,
+                                **ai_card_temp,
+                                "ai_card_power": ai_card_power,
+                                "fan_power": fan_power,
+                                "total_power": total_power
                             },
                             "time": int(time.time() * 1e9)  # Nanoseconds
                         }
