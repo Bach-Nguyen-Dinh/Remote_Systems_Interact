@@ -15,6 +15,7 @@ RESIZED_IMAGE_PATH = "/home/sarthak/demo-resrc/optimized_image.webp"  # Temporar
 DEMO_PATH = "/home/sarthak/workspace/SAR_codebase/cphd"
 OUT_TIF_PATH = "/home/sarthak/workspace/SAR_codebase/output_immediate"
 SAR_PROG = "/home/sarthak/workspace/SAR_codebase/cphd_aic.py"
+FAN_STATUS = "/home/sarthak/Remote_Systems_Interact/check_fan_status.sh"
 
 HOST_IP = "10.42.0.1"
 SYSINFO_PORT = 12345
@@ -50,6 +51,8 @@ progress_update = 0.0
 cphd_files = {}
 bwValue = 0
 sar_proc_time = 0
+ai_card_power_cache = None
+ai_card_temp_cache = None
 
 def optimize_tif(image_path, output_path, format="webp", max_size=(800, 800), quality=85):
     """
@@ -481,6 +484,47 @@ def get_cpu_power():
     power_watts = (energy_end - energy_start) / 1_000_000 / 0.1  # Convert µJ to W
     return power_watts
 
+def poll_ai_card_diagnostics():
+    global ai_card_power_cache, ai_card_temp_cache
+    while True:
+        try:
+            result = subprocess.run(["diagnostic", "-power"], capture_output=True, text=True, timeout=20)
+            for line in result.stdout.splitlines():
+                if line.startswith("power (W):"):
+                    ai_card_power_cache = float(line.split(":")[1].strip())
+                    break
+        except Exception:
+            pass
+        try:
+            result = subprocess.run(["diagnostic", "-temperature"], capture_output=True, text=True, timeout=20)
+            temp = {}
+            for line in result.stdout.splitlines():
+                if line.startswith("VDD_12V0 rail 1 external thermal sensor temperature (C):"):
+                    temp["ext_temp"] = float(line.split(":")[1].strip())
+                elif line.startswith("VDD_1V8 rail 2 UCD9090 internal sensor temperature (C):"):
+                    temp["int_temp_1"] = float(line.split(":")[1].strip())
+                elif line.startswith("internal temperature - rail 4 ISL8273MD-U47 (C):"):
+                    temp["int_temp_2"] = float(line.split(":")[1].strip())
+                elif line.startswith("internal temperature - rail 4 ISL8273MD-U48 (C):"):
+                    temp["int_temp_3"] = float(line.split(":")[1].strip())
+            if temp:
+                ai_card_temp_cache = temp
+        except Exception:
+            pass
+
+def get_fan_power():
+    fan_power = None
+    try:
+        result = subprocess.run(["sudo", "bash", FAN_STATUS], capture_output=True, text=True, timeout=5)
+        for line in result.stdout.splitlines():
+            if line.startswith("PWM Setting :"):
+                pwm_value = float(line.split(":")[1].strip().split("/")[0])
+                fan_power = pwm_value/63 * 12 * 0.75 * 1.2 * 5 # 5x fans
+                break
+    except Exception:
+        pass
+    return fan_power
+
 def get_system_info():
     cpu_usage = psutil.cpu_percent(interval=0.1)
     per_core_usage = psutil.cpu_percent(interval=0.1, percpu=True)
@@ -553,6 +597,9 @@ def get_system_info():
     # print(network_stats)
     
     cpu_power = get_cpu_power()
+    ai_card_power = ai_card_power_cache
+    ai_card_temp = ai_card_temp_cache
+    fan_power = get_fan_power()
     
     system_info = {
         "cpu_usage": cpu_usage,
@@ -574,7 +621,10 @@ def get_system_info():
         "home_disk_usage": home_disk_usage,
         "total_disk_usage": total_disk_usage,
         "total_disk_size": total_disk_size,
-        "progress_update": progress_update
+        "progress_update": progress_update,
+        "ai_card_power": ai_card_power,
+        "ai_card_temp": ai_card_temp,
+        "fan_power": fan_power
     }
     
     return system_info
@@ -582,6 +632,7 @@ def get_system_info():
 # All the thread
 threading.Thread(target=listen_for_messages, daemon=True).start()
 threading.Thread(target=run_iperf3_server, daemon=True).start()
+threading.Thread(target=poll_ai_card_diagnostics, daemon=True).start()
 
 while True:
     try:
