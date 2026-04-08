@@ -17,9 +17,14 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DEMOS = {
-    "HPC Standalone": os.path.join(CURR_DIR, "launch_hpc_standalone_demo.py"),
-    "Topaz Standalone": os.path.join(CURR_DIR, "launch_topaz2_standalone_demo.py"),
-    "Dual Target (HPC + Topaz)": os.path.join(CURR_DIR, "launch_dual_target_demo.py"),
+    "Server Standalone": os.path.join(CURR_DIR, "launch_hpc_standalone_demo.py"),
+    "Pulsar Standalone": os.path.join(CURR_DIR, "launch_topaz2_standalone_demo.py"),
+    "Dual Target (Server + Pulsar)": os.path.join(CURR_DIR, "launch_dual_target_demo.py"),
+}
+
+CAMERA_SCRIPTS = {
+    "Pulsar Standalone": os.path.join(CURR_DIR, "launch_camera_standalone.py"),
+    "Dual Target (Server + Pulsar)": os.path.join(CURR_DIR, "launch_camera_dual_target_demo.py"),
 }
 
 # Network profile configuration
@@ -50,9 +55,9 @@ TARGETS = {
 
 # Host processes to kill for each demo
 HOST_PROCESSES = {
-    "HPC Standalone": ["host.py"],
-    "Topaz Standalone": ["host_topaz2_standalone.py"],
-    "Dual Target (HPC + Topaz)": ["host.py", "host_topaz2.py"]
+    "Server Standalone": ["host.py"],
+    "Pulsar Standalone": ["host_topaz2_standalone.py"],
+    "Dual Target (Server + Pulsar)": ["host.py", "host_topaz2.py"]
 }
 
 
@@ -100,11 +105,15 @@ class DemoLauncher:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Demo Launcher")
-        self.root.geometry("400x350")
+        self.root.geometry("480x450")
         self.root.resizable(False, False)
 
         self.current_process = None
         self.current_demo = None
+
+        # Camera tracking
+        self.camera_process = None
+        self.camera_demo = None
 
         # Heartbeat tracking
         self.heartbeats = {}  # tab_id -> last_heartbeat_time
@@ -119,46 +128,117 @@ class DemoLauncher:
 
     def build_ui(self):
         # Title
-        title = tk.Label(self.root, text="Select Demo", font=("Arial", 16, "bold"))
-        title.pack(pady=15)
+        title = tk.Label(self.root, text="Demo Launcher", font=("Arial", 16, "bold"))
+        title.pack(pady=(15, 10))
 
-        # Demo buttons
         self.buttons = {}
-        for name, script in DEMOS.items():
-            btn = tk.Button(
-                self.root,
-                text=name,
-                font=("Arial", 12),
-                width=30,
-                height=2,
-                command=lambda n=name, s=script: self.launch_demo(n, s)
-            )
-            btn.pack(pady=5)
-            self.buttons[name] = btn
+        self.camera_buttons = {}
 
-        # Status
-        self.status_frame = tk.Frame(self.root)
-        self.status_frame.pack(pady=20)
+        # --- Server Standalone (no camera - camera runs on Topaz only) ---
+        hpc_frame = tk.LabelFrame(
+            self.root, text=" Server Standalone ",
+            font=("Arial", 11, "bold"), padx=10, pady=8
+        )
+        hpc_frame.pack(fill="x", padx=15, pady=4)
 
-        self.status_indicator = tk.Canvas(self.status_frame, width=20, height=20)
-        self.status_indicator.pack(side=tk.LEFT, padx=5)
-        self.indicator_circle = self.status_indicator.create_oval(2, 2, 18, 18, fill="gray")
+        btn_hpc = tk.Button(
+            hpc_frame, text="Launch Interface", font=("Arial", 11), height=1,
+            command=lambda: self.launch_demo("Server Standalone", DEMOS["Server Standalone"])
+        )
+        btn_hpc.pack(fill="x")
+        self.buttons["Server Standalone"] = btn_hpc
 
-        self.status_label = tk.Label(self.status_frame, text="No demo running", font=("Arial", 10))
+        # --- Topaz Standalone (demo + camera side by side) ---
+        topaz_frame = tk.LabelFrame(
+            self.root, text=" Topaz Standalone ",
+            font=("Arial", 11, "bold"), padx=10, pady=8
+        )
+        topaz_frame.pack(fill="x", padx=15, pady=4)
+
+        topaz_inner = tk.Frame(topaz_frame)
+        topaz_inner.pack(fill="x")
+
+        btn_topaz = tk.Button(
+            topaz_inner, text="Launch Interface", font=("Arial", 11), height=1,
+            command=lambda: self.launch_demo("Pulsar Standalone", DEMOS["Pulsar Standalone"])
+        )
+        btn_topaz.pack(side=tk.LEFT, expand=True, fill="x", padx=(0, 3))
+        self.buttons["Pulsar Standalone"] = btn_topaz
+
+        btn_topaz_cam = tk.Button(
+            topaz_inner, text="Launch Camera", font=("Arial", 11), height=1,
+            command=lambda: self.launch_camera("Pulsar Standalone")
+        )
+        btn_topaz_cam.pack(side=tk.LEFT, expand=True, fill="x", padx=(3, 0))
+        self.camera_buttons["Pulsar Standalone"] = btn_topaz_cam
+
+        # --- Dual Target (demo + camera side by side) ---
+        dual_frame = tk.LabelFrame(
+            self.root, text=" Dual Target (Server + Pulsar) ",
+            font=("Arial", 11, "bold"), padx=10, pady=8
+        )
+        dual_frame.pack(fill="x", padx=15, pady=4)
+
+        dual_inner = tk.Frame(dual_frame)
+        dual_inner.pack(fill="x")
+
+        btn_dual = tk.Button(
+            dual_inner, text="Launch Interface", font=("Arial", 11), height=1,
+            command=lambda: self.launch_demo("Dual Target (Server + Pulsar)", DEMOS["Dual Target (Server + Pulsar)"])
+        )
+        btn_dual.pack(side=tk.LEFT, expand=True, fill="x", padx=(0, 3))
+        self.buttons["Dual Target (Server + Pulsar)"] = btn_dual
+
+        btn_dual_cam = tk.Button(
+            dual_inner, text="Launch Camera", font=("Arial", 11), height=1,
+            command=lambda: self.launch_camera("Dual Target (Server + Pulsar)")
+        )
+        btn_dual_cam.pack(side=tk.LEFT, expand=True, fill="x", padx=(3, 0))
+        self.camera_buttons["Dual Target (Server + Pulsar)"] = btn_dual_cam
+
+        # --- Status Section ---
+        status_frame = tk.Frame(self.root)
+        status_frame.pack(pady=(15, 5), padx=25, anchor="w")
+
+        # Demo status row
+        demo_row = tk.Frame(status_frame)
+        demo_row.pack(anchor="w")
+
+        self.status_indicator = tk.Canvas(demo_row, width=16, height=16, highlightthickness=0)
+        self.status_indicator.pack(side=tk.LEFT, padx=(0, 6))
+        self.indicator_circle = self.status_indicator.create_oval(2, 2, 14, 14, fill="gray")
+
+        self.status_label = tk.Label(demo_row, text="Demo: Not running", font=("Arial", 10))
         self.status_label.pack(side=tk.LEFT)
 
-        # Stop button
+        # Camera status row
+        cam_row = tk.Frame(status_frame)
+        cam_row.pack(anchor="w", pady=(4, 0))
+
+        self.cam_status_indicator = tk.Canvas(cam_row, width=16, height=16, highlightthickness=0)
+        self.cam_status_indicator.pack(side=tk.LEFT, padx=(0, 6))
+        self.cam_indicator_circle = self.cam_status_indicator.create_oval(2, 2, 14, 14, fill="gray")
+
+        self.cam_status_label = tk.Label(cam_row, text="Camera: Not running", font=("Arial", 10))
+        self.cam_status_label.pack(side=tk.LEFT)
+
+        # --- Stop Buttons ---
+        stop_frame = tk.Frame(self.root)
+        stop_frame.pack(pady=(8, 15))
+
         self.stop_btn = tk.Button(
-            self.root,
-            text="Stop Current Demo",
-            font=("Arial", 11),
-            width=20,
-            bg="#d9534f",
-            fg="white",
-            state=tk.DISABLED,
+            stop_frame, text="Stop Demo", font=("Arial", 10, "bold"),
+            width=16, bg="#d9534f", fg="white", state=tk.DISABLED,
             command=self.stop_demo
         )
-        self.stop_btn.pack(pady=10)
+        self.stop_btn.pack(side=tk.LEFT, padx=5)
+
+        self.stop_cam_btn = tk.Button(
+            stop_frame, text="Stop Camera", font=("Arial", 10, "bold"),
+            width=16, bg="#d9534f", fg="white", state=tk.DISABLED,
+            command=self.stop_camera
+        )
+        self.stop_cam_btn.pack(side=tk.LEFT, padx=5)
 
     def start_heartbeat_server(self):
         """Start the heartbeat HTTP server in a background thread."""
@@ -239,7 +319,7 @@ class DemoLauncher:
 
     def switch_network_profile(self, demo_name):
         """Switch network profile based on selected demo."""
-        if demo_name == "Topaz Standalone":
+        if demo_name == "Pulsar Standalone":
             profile = TOPAZ_PROFILE
         else:
             profile = DEFAULT_PROFILE
@@ -266,9 +346,9 @@ class DemoLauncher:
 
         # Clear heartbeats and set expected tabs
         self.heartbeats = {}
-        if name == "Dual Target (HPC + Topaz)":
+        if name == "Dual Target (Server + Pulsar)":
             self.expected_tabs = ["hpc", "topaz"]
-        elif name == "HPC Standalone":
+        elif name == "Server Standalone":
             self.expected_tabs = ["hpc"]
         else:  # Topaz Standalone
             self.expected_tabs = ["topaz"]
@@ -293,7 +373,85 @@ class DemoLauncher:
             self.start_monitoring()
 
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to launch demo:\n{e}")
+            messagebox.showerror("Error", f"Failed to Launch Interface:\n{e}")
+
+    def launch_camera(self, demo_name):
+        """Launch camera for the given demo configuration."""
+        if self.camera_process:
+            self.stop_camera()
+
+        # Switch network profile (camera needs the right network)
+        self.switch_network_profile(demo_name)
+
+        # Dual Target: Topaz is only reachable via HPC NAT router,
+        # so ensure NAT is set up before trying to SSH to Topaz.
+        if demo_name == "Dual Target (Server + Pulsar)":
+            nat_script = os.path.join(CURR_DIR, "launch_nat_setup.py")
+            result = subprocess.run(
+                ["python3", nat_script],
+                capture_output=True,
+                timeout=30
+            )
+            if result.returncode != 0:
+                messagebox.showerror(
+                    "Network",
+                    f"NAT setup failed. Cannot reach Topaz.\n{result.stderr.decode()}"
+                )
+                return
+
+        script = CAMERA_SCRIPTS[demo_name]
+
+        try:
+            self.camera_process = subprocess.Popen(
+                ["python3", script],
+                preexec_fn=os.setsid
+            )
+            self.camera_demo = demo_name
+            self.update_camera_status(demo_name, running=True)
+
+            # Highlight active camera button (blue to distinguish from green demo)
+            for btn_name, btn in self.camera_buttons.items():
+                if btn_name == demo_name:
+                    btn.config(bg="#337ab7", fg="white")
+                else:
+                    btn.config(bg="#d9d9d9", fg="black")
+
+            # Monitor camera process for self-exit
+            self._check_camera_process()
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to launch camera:\n{e}")
+
+    def stop_camera(self):
+        """Stop the camera process."""
+        if self.camera_process:
+            try:
+                os.killpg(os.getpgid(self.camera_process.pid), signal.SIGTERM)
+                self.camera_process.wait(timeout=5)
+            except:
+                try:
+                    os.killpg(os.getpgid(self.camera_process.pid), signal.SIGKILL)
+                except:
+                    pass
+
+            self.camera_process = None
+            self.camera_demo = None
+            self.update_camera_status(None, running=False)
+
+            for btn in self.camera_buttons.values():
+                btn.config(bg="#d9d9d9", fg="black")
+
+    def _check_camera_process(self):
+        """Periodically check if camera process has exited on its own."""
+        if self.camera_process and self.camera_process.poll() is not None:
+            # Camera exited on its own
+            self.camera_process = None
+            self.camera_demo = None
+            self.update_camera_status(None, running=False)
+            for btn in self.camera_buttons.values():
+                btn.config(bg="#d9d9d9", fg="black")
+        elif self.camera_process:
+            self.root.after(1000, self._check_camera_process)
 
     def kill_host_processes(self, demo_name):
         """Kill local host processes for the given demo."""
@@ -315,11 +473,11 @@ class DemoLauncher:
         # Topaz Standalone uses: 5001 (Flask), 12345 (metrics), 55555 (data), 8080 (images)
         # Dual Topaz uses: 5001 (Flask), 12346 (metrics), 55556 (images), 29103 (nettest)
         ports_to_free = []
-        if demo_name == "HPC Standalone":
+        if demo_name == "Server Standalone":
             ports_to_free = [5000, 12345, 55555, 29102]
-        elif demo_name == "Topaz Standalone":
+        elif demo_name == "Pulsar Standalone":
             ports_to_free = [5001, 12345, 55555, 8080]
-        elif demo_name == "Dual Target (HPC + Topaz)":
+        elif demo_name == "Dual Target (Server + Pulsar)":
             ports_to_free = [5000, 5001, 12345, 12346, 55555, 55556, 29102, 29103, 8080]
 
         for port in ports_to_free:
@@ -348,11 +506,11 @@ class DemoLauncher:
 
         targets_to_kill = []
 
-        if demo_name == "HPC Standalone":
+        if demo_name == "Server Standalone":
             targets_to_kill.append(("hpc", TARGETS["hpc"]["process"], [5201]))  # iperf3 default port
-        elif demo_name == "Topaz Standalone":
+        elif demo_name == "Pulsar Standalone":
             targets_to_kill.append(("topaz", TARGETS["topaz"]["process_standalone"], [8888, 8889, 5201]))  # AI UDP + IMU UDP + iperf3
-        elif demo_name == "Dual Target (HPC + Topaz)":
+        elif demo_name == "Dual Target (Server + Pulsar)":
             targets_to_kill.append(("hpc", TARGETS["hpc"]["process"], [5201]))
             targets_to_kill.append(("topaz", TARGETS["topaz"]["process_dual"], [8888, 8889, 5201]))
 
@@ -403,51 +561,91 @@ class DemoLauncher:
         if self.current_process:
             demo_name = self.current_demo
 
-            # First kill the launcher script process group
-            try:
-                os.killpg(os.getpgid(self.current_process.pid), signal.SIGTERM)
-                self.current_process.wait(timeout=5)
-            except:
-                try:
-                    os.killpg(os.getpgid(self.current_process.pid), signal.SIGKILL)
-                except:
-                    pass
-
-            # Kill host processes
-            if demo_name:
-                self.kill_host_processes(demo_name)
-                # Kill target processes in background thread to avoid blocking UI
-                threading.Thread(
-                    target=self.kill_target_processes,
-                    args=(demo_name,),
-                    daemon=True
-                ).start()
-
-            self.current_process = None
-            self.current_demo = None
-            self.expected_tabs = []
-            self.heartbeats = {}
-            self.update_status(None, running=False)
-
-            # Reset button colors
+            # Show stopping state and disable buttons while cleanup runs
+            self.update_status(demo_name, stopping=True)
+            self.stop_btn.config(state=tk.DISABLED)
             for btn in self.buttons.values():
-                btn.config(bg="#d9d9d9", fg="black")
+                btn.config(state=tk.DISABLED)
 
-    def update_status(self, demo_name, running):
-        if running:
+            # Run full cleanup in background thread to avoid freezing the UI
+            threading.Thread(
+                target=self._stop_demo_cleanup,
+                args=(demo_name,),
+                daemon=True
+            ).start()
+
+    def _stop_demo_cleanup(self, demo_name):
+        """Run all demo cleanup steps, then update UI when done."""
+        # Kill the launcher script process group
+        try:
+            os.killpg(os.getpgid(self.current_process.pid), signal.SIGTERM)
+            self.current_process.wait(timeout=5)
+        except:
+            try:
+                os.killpg(os.getpgid(self.current_process.pid), signal.SIGKILL)
+            except:
+                pass
+
+        # Kill host processes and free ports (synchronous)
+        if demo_name:
+            self.kill_host_processes(demo_name)
+            # Kill target processes (synchronous - wait for SSH cleanup to finish)
+            self.kill_target_processes(demo_name)
+
+        # All cleanup done - update UI from main thread
+        self.root.after(0, self._stop_demo_finalize)
+
+    def _stop_demo_finalize(self):
+        """Called on main thread after all cleanup is done."""
+        self.current_process = None
+        self.current_demo = None
+        self.expected_tabs = []
+        self.heartbeats = {}
+        self.update_status(None, running=False)
+
+        # Reset button colors and re-enable
+        for btn in self.buttons.values():
+            btn.config(bg="#d9d9d9", fg="black", state=tk.NORMAL)
+
+    def update_status(self, demo_name, running=False, stopping=False):
+        if stopping:
+            self.status_indicator.itemconfig(self.indicator_circle, fill="orange")
+            self.status_label.config(text=f"Stopping: {demo_name}...")
+            self.stop_btn.config(state=tk.DISABLED)
+        elif running:
             self.status_indicator.itemconfig(self.indicator_circle, fill="green")
-            self.status_label.config(text=f"Running: {demo_name}")
+            self.status_label.config(text=f"Demo: {demo_name}")
             self.stop_btn.config(state=tk.NORMAL)
         else:
             self.status_indicator.itemconfig(self.indicator_circle, fill="gray")
-            self.status_label.config(text="No demo running")
+            self.status_label.config(text="Demo: Not running")
             self.stop_btn.config(state=tk.DISABLED)
 
+    def update_camera_status(self, demo_name, running):
+        if running:
+            self.cam_status_indicator.itemconfig(self.cam_indicator_circle, fill="#337ab7")
+            self.cam_status_label.config(text=f"Camera: {demo_name}")
+            self.stop_cam_btn.config(state=tk.NORMAL)
+        else:
+            self.cam_status_indicator.itemconfig(self.cam_indicator_circle, fill="gray")
+            self.cam_status_label.config(text="Camera: Not running")
+            self.stop_cam_btn.config(state=tk.DISABLED)
+
     def on_close(self):
+        running_items = []
         if self.current_process:
-            if not messagebox.askyesno("Confirm Exit", "A demo is running. Stop it and exit?"):
+            running_items.append("a demo")
+        if self.camera_process:
+            running_items.append("a camera")
+
+        if running_items:
+            msg = f"Still running: {' and '.join(running_items)}. Stop and exit?"
+            if not messagebox.askyesno("Confirm Exit", msg):
                 return
-            self.stop_demo()
+            if self.current_process:
+                self.stop_demo()
+            if self.camera_process:
+                self.stop_camera()
 
         self.running = False
         if self.heartbeat_server:
