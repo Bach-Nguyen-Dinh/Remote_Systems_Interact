@@ -361,13 +361,7 @@ class DemoLauncher:
             )
             self.current_demo = name
             self.update_status(name, running=True)
-
-            # Highlight active button
-            for btn_name, btn in self.buttons.items():
-                if btn_name == name:
-                    btn.config(bg="#5cb85c", fg="white")
-                else:
-                    btn.config(bg="#d9d9d9", fg="black")
+            self._update_button_states()
 
             # Start monitoring heartbeats
             self.start_monitoring()
@@ -408,13 +402,7 @@ class DemoLauncher:
             )
             self.camera_demo = demo_name
             self.update_camera_status(demo_name, running=True)
-
-            # Highlight active camera button (blue to distinguish from green demo)
-            for btn_name, btn in self.camera_buttons.items():
-                if btn_name == demo_name:
-                    btn.config(bg="#337ab7", fg="white")
-                else:
-                    btn.config(bg="#d9d9d9", fg="black")
+            self._update_button_states()
 
             # Monitor camera process for self-exit
             self._check_camera_process()
@@ -437,9 +425,7 @@ class DemoLauncher:
             self.camera_process = None
             self.camera_demo = None
             self.update_camera_status(None, running=False)
-
-            for btn in self.camera_buttons.values():
-                btn.config(bg="#d9d9d9", fg="black")
+            self._update_button_states()
 
     def _check_camera_process(self):
         """Periodically check if camera process has exited on its own."""
@@ -448,8 +434,7 @@ class DemoLauncher:
             self.camera_process = None
             self.camera_demo = None
             self.update_camera_status(None, running=False)
-            for btn in self.camera_buttons.values():
-                btn.config(bg="#d9d9d9", fg="black")
+            self._update_button_states()
         elif self.camera_process:
             self.root.after(1000, self._check_camera_process)
 
@@ -561,10 +546,12 @@ class DemoLauncher:
         if self.current_process:
             demo_name = self.current_demo
 
-            # Show stopping state and disable buttons while cleanup runs
+            # Show stopping state and disable all launch buttons while cleanup runs
             self.update_status(demo_name, stopping=True)
             self.stop_btn.config(state=tk.DISABLED)
             for btn in self.buttons.values():
+                btn.config(state=tk.DISABLED)
+            for btn in self.camera_buttons.values():
                 btn.config(state=tk.DISABLED)
 
             # Run full cleanup in background thread to avoid freezing the UI
@@ -602,10 +589,38 @@ class DemoLauncher:
         self.expected_tabs = []
         self.heartbeats = {}
         self.update_status(None, running=False)
+        self._update_button_states()
 
-        # Reset button colors and re-enable
-        for btn in self.buttons.values():
-            btn.config(bg="#d9d9d9", fg="black", state=tk.NORMAL)
+    def _update_button_states(self):
+        """Enable/disable buttons so only one scenario group can be active at a time."""
+        active_group = self.current_demo or self.camera_demo
+
+        for name, btn in self.buttons.items():
+            if active_group is None:
+                # Nothing running - all enabled, default look
+                btn.config(state=tk.NORMAL, bg="#d9d9d9", fg="black")
+            elif name == active_group and self.current_demo == name:
+                # This group's demo is running - highlighted, not clickable
+                btn.config(state=tk.DISABLED, bg="#5cb85c", fg="white")
+            elif name == active_group:
+                # This group's demo is available (only camera running) - enabled
+                btn.config(state=tk.NORMAL, bg="#d9d9d9", fg="black")
+            else:
+                # Different group - locked out
+                btn.config(state=tk.DISABLED, bg="#d9d9d9", fg="black")
+
+        for name, btn in self.camera_buttons.items():
+            if active_group is None:
+                btn.config(state=tk.NORMAL, bg="#d9d9d9", fg="black")
+            elif name == active_group and self.camera_demo == name:
+                # This group's camera is running - highlighted, not clickable
+                btn.config(state=tk.DISABLED, bg="#337ab7", fg="white")
+            elif name == active_group:
+                # This group's camera is available (only demo running) - enabled
+                btn.config(state=tk.NORMAL, bg="#d9d9d9", fg="black")
+            else:
+                # Different group - locked out
+                btn.config(state=tk.DISABLED, bg="#d9d9d9", fg="black")
 
     def update_status(self, demo_name, running=False, stopping=False):
         if stopping:
