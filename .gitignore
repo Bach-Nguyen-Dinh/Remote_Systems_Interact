@@ -9,6 +9,8 @@
 !setup_webcam.sh
 !display_demo.sh
 !setup_webcam_standalone.sh
+!grafana_ui_backup/
+!grafana_ui_backup/*
 
 # topaz_imu specific ignores
 topaz_imu/.claude
