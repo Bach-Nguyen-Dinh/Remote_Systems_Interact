@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Topaz Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { width: 100%; height: 100%; overflow: hidden; }
+        iframe { width: 100%; height: 100%; border: none; }
+    </style>
+</head>
+<body>
+    <iframe src="http://localhost:3000/d/debfk50vlpszasdasdf/system-monitor-and-control-topaz-land-nav?orgId=1&from=now-5m&to=now&timezone=browser&refresh=1s&kiosk"></iframe>
+    <script>
+        // Send heartbeat to demo launcher every 2 seconds
+        const HEARTBEAT_URL = 'http://127.0.0.1:8765/heartbeat?tab=topaz';
+
+        function sendHeartbeat() {
+            fetch(HEARTBEAT_URL, { mode: 'cors' }).catch(() => {});
+        }
+
+        // Send immediately and then every 2 seconds
+        sendHeartbeat();
+        setInterval(sendHeartbeat, 2000);
+    </script>
+</body>
+</html>
