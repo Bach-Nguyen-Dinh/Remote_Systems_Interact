@@ -356,9 +356,9 @@
 
             try {
                 await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ message: `SIZE:${selectedOption}` })
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ message: `SIZE:${selectedOption}` })
                 });
                 statusElement.textContent = "Loading file properties...";
 
