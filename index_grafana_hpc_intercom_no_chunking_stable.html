@@ -304,54 +304,6 @@
         //         });
         // }
 
-        async function startProgressImageDisplay() {
-            // Get the count of available progress images
-            try {
-                const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/sar_progress_images/count`);
-                const data = await response.json();
-                progressImageCount = data.count;
-
-                if (progressImageCount === 0) {
-                    console.log("No progress images available");
-                    return;
-                }
-
-                // Reset index
-                progressImageIndex = 0;
-
-                // Display first image immediately
-                displayProgressImage(progressImageIndex);
-
-                // Start cycling through images every 1.5 seconds
-                progressImageInterval = setInterval(() => {
-                    progressImageIndex++;
-                    if (progressImageIndex >= progressImageCount) {
-                        // Stop at the last image - don't loop back
-                        progressImageIndex = progressImageCount - 1;
-                        clearInterval(progressImageInterval);
-                        progressImageInterval = null;
-                    }
-                    displayProgressImage(progressImageIndex);
-                }, 1500);
-
-            } catch (error) {
-                console.error("Error fetching progress image count:", error);
-            }
-        }
-
-        function displayProgressImage(index) {
-            const imageElement = document.getElementById("processedImage1");
-            imageElement.src = `http://${FLASK_HOST}:${FLASK_PORT}/sar_progress_images/${index}?t=${Date.now()}`;
-            imageElement.style.display = "block";
-        }
-
-        function stopProgressImageDisplay() {
-            if (progressImageInterval) {
-                clearInterval(progressImageInterval);
-                progressImageInterval = null;
-            }
-        }
-
         function sendLoad() {
             const selectedOption = document.getElementById("menuDropdown").value;
             const statusElement = document.getElementById("status");
@@ -429,11 +381,6 @@
                     const elapsed = (Date.now() - sarProcStartTime) / 1000;
                     document.getElementById("sarProcTime").textContent = elapsed.toFixed(2) + "s";
                 }, 100);
-
-                // Wait 3s then start displaying progress images
-                setTimeout(() => {
-                    startProgressImageDisplay();
-                }, 3000);
         
                 // Set timeout
                 const startTime = Date.now();
@@ -454,9 +401,6 @@
                             clearInterval(sarProcTimer);
                             sarProcTimer = null;
                         }
-
-                        // STOP progress image display
-                        stopProgressImageDisplay();
 
                         // Calculate final elapsed time
                         const finalElapsed = (Date.now() - sarProcStartTime) / 1000;
@@ -498,9 +442,7 @@
 
         function resetMenu() {
             lastTifFilename = "lastFile";
-
-            // Stop progress image display if running
-            stopProgressImageDisplay();
+            const statusElement = document.getElementById("status");
 
             // Stop processing timer if running
             if (sarProcTimer) {
