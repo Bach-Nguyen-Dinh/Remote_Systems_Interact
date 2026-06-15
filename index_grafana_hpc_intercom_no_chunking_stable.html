@@ -341,7 +341,7 @@
         //         });
         // }
 
-        function sendLoad() {
+        async function sendLoad() {
             const selectedOption = document.getElementById("menuDropdown").value;
             const statusElement = document.getElementById("status");
 
@@ -350,28 +350,38 @@
                 return;
             }
 
-            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ message: `SIZE:${selectedOption}` })
-            })
-            .then(response => response.json())
-            .then(data => {
-                statusElement.textContent = "Command sent... Load.";
-                fetchFileSize(); // Fetch file size immediately after sending message
-            })
-            .catch(error => {
-                console.error("Error:", error);
-                statusElement.textContent = "Error sending command.";
-            });
-            // Reset images
+            // Reset images and output properties
             document.getElementById("processedImage1").src = "";
-            document.getElementById("processedImage2").src = "";
-            // Reset output properties
             document.getElementById("outFileSize").textContent = "N/A";
             document.getElementById("reductionFactor").textContent = "N/A";
             document.getElementById("sizeCompared").textContent = "N/A";
             document.getElementById("sarProcTime").textContent = "N/A";
+
+            try {
+                await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: `SIZE:${selectedOption}` })
+                });
+                statusElement.textContent = "Loading file properties...";
+
+                const startTime = Date.now();
+                const timeout = 30 * 1000;
+                while (Date.now() - startTime < timeout) {
+                    const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/get_cphd_file_properties`);
+                    const data = await response.json();
+                    if (data.files && data.files.filename === selectedOption) {
+                        fetchFileSize();
+                statusElement.textContent = "Command sent... Load.";
+                        return;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+                statusElement.textContent = "Timeout waiting for file properties.";
+            } catch (error) {
+                console.error("Error:", error);
+                statusElement.textContent = "Error sending command.";
+            }
         }
 
         async function sendRun() {
