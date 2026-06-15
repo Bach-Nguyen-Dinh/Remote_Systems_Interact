@@ -109,12 +109,12 @@ def send_image(image_path):
     except Exception as e:
         print(f"Error sending image: {e}")
 
-def handle_image_sending():
+def handle_image_sending(filename):
     global sar_proc_time
 
     start_time = time.perf_counter()
     # Start the SAR program as a subprocess
-    process = subprocess.Popen(["python3", SAR_PROG])
+    process = subprocess.Popen(["python3", SAR_PROG, "--file", filename])
     print(f"SAR program started with PID {process.pid}")
 
     # While the process is still running, print "processing..."
