@@ -251,22 +251,37 @@
                 .then(response => response.json())
                 .then(data => {
                     if (data.files.filename === selectedFile) {
-                        if (selectedFile.includes("2023-09")) {
-                            document.getElementById("totalPulses").textContent = "18,051";
-                            document.getElementById("centreFreq").textContent = "9.6 GHz (X band)"
-                        }
-                        else if (selectedFile.includes("2023-06")) {
-                            document.getElementById("totalPulses").textContent = "15,063";
-                            document.getElementById("centreFreq").textContent = "9.6 GHz (X band)"
-                        }
-                        else {
-                            document.getElementById("totalPulses").textContent = "N/A";
-                        }
                         document.getElementById("fileSize").textContent = data.files.size;
-                        document.getElementById("imageSize").textContent = data.files.metadata.numRows + " x " + data.files.metadata.numColumns;
-                        document.getElementById("resolution").textContent = data.files.metadata.groundResolution.toFixed(2) + " meters";
+                        if (data.files.metadata) {
+                            const m = data.files.metadata;
+                            document.getElementById("totalPulses").textContent = m.numVectors != null ? m.numVectors.toLocaleString() : "N/A";
+                            if (m.fxC != null) {
+                                const freqGHz = (m.fxC / 1e9).toFixed(1);
+                                const band = getFrequencyBand(m.fxC);
+                                document.getElementById("centreFreq").textContent = freqGHz + " GHz" + (band ? " (" + band + " band)" : "");
+                            } else {
+                                document.getElementById("centreFreq").textContent = "N/A";
+                            }
+                            document.getElementById("imageSize").textContent = (m.numLines != null && m.numSamples != null) ? m.numLines + " x " + m.numSamples : "N/A";
+                            document.getElementById("resolution").textContent = m.lineSpacing != null ? m.lineSpacing.toFixed(2) + " meters" : "N/A";
+                            if (m.numLines != null && m.lineSpacing != null && m.numSamples != null && m.sampleSpacing != null) {
+                                const areaSqM = m.numLines * m.lineSpacing * m.numSamples * m.sampleSpacing;
+                                const areaSqKm = areaSqM / 1e6;
+                                document.getElementById("areaSize").textContent = areaSqKm.toFixed(2) + " km²";
+                            } else {
+                                document.getElementById("areaSize").textContent = "N/A";
+                        }
+                        } else {
+                            document.getElementById("totalPulses").textContent = "N/A";
+                            document.getElementById("centreFreq").textContent = "N/A";
+                            document.getElementById("imageSize").textContent = "N/A";
+                            document.getElementById("resolution").textContent = "N/A";
+                            document.getElementById("areaSize").textContent = "N/A";
+                        }
                     } else {
                         document.getElementById("fileSize").textContent = "N/A";
+                        document.getElementById("totalPulses").textContent = "N/A";
+                        document.getElementById("centreFreq").textContent = "N/A";
                         document.getElementById("imageSize").textContent = "N/A";
                         document.getElementById("resolution").textContent = "N/A";
                         document.getElementById("areaSize").textContent = "N/A";
@@ -275,6 +290,8 @@
                 .catch(error => {
                     console.error("Error fetching file size:", error);
                     document.getElementById("fileSize").textContent = "N/A";
+                    document.getElementById("totalPulses").textContent = "N/A";
+                    document.getElementById("centreFreq").textContent = "N/A";
                     document.getElementById("imageSize").textContent = "N/A";
                     document.getElementById("resolution").textContent = "N/A";
                     document.getElementById("areaSize").textContent = "N/A";
