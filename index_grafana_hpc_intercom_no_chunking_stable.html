@@ -223,6 +223,26 @@
             });
         }
 
+        function getFrequencyBand(freqHz) {
+            const bands = [
+                { name: "HF",  min: 3e6,   max: 30e6   },
+                { name: "VHF", min: 30e6,  max: 300e6  },
+                { name: "UHF", min: 300e6, max: 1e9    },
+                { name: "L",   min: 1e9,   max: 2e9    },
+                { name: "S",   min: 2e9,   max: 4e9    },
+                { name: "C",   min: 4e9,   max: 8e9    },
+                { name: "X",   min: 8e9,   max: 12e9   },
+                { name: "Ku",  min: 12e9,  max: 18e9   },
+                { name: "K",   min: 18e9,  max: 27e9   },
+                { name: "Ka",  min: 27e9,  max: 40e9   },
+                { name: "V",   min: 40e9,  max: 75e9   },
+                { name: "W",   min: 75e9,  max: 110e9  },
+                { name: "mm",  min: 110e9, max: 300e9  },
+            ];
+            const match = bands.find(b => freqHz >= b.min && freqHz < b.max);
+            return match ? match.name : null;
+        }
+
         function fetchFileSize() {
             const selectedFile = document.getElementById("menuDropdown").value;
             if (!selectedFile) return;
