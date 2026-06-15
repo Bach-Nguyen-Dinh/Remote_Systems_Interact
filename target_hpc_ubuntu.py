@@ -419,7 +419,7 @@ def listen_for_messages():
                     
                     if filePath and os.path.exists(filePath):
                         file_size = os.path.getsize(filePath)
-                        metadata = get_metadata_from_json(os.path.dirname(filePath))
+                        metadata = get_metadata_from_cphd(filePath)
                         
                         file_size_str = f"{file_size / 1_000_000:.2f} MB" if file_size >= 1_000_000 else f"{file_size} bytes"
                         
