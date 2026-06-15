@@ -74,7 +74,7 @@ def handle_image_process_server():
                 # expect receiving an image only if there is no current saved image
                 # if new image is already saved, skip to expect other data
                 if flag_get_image == True and imageSaved == False:
-                    flag_get_image == False
+                    flag_get_image = False
                     save_path = SAVE_PATH_TIF
                     # Receive file size first
                     file_size = int.from_bytes(conn.recv(8), byteorder="big")
