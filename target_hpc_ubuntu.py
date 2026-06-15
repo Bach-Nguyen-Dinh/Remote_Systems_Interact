@@ -12,7 +12,7 @@ import glob
 # IMAGE_PATH_1 = "/home/root/Desktop/Bach/backprojection_histogram.png"
 RESIZED_IMAGE_PATH = "/home/sarthak/demo-resrc/optimized_image.webp"  # Temporary resized image path
 # DEMO_PATH = "/home/sarthak/demo-resrc/"
-DEMO_PATH = "/home/sarthak/workspace/SAR_codebase/cphd"
+DEMO_PATH = "/home/public/sar/sar-server/data/cphd"
 OUT_TIF_PATH = "/home/sarthak/workspace/SAR_codebase/output_immediate"
 SAR_PROG = "/home/sarthak/workspace/SAR_codebase/cphd_aic.py"
 FAN_STATUS = "/home/sarthak/Remote_Systems_Interact/check_fan_status.sh"
