@@ -436,10 +436,10 @@ def listen_for_messages():
                     filename = message.split(":", 1)[1]
                     filePath = cphd_files.get(filename)
                     print(filePath)
-                    
+
                     if filePath and os.path.exists(filePath):
                         print("file exist, start processing")
-                        threading.Thread(target=process_cphd_file, args=(filePath,), daemon=True).start()
+                        threading.Thread(target=process_cphd_file, args=(filePath, filename), daemon=True).start()
                 elif message.startswith("NETRUN:"):
                     # handle run iperf test in thread to avoid blocking other tasks
                     _, netTestDuration, netTestInterface = message.split(":", 2)
