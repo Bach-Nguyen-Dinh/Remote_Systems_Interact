@@ -399,7 +399,7 @@ def get_sar_progress_count():
 
 # Function to run iperf3 and capture the results
 def run_iperf3(file_path, message):
-    netTestDuration = message.split(":", 1)[1]
+    netTestDuration = message.split(":")[1]
 
     def run_test(reverse=False):
         # Define the command with or without reverse mode
