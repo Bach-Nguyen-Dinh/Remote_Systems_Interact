@@ -483,7 +483,7 @@ def iperf_lw_eth_adt_results():
     
 @app.route('/iperf3/up_eth_adt_results', methods=['GET'])
 def iperf_up_eth_adt_results():
-    file_path = SAVE_PATH_IPERF_UP_ETH_OB
+    file_path = SAVE_PATH_IPERF_UP_ETH_ADT
     try:
         return send_file(file_path, mimetype='application/json', as_attachment=False)
     except FileNotFoundError:
