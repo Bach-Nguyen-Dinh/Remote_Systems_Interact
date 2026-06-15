@@ -33,7 +33,6 @@ if not os.path.exists(SAVE_DIR):
 else:
     print(f"Folder 'pictures' already exists at: {SAVE_DIR}")
 SAVE_PATH_TIF = os.path.join(SAVE_DIR, "tif_image.webp")
-SAVE_PATH_OUT = os.path.join(SAVE_DIR, "out_image.png")
 SAVE_PATH_IPERF_LW_ETH_OB = os.path.join(CURR_DIR, "iperf3_end_result_LwEthOnb.json")
 SAVE_PATH_IPERF_UP_ETH_OB = os.path.join(CURR_DIR, "iperf3_end_result_UpEthOnb.json")
 SAVE_PATH_IPERF_LW_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_LwEthAdt.json")
