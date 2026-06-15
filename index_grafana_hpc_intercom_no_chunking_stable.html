@@ -369,7 +369,7 @@
                     const data = await response.json();
                     if (data.files && data.files.filename === selectedOption) {
                         fetchFileSize();
-                statusElement.textContent = "Command sent... Load.";
+                        statusElement.textContent = "Command sent... Load.";
                         return;
                     }
                     await new Promise(resolve => setTimeout(resolve, 500));
@@ -425,7 +425,7 @@
                     const elapsed = (Date.now() - sarProcStartTime) / 1000;
                     document.getElementById("sarProcTime").textContent = elapsed.toFixed(2) + "s";
                 }, 100);
-        
+
                 // Set timeout
                 const startTime = Date.now();
                 const timeout = 900 * 1000;
@@ -455,7 +455,7 @@
                         document.getElementById("reductionFactor").textContent = "x" + data.files.reduction_scale + " or " + data.files.reduction_factor + "%";
                         document.getElementById("sizeCompared").textContent = data.files.size_compared + "%";
                         // document.getElementById("sarProcTime").textContent = data.files.sar_proc_time + "s";
-        
+                        
                         if (data.files.tif_resolution != null) {
                             document.getElementById("resolution").textContent = data.files.tif_resolution.toFixed(2) + " meters";
                         }
