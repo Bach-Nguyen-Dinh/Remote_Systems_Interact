@@ -1,4 +1,5 @@
 from PIL import Image
+Image.MAX_IMAGE_PIXELS = None  # SAR TIFF files exceed PIL's default decompression bomb limit
 import socket
 import subprocess
 import threading
@@ -68,7 +69,8 @@ def optimize_tif(image_path, output_path, format="webp", max_size=(800, 800), qu
         img = Image.open(image_path)
         if img.mode in ("P", "CMYK", "RGBA"):
             img = img.convert("RGB")
-        img.thumbnail(max_size, Image.Resampling.LANCZOS)
+        resample = Image.Resampling.LANCZOS if hasattr(Image, 'Resampling') else Image.LANCZOS
+        img.thumbnail(max_size, resample)
         ext = format.lower()
         if ext not in ["jpeg", "jpg", "png", "webp", "avif"]:
             raise ValueError("Unsupported format. Use jpeg, png, webp, or avif.")
@@ -128,7 +130,6 @@ def handle_image_sending():
 
     # Find the most recently created .tif file in OUT_TIF_PATH
     tif_files = glob.glob(os.path.join(OUT_TIF_PATH, "*.tiff"))
-    print(tif_files)
     if not tif_files:
         print("No .tif files found in output directory.")
         return
