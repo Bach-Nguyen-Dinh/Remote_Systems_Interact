@@ -173,27 +173,57 @@ def get_cphd_file_size(filename):
         return os.path.getsize(filePath)
     return None
 
-def get_metadata_from_json(directory):
+def get_resolution_from_tif(tif_path):
     try:
-        for file in os.listdir(directory):
-            if file.endswith(".json"):
-                json_path = os.path.join(directory, file)
-                with open(json_path, "r") as f:
-                    data = json.load(f)
-                    derived_products = data.get("derivedProducts", {}).get("GEC", [{}])[0]
-                    return {
-                        "numRows": derived_products.get("numRows"),
-                        "numColumns": derived_products.get("numColumns"),
-                        "groundResolution": derived_products.get("groundResolution", {}).get("azimuthMeters")
-                    }
+        from osgeo import gdal
+        ds = gdal.Open(tif_path)
+        if ds:
+            gt = ds.GetGeoTransform()
+            res = abs(gt[1])
+            ds = None
+            return res
+    except ImportError:
+        pass
     except Exception as e:
-        print(f"Error reading metadata: {e}")
+        print(f"Error extracting resolution via GDAL: {e}")
+    try:
+        img = Image.open(tif_path)
+        tag_v2 = getattr(img, 'tag_v2', {})
+        pixel_scale = tag_v2.get(33550)  # GeoTIFF ModelPixelScaleTag
+        if pixel_scale and len(pixel_scale) >= 1:
+            return pixel_scale[0]
+    except Exception as e:
+        print(f"Error extracting resolution via PIL: {e}")
     return None
 
-def process_cphd_file(filePath):
+def get_metadata_from_cphd(filePath):
+    try:
+        from sarpy.io.phase_history.cphd import CPHDReader
+        reader = CPHDReader(filePath)
+        meta = reader.cphd_meta
+        num_vectors = meta.Data.Channels[0].NumVectors
+        fxc = meta.Channel.Parameters[0].FxC
+        num_lines = meta.SceneCoordinates.ImageGrid.IAXExtent.NumLines
+        line_spacing = meta.SceneCoordinates.ImageGrid.IAXExtent.LineSpacing
+        num_samples = meta.SceneCoordinates.ImageGrid.IAYExtent.NumSamples
+        sample_spacing = meta.SceneCoordinates.ImageGrid.IAYExtent.SampleSpacing
+        reader.close()
+        return {
+            "numVectors": num_vectors,
+            "fxC": fxc,
+            "numLines": num_lines,
+            "lineSpacing": line_spacing,
+            "numSamples": num_samples,
+            "sampleSpacing": sample_spacing
+        }
+    except Exception as e:
+        print(f"Error reading CPHD metadata: {e}")
+    return None
+
+def process_cphd_file(filePath, filename):
     global sar_proc_time
 
-    tif_path = handle_image_sending()
+    tif_path = handle_image_sending(filename)
 
     # send the properties of the processed image
     tif_size = os.path.getsize(tif_path)
@@ -205,13 +235,17 @@ def process_cphd_file(filePath):
     tif_size_str = f"{tif_size / 1_000_000:.2f} MB" if tif_size >= 1_000_000 else f"{tif_size} bytes"
 
 
+    tif_resolution = get_resolution_from_tif(tif_path)
+    print(f"TIF resolution: {tif_resolution}")
+
     response = {
         "tif_filename": os.path.basename(tif_path),
         "size": tif_size_str,
         "reduction_factor": reduction_factor,
         "size_compared": size_compared,
         "reduction_scale": reduction_scale,
-        "sar_proc_time": sar_proc_time
+        "sar_proc_time": sar_proc_time,
+        "tif_resolution": tif_resolution
     }        
     print(f"Response: {response}")
     
