@@ -163,8 +163,10 @@
     </div>
 
     <script>
-        FLASK_PORT = 5000
-        FLASK_HOST = "localhost"
+        const isDirectAccess = window.location.port === '3000';
+        FLASK_BASE = isDirectAccess
+            ? `http://${window.location.hostname}:5000`
+            : `https://${window.location.hostname}`
 
         let lastTifFilename = "lastFile"; // Store the last processed tif_filename
         let testDurationLwEthOnb = null; // Variable to store selected duration
@@ -178,14 +180,14 @@
             const statusElement = document.getElementById("status");
             statusElement.textContent = "Fetching file list..."; // Show status message
 
-            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+            fetch(`${FLASK_BASE}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: "4" })  
             })
             .then(() => {
                 setTimeout(() => {
-                    fetch(`http://${FLASK_HOST}:${FLASK_PORT}/get_cphd_files`)
+                    fetch(`${FLASK_BASE}/get_cphd_files`)
                         .then(response => response.json())
                         .then(data => {
                             console.log("Fetched CPHD files:", data.files);
@@ -244,7 +246,7 @@
             const selectedFile = document.getElementById("menuDropdown").value;
             if (!selectedFile) return;
 
-            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/get_cphd_file_properties`)
+            fetch(`${FLASK_BASE}/get_cphd_file_properties`)
                 .then(response => response.json())
                 .then(data => {
                     if (data.files.filename === selectedFile) {
@@ -296,7 +298,7 @@
         }
         
         function fetchProcessedFile() {
-            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/images/tif_image.webp`)
+            fetch(`${FLASK_BASE}/images/tif_image.webp`)
                 .then(response => {
                     if (!response.ok) {
                         throw new Error("Failed to fetch image.");
@@ -320,7 +322,7 @@
         }
 
         // function fetchColorizedImage() {
-        //     fetch(`http://${FLASK_HOST}:${FLASK_PORT}/sar_colored_image`)
+        //     fetch(`${FLASK_BASE}/sar_colored_image`)
         //         .then(response => {
         //             if (!response.ok) {
         //                 throw new Error("Failed to fetch colorized image.");
@@ -355,7 +357,7 @@
             document.getElementById("sarProcTime").textContent = "N/A";
 
             try {
-                await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+                await fetch(`${FLASK_BASE}/send_message`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ message: `SIZE:${selectedOption}` })
@@ -365,7 +367,7 @@
                 const startTime = Date.now();
                 const timeout = 30 * 1000;
                 while (Date.now() - startTime < timeout) {
-                    const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/get_cphd_file_properties`);
+                    const response = await fetch(`${FLASK_BASE}/get_cphd_file_properties`);
                     const data = await response.json();
                     if (data.files && data.files.filename === selectedOption) {
                         fetchFileSize();
@@ -394,7 +396,7 @@
         
             try {
                 // Send the "RUN" command
-                await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+                await fetch(`${FLASK_BASE}/send_message`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ message: `RUN:${selectedOption}` })
@@ -433,7 +435,7 @@
         
                 while (!fileUpdated && (Date.now() - startTime < timeout)) {
                     // Fetch the output file properties
-                    const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/get_tif_file_properties`);
+                    const response = await fetch(`${FLASK_BASE}/get_tif_file_properties`);
                     const data = await response.json();
         
                     // Check if tif_filename has changed
@@ -494,7 +496,7 @@
                 sarProcTimer = null;
             }
 
-            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+            fetch(`${FLASK_BASE}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: "3"})
@@ -557,7 +559,7 @@
                 return;
             }
             // Send the NETRUN message via POST request
-            await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+            await fetch(`${FLASK_BASE}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:LwEthOnb` })
@@ -566,7 +568,7 @@
             
             await new Promise(resolve => setTimeout(resolve, testDurationLwEthOnb*1000*2+5000));
 
-            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/iperf3/lw_eth_onb_results`)
+            fetch(`${FLASK_BASE}/iperf3/lw_eth_onb_results`)
                 .then(response => response.json())
                 .then(data => {
                     // Extract the relevant data from the JSON response
@@ -711,7 +713,7 @@
             // Display the status (optional)
             document.getElementById("statusNet_LwEthOnbBw").innerText = "Configuring...";
 
-            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+            fetch(`${FLASK_BASE}/send_message`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -768,7 +770,7 @@
                 return;
             }
             // Send the NETRUN message via POST request
-            await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+            await fetch(`${FLASK_BASE}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:UpEthOnb` })
@@ -777,7 +779,7 @@
             
             await new Promise(resolve => setTimeout(resolve, testDurationUpEthOnb*1000*2+5000));
 
-            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/iperf3/up_eth_onb_results`)
+            fetch(`${FLASK_BASE}/iperf3/up_eth_onb_results`)
                 .then(response => response.json())
                 .then(data => {
                     // Extract the relevant data from the JSON response
@@ -934,7 +936,7 @@
             // Display the status (optional)
             document.getElementById("statusNet_UpEthOnbBw").innerText = "Configuring...";
 
-            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+            fetch(`${FLASK_BASE}/send_message`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -996,7 +998,7 @@
                     type: "run" 
                 }));
             // Send the NETRUN message via POST request
-            await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+            await fetch(`${FLASK_BASE}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:LwEthAdt` })
@@ -1005,7 +1007,7 @@
             
             await new Promise(resolve => setTimeout(resolve, testDurationLwEthAdt*1000*2+5000));
 
-            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/iperf3/lw_eth_adt_results`)
+            fetch(`${FLASK_BASE}/iperf3/lw_eth_adt_results`)
                 .then(response => response.json())
                 .then(data => {
                     // // Extract the relevant data from the JSON response
@@ -1228,7 +1230,7 @@
                     type: "bandwidth",
                     value: selectedBwValue
                 }));
-                fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+                fetch(`${FLASK_BASE}/send_message`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1286,7 +1288,7 @@
                 return;
             }
             // Send the NETRUN message via POST request
-            await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+            await fetch(`${FLASK_BASE}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: `NETRUN:${selectedTestDuration}:UpEthAdt` })
@@ -1295,7 +1297,7 @@
             
             await new Promise(resolve => setTimeout(resolve, testDurationUpEthAdt*1000*2+5000));
 
-            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/iperf3/up_eth_adt_results`)
+            fetch(`${FLASK_BASE}/iperf3/up_eth_adt_results`)
                 .then(response => response.json())
                 .then(data => {
                     // Extract the relevant data from the JSON response
@@ -1454,7 +1456,7 @@
             // Display the status (optional)
             document.getElementById("statusNet_UpEthAdtBw").innerText = "Configuring...";
 
-            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+            fetch(`${FLASK_BASE}/send_message`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
