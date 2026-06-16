@@ -15,9 +15,11 @@ RESIZED_IMAGE_PATH = "/home/sarthak/demo-resrc/optimized_image.webp"  # Temporar
 # DEMO_PATH = "/home/sarthak/demo-resrc/"
 DEMO_PATH = "/home/public/sar/sar-server/data/cphd"
 OUT_TIF_PATH = "/home/sarthak/workspace/SAR_codebase/output_immediate"
-SAR_PROG = "/home/sarthak/workspace/SAR_codebase/cphd_aic.py"
+SAR_DIR = "/home/sarthak/workspace/SAR_codebase"
+SAR_PROG = os.path.join(SAR_DIR, "cphd_aic.py")
+SAR_LOGS = os.path.join(SAR_DIR, "logs")
 FAN_STATUS = "/home/sarthak/Remote_Systems_Interact/check_fan_status.sh"
-PROFILER_OPTION = "--metrics_interval_ms 500 --csv_write_interval_s 5"
+PROFILER_OPTION = ["--metrics_interval_ms", "500", "--csv_write_interval_s", "5", "--"]
 
 HOST_IP = "10.42.0.1"
 SYSINFO_PORT = 12345
@@ -115,7 +117,7 @@ def handle_image_sending(filename):
 
     start_time = time.perf_counter()
     # Start the SAR program as a subprocess
-    process = subprocess.Popen(["profiler", SAR_PROG, PROFILER_OPTION, "--file", filename])
+    process = subprocess.Popen(["profiler", SAR_PROG, *PROFILER_OPTION, "--file", filename])
     print(f"SAR program started with PID {process.pid}")
 
     # While the process is still running, print "processing..."
