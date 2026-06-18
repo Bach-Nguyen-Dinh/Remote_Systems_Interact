@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        #processedImage2 {
+            display: none;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .no-data-overlay-processedImage2 {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: rgba(204, 204, 220, 0.65);
+            font-size: 18px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="image-container">
+            <div id="noData2" class="no-data-overlay-processedImage2">No data</div>
+            <img id="processedImage2">
+        </div>
+    </div>
+
+    <script>
+        const FLASK_BASE = `http://${window.location.hostname}:5000`;
+
+        let lastShownCphd = null;
+
+        function showImage(url) {
+            document.getElementById("processedImage2").src = url;
+            document.getElementById("processedImage2").style.display = "block";
+            document.getElementById("noData2").style.display = "none";
+        }
+
+        function showNoData() {
+            document.getElementById("processedImage2").src = "";
+            document.getElementById("processedImage2").style.display = "none";
+            document.getElementById("noData2").style.display = "flex";
+        }
+
+        function fetchColorizedImage(cphdFilename) {
+            fetch(`${FLASK_BASE}/sar_colored_image?filename=${encodeURIComponent(cphdFilename)}`)
+                .then(response => {
+                    if (!response.ok) throw new Error("not found");
+                    return response.blob();
+                })
+                .then(blob => showImage(URL.createObjectURL(blob)))
+                .catch(() => showNoData());
+        }
+
+        setInterval(() => {
+            fetch(`${FLASK_BASE}/get_tif_file_properties`)
+                .then(r => r.json())
+                .then(data => {
+                    const cphd = data.cphd_filename;
+                    const tifReady = data.files && data.files.tif_filename;
+                    if (!cphd || !tifReady) {
+                        if (lastShownCphd !== null) {
+                            lastShownCphd = null;
+                            showNoData();
+                        }
+                        return;
+                    }
+                    if (cphd !== lastShownCphd) {
+                        lastShownCphd = cphd;
+                        fetchColorizedImage(cphd);
+                    }
+                })
+                .catch(() => {});
+        }, 1000);
+    </script>
+</body>
+</html>
