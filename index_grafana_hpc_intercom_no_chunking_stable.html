@@ -13,18 +13,6 @@
             flex-direction: column;
         }
 
-        .container {
-            display: flex;
-            align-items: flex-start;
-            gap: 20px;
-            width: 100%;
-            height: 100%;
-            margin: 0;
-            max-width: 100%;
-            padding-left: 0;
-            padding-right: 0;
-        }
-
         .dropdown-container {
             display: flex;
             flex-direction: column;
@@ -47,21 +35,47 @@
             font-weight: bold;
         }
 
-        .image-container {
-            width: 1000px;
-            height: 650px;
+        .images-row {
             display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            margin: 0;
-            padding: 0;
+            flex-direction: row;
+            gap: 20px;
+            flex: 1;
+            height: 100%;
+            min-height: 0;
         }
 
-        #processedImage {
+        .sar-image-container {
+            position: relative;
+            flex: 1;
+            min-width: 0;
+            background-color: #181b1f;
+            border: 2px solid #28292f;
+            overflow: hidden;
+        }
+
+        .sar-image-container img {
             display: none;
-            max-width: none;
-            max-height: none;
-            object-fit: contain;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            object-position: center;
+        }
+
+        .no-data-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: rgba(204, 204, 220, 0.65);
+            font-size: 18px;
+            pointer-events: none;
         }
 
         .button-container {
@@ -154,11 +168,14 @@
     </style>
 </head>
 <body>
-    <div class="container">
-
-        <div class="image-container">
-            <!-- <img id="processedImage1" src="" alt="&nbsp;&nbsp;&nbsp;Loading ..."> -->
+    <div class="images-row">
+        <div class="sar-image-container">
+            <div id="noData1" class="no-data-overlay">No data</div>
             <img id="processedImage1">
+        </div>
+        <div class="sar-image-container">
+            <div id="noData2" class="no-data-overlay">No data</div>
+            <img id="processedImage2">
         </div>
     </div>
 
@@ -167,6 +184,11 @@
         FLASK_BASE = isDirectAccess
             ? `http://${window.location.hostname}:5000`
             : `https://${window.location.hostname}`
+
+        document.getElementById("noData1").style.display = "flex";
+        document.getElementById("noData2").style.display = "flex";
+        document.getElementById("processedImage1").style.display = "none";
+        document.getElementById("processedImage2").style.display = "none";
 
         let lastTifFilename = "lastFile"; // Store the last processed tif_filename
         let testDurationLwEthOnb = null; // Variable to store selected duration
@@ -297,48 +319,53 @@
                 });
         }
         
-        function fetchProcessedFile() {
+        function fetchProcessedFile(cphdFilename) {
             fetch(`${FLASK_BASE}/images/tif_image.webp`)
                 .then(response => {
-                    if (!response.ok) {
-                        throw new Error("Failed to fetch image.");
-                    }
+                    if (!response.ok) throw new Error("Failed to fetch image.");
                     return response.blob();
                 })
                 .then(imageBlob => {
                     const imageUrl = URL.createObjectURL(imageBlob);
                     document.getElementById("processedImage1").src = imageUrl;
                     document.getElementById("processedImage1").style.display = "block";
-
-                    // Wait 2 seconds, then fetch and display the colorized image
-                    // setTimeout(() => {
-                    //     fetchColorizedImage();
-                    // }, 2000);
+                    document.getElementById("noData1").style.display = "none";
+                    setTimeout(() => fetchColorizedImage(cphdFilename), 3000);
                 })
-                .catch(error => {
-                    console.error("Error fetching processed image:", error);
+                .catch(() => {
                     document.getElementById("processedImage1").style.display = "none";
+                    document.getElementById("noData1").style.display = "flex";
                 });
         }
 
-        // function fetchColorizedImage() {
-        //     fetch(`${FLASK_BASE}/sar_colored_image`)
-        //         .then(response => {
-        //             if (!response.ok) {
-        //                 throw new Error("Failed to fetch colorized image.");
-        //             }
-        //             return response.blob();
-        //         })
-        //         .then(imageBlob => {
-        //             const imageUrl = URL.createObjectURL(imageBlob);
-        //             document.getElementById("processedImage2").src = imageUrl;
-        //             document.getElementById("processedImage2").style.display = "block";
-        //         })
-        //         .catch(error => {
-        //             console.error("Error fetching colorized image:", error);
-        //             document.getElementById("processedImage2").style.display = "none";
-        //         });
-        // }
+        function fetchColorizedImage(cphdFilename) {
+            if (!cphdFilename) return;
+            const timeout = 30 * 1000;
+            const interval = 2000;
+            const start = Date.now();
+            function poll() {
+                fetch(`${FLASK_BASE}/sar_colored_image?filename=${encodeURIComponent(cphdFilename)}`)
+                    .then(response => {
+                        if (!response.ok) throw new Error("not ready");
+                        return response.blob();
+                    })
+                    .then(blob => {
+                        document.getElementById("processedImage2").src = URL.createObjectURL(blob);
+                        document.getElementById("processedImage2").style.display = "block";
+                        document.getElementById("noData2").style.display = "none";
+                    })
+                    .catch(() => {
+                        if (Date.now() - start < timeout) setTimeout(poll, interval);
+                    });
+            }
+            poll();
+        }
+
+        function clearColorizedImage() {
+            document.getElementById("processedImage2").src = "";
+            document.getElementById("processedImage2").style.display = "none";
+            document.getElementById("noData2").style.display = "flex";
+        }
 
         async function sendLoad() {
             const selectedOption = document.getElementById("menuDropdown").value;
@@ -351,6 +378,9 @@
 
             // Reset images and output properties
             document.getElementById("processedImage1").src = "";
+            document.getElementById("processedImage1").style.display = "none";
+            document.getElementById("noData1").style.display = "flex";
+            clearColorizedImage();
             document.getElementById("outFileSize").textContent = "N/A";
             document.getElementById("reductionFactor").textContent = "N/A";
             document.getElementById("sizeCompared").textContent = "N/A";
@@ -406,7 +436,9 @@
         
                 // Reset images
                 document.getElementById("processedImage1").src = "";
-                // document.getElementById("processedImage2").src = "";
+                document.getElementById("processedImage1").style.display = "none";
+                document.getElementById("noData1").style.display = "flex";
+                clearColorizedImage();
                 // Reset output properties
                 document.getElementById("outFileSize").textContent = "N/A";
                 document.getElementById("reductionFactor").textContent = "N/A";
@@ -462,9 +494,9 @@
                             document.getElementById("resolution").textContent = data.files.tif_resolution.toFixed(2) + " meters";
                         }
 
-                        // Fetch and display the new tif image
-                        fetchProcessedFile();
-        
+                        // Fetch and display the new tif image, then colored image after 3s
+                        fetchProcessedFile(selectedOption);
+
                         // Update the last processed filename
                         lastTifFilename = data.files.tif_filename;
         
@@ -519,7 +551,9 @@
             document.getElementById("centreFreq").textContent = "N/A"
             // Reset images
             document.getElementById("processedImage1").src = "";
-            // document.getElementById("processedImage2").src = "";
+            document.getElementById("processedImage1").style.display = "none";
+            document.getElementById("noData1").style.display = "flex";
+            clearColorizedImage();
             // Reset output properties
             document.getElementById("outFileSize").textContent = "N/A";
             document.getElementById("reductionFactor").textContent = "N/A";
