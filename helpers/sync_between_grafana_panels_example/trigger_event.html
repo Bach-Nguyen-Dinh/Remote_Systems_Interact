@@ -1,0 +1,10 @@
+<div style="display:flex; align-items:center; justify-content:center; height:100%;">
+  <button
+    onclick="
+      localStorage.setItem('grafana-hello-pending', '1');
+      window.dispatchEvent(new CustomEvent('grafana-hello'));
+    "
+    style="padding:12px 28px; font-size:16px; cursor:pointer; border-radius:6px; background:#3498db; color:#fff; border:none;">
+    Click Me
+  </button>
+</div>

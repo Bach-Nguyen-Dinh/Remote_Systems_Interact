@@ -1,0 +1,29 @@
+<div style="display:flex; align-items:center; justify-content:center; height:100%;">
+  <span id="hello-msg" style="display:none; font-size:28px; font-weight:bold; color:#2ecc71;">
+    Hello
+  </span>
+</div>
+
+<script>
+  function showHello() {
+    var el = document.getElementById('hello-msg');
+    if (!el) return;
+    localStorage.removeItem('grafana-hello-pending');
+    clearTimeout(window._helloTimer);
+    el.style.display = 'block';
+    window._helloTimer = setTimeout(function () {
+      el.style.display = 'none';
+    }, 3000);
+  }
+
+  // Fired while panel was collapsed — show on mount
+  if (localStorage.getItem('grafana-hello-pending')) {
+    showHello();
+  }
+
+  // Fired while panel is visible
+  if (!window._helloListenerAdded) {
+    window._helloListenerAdded = true;
+    window.addEventListener('grafana-hello', showHello);
+  }
+</script>
