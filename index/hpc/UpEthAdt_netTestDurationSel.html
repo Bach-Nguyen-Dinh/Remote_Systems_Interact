@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UpEthAdt Net Test Duration Selector</title>
+    <style>
+        .container-UpEthAdtNetTestDuration {
+            display: flex;
+            align-items: flex-start;
+            gap: 20px;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            max-width: 100%;
+            padding-left: 0;
+            padding-right: 0;
+        }
+
+        .dropdown-container-UpEthAdtNetTestDuration {
+            display: flex;
+            flex-direction: column;
+            border-radius: 2px;
+        }
+
+        #durationDropdown_UpEthAdt {
+            font-size: 14px;
+            width: 200px;
+            height: 40px;
+            border-radius: 2px;
+        }
+
+        .status-container-UpEthAdtNetTestDuration {
+            font-size: 14px;
+            height: 20px;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-UpEthAdtNetTestDuration">
+        <div class="dropdown-container-UpEthAdtNetTestDuration">
+            <div class="box-container no-border-background">
+                <p>Test duration</p>
+                <select id="durationDropdown_UpEthAdt"></select>
+                <div class="status-container-UpEthAdtNetTestDuration">
+                    <p id="statusNet_UpEthAdt">&nbsp;</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let testDurationUpEthAdt = null;
+
+        function populateDurationDropdownUpEthAdt() {
+            let dropdown = document.getElementById("durationDropdown_UpEthAdt");
+            if (!dropdown) return;
+
+            dropdown.innerHTML = "";
+            dropdown.removeEventListener("change", setTestDurationUpEthAdt);
+            dropdown.addEventListener("change", setTestDurationUpEthAdt);
+
+            let defaultOption = document.createElement("option");
+            defaultOption.value = "";
+            defaultOption.textContent = "Select Duration";
+            defaultOption.disabled = true;
+            defaultOption.selected = true;
+            dropdown.appendChild(defaultOption);
+
+            for (let i = 5; i <= 60; i += 5) {
+                let option = document.createElement("option");
+                option.value = i;
+                option.textContent = `${i} seconds`;
+                dropdown.appendChild(option);
+            }
+
+            // Restore previously selected value so it survives row collapse/expand
+            try {
+                const saved = localStorage.getItem("durationUpEthAdt");
+                if (saved) {
+                    dropdown.value = saved;
+                    testDurationUpEthAdt = parseInt(saved, 10);
+                }
+            } catch (e) {}
+        }
+
+        function setTestDurationUpEthAdt() {
+            const dropdown = document.getElementById("durationDropdown_UpEthAdt");
+            testDurationUpEthAdt = parseInt(dropdown.value, 10);
+            document.getElementById("statusNet_UpEthAdt").textContent = "";
+
+            localStorage.setItem("durationUpEthAdt", dropdown.value);
+            localStorage.setItem("panelSync", JSON.stringify({
+                type: "duration",
+                value: dropdown.value
+            }));
+        }
+
+        // MutationObserver: fires only on actual DOM changes — zero cost at idle.
+        // Catches both the initial insert and any re-insert after row collapse/expand.
+        var _observer = new MutationObserver(function () {
+            var dropdown = document.getElementById("durationDropdown_UpEthAdt");
+            if (dropdown && dropdown.options.length === 0) {
+                populateDurationDropdownUpEthAdt();
+            }
+        });
+        _observer.observe(document.body, { childList: true, subtree: true });
+
+        // Also try immediately in case the element is already present
+        populateDurationDropdownUpEthAdt();
+    </script>
+</body>
+</html>
