@@ -35,8 +35,11 @@
     </div>
 
     <script>
-        const FLASK_BASE = `http://${window.location.hostname}:5000`;
-
+        const isDirectAccess = window.location.port === '3000';
+        FLASK_BASE = isDirectAccess
+            ? `http://${window.location.hostname}:5000`
+            : `https://${window.location.hostname}`
+            
         let lastShownCphd = null;
 
         function showImage(url) {
@@ -61,26 +64,24 @@
                 .catch(() => showNoData());
         }
 
-        setInterval(() => {
-            fetch(`${FLASK_BASE}/get_tif_file_properties`)
-                .then(r => r.json())
-                .then(data => {
-                    const cphd = data.cphd_filename;
-                    const tifReady = data.files && data.files.tif_filename;
-                    if (!cphd || !tifReady) {
-                        if (lastShownCphd !== null) {
-                            lastShownCphd = null;
-                            showNoData();
-                        }
-                        return;
+        async function pollLoop() {
+            while (true) {
+                try {
+                    const response = await fetch(`${FLASK_BASE}/sar_image_ready_poll`);
+                    const data = await response.json();
+                    if (data.cphd_filename && data.cphd_filename !== lastShownCphd) {
+                        lastShownCphd = data.cphd_filename;
+                        setTimeout(() => fetchColorizedImage(data.cphd_filename), 3000);
+                    } else if (!data.cphd_filename && lastShownCphd !== null) {
+                        lastShownCphd = null;
+                        showNoData();
                     }
-                    if (cphd !== lastShownCphd) {
-                        lastShownCphd = cphd;
-                        fetchColorizedImage(cphd);
-                    }
-                })
-                .catch(() => {});
-        }, 1000);
+                } catch {
+                    await new Promise(r => setTimeout(r, 2000));
+                }
+            }
+        }
+        pollLoop();
     </script>
 </body>
 </html>
