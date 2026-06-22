@@ -13,6 +13,7 @@ HOST_IP = '0.0.0.0'
 SYSINFO_PORT = 12345  # Port for system metrics
 NETTEST_PORT = 29102
 IMAGE_PORT = 55555
+SAR_LOG_PORT = 55557
 FLASK_PORT = 5000
 
 TARGET_IP = "10.42.0.101"  # Target system IP
@@ -26,13 +27,19 @@ INFLUXDB_PASSWORD = "root"
 
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 SAVE_DIR = os.path.join(CURR_DIR, "pictures")
-# Check if the "pictures" folder exists, create it if not
 if not os.path.exists(SAVE_DIR):
     os.makedirs(SAVE_DIR)
     print(f"Folder 'pictures' created at: {SAVE_DIR}")
 else:
     print(f"Folder 'pictures' already exists at: {SAVE_DIR}")
+SAR_LOGS_DIR = os.path.join(CURR_DIR, "sar_logs")
+if not os.path.exists(SAR_LOGS_DIR):
+    os.makedirs(SAR_LOGS_DIR)
+    print(f"Folder 'sar_logs' created at: {SAR_LOGS_DIR}")
+else:
+    print(f"Folder 'sar_logs' already exists at: {SAR_LOGS_DIR}")
 SAVE_PATH_TIF = os.path.join(SAVE_DIR, "tif_image.webp")
+SAR_COLORED_IMAGE_PATH = os.path.join(CURR_DIR, "sar_colored_images")
 SAVE_PATH_IPERF_LW_ETH_OB = os.path.join(CURR_DIR, "iperf3_end_result_LwEthOnb.json")
 SAVE_PATH_IPERF_UP_ETH_OB = os.path.join(CURR_DIR, "iperf3_end_result_UpEthOnb.json")
 SAVE_PATH_IPERF_LW_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_LwEthAdt.json")
@@ -43,6 +50,7 @@ message = ""
 cphd_file_list = []  # Global list to store CPHD file names
 cphd_file_properties = []  # Global list to store properties of a CPHD file
 tif_file_properties = []
+current_run_cphd = None  # CPHD filename currently being/last processed
 final_results = {
     "sender_transfer": "",
     "sender_bitrate": "",
@@ -117,13 +125,50 @@ def handle_image_process_server():
                             file_name = received_data["tif_filename"]
                             file_size_str = received_data["size"]
                             print(f"File '{file_name}' has a size of '{file_size_str}'.")
-                            # Update the dictionary to store the formatted size
                             tif_file_properties = received_data
                         else:
                             print(f"Received unknown data: {received_data}")
                     except json.JSONDecodeError as e:
                         print(f"Error decoding received data: {e}")
                 print(f"Current save path: {save_path}")
+
+def recv_exact(conn, n):
+    data = b""
+    while len(data) < n:
+        chunk = conn.recv(n - len(data))
+        if not chunk:
+            raise ConnectionError(f"Connection closed, expected {n} bytes, got {len(data)}")
+        data += chunk
+    return data
+
+def handle_sar_log_server():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind((HOST_IP, SAR_LOG_PORT))
+        server_socket.listen(1)
+        print(f"Listening for SAR logs on {HOST_IP}:{SAR_LOG_PORT}...")
+        while True:
+            conn, addr = server_socket.accept()
+            with conn:
+                try:
+                    print(f"SAR log transfer from {addr}")
+                    manifest_len = int.from_bytes(recv_exact(conn, 4), byteorder='big')
+                    manifest = json.loads(recv_exact(conn, manifest_len).decode())
+                    folder = manifest["folder"]
+                    files = manifest["files"]
+                    log_dir = os.path.join(SAR_LOGS_DIR, folder)
+                    os.makedirs(log_dir, exist_ok=True)
+                    for file_info in files:
+                        name = file_info["name"]
+                        file_size = int.from_bytes(recv_exact(conn, 8), byteorder='big')
+                        data = recv_exact(conn, file_size)
+                        save_path = os.path.join(log_dir, name)
+                        with open(save_path, 'wb') as f:
+                            f.write(data)
+                        print(f"Saved SAR log file: {save_path} ({file_size} bytes)")
+                    print(f"SAR log folder '{folder}' saved to {log_dir}")
+                except Exception as e:
+                    print(f"Error receiving SAR logs: {e}")
 
 def handle_net_test_server():
     save_path = None
@@ -288,9 +333,9 @@ def send_message():
         flag_get_image = False
         delete_all_files()
     elif message.startswith("RUN:"):
-        global tif_file_properties
+        global tif_file_properties, current_run_cphd
         flag_get_image = True
-        # clear the database for new data
+        current_run_cphd = message[4:]
         tif_file_properties = []
     elif message.startswith("NETRUN:"):
         if "LwEthOnb" in message:
@@ -307,10 +352,11 @@ def send_message():
     
 def delete_all_files():
     """Deletes all files in the SAVE_DIR directory."""
-    global cphd_file_list, cphd_file_properties, tif_file_properties
+    global cphd_file_list, cphd_file_properties, tif_file_properties, current_run_cphd
     cphd_file_list = []
     cphd_file_properties = []
     tif_file_properties = []
+    current_run_cphd = None
 
     try:
         file_list = os.listdir(SAVE_DIR)
@@ -350,7 +396,7 @@ def get_cphd_file_properties():
 @app.route('/get_tif_file_properties', methods=['GET'])
 def get_tif_file_properties():
     """Returns the properties of the latest tiff file"""
-    return jsonify({"files": tif_file_properties})
+    return jsonify({"files": tif_file_properties, "cphd_filename": current_run_cphd})
 
 # Serve static files from the SAVE_DIR
 @app.route('/images/<filename>')
@@ -360,13 +406,20 @@ def serve_image(filename):
 
 @app.route('/sar_colored_image')
 def serve_sar_colored_image():
-    """Serve the latest SAR colorized image."""
-    sar_colored_path = os.path.join(CURR_DIR, "SAR_colored_images")  # Remove the subdirectory part
-    # Find the first image file in the directory
+    """Serve the SAR colorized image matching the selected CPHD file."""
+    cphd_filename = request.args.get('filename', '')
+    if not cphd_filename:
+        return "No filename provided", 400
+
+    base_name = cphd_filename
+    if base_name.lower().endswith('.cphd'):
+        base_name = base_name[:-5]
+    colored_image_name = f"{base_name}_colered_img.webp"
+
     try:
-        files = [f for f in os.listdir(sar_colored_path) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))]
-        if files:
-            return send_from_directory(sar_colored_path, files[0])
+        image_path = os.path.join(SAR_COLORED_IMAGE_PATH, colored_image_name)
+        if os.path.exists(image_path):
+            return send_from_directory(SAR_COLORED_IMAGE_PATH, colored_image_name)
         else:
             return "No image found", 404
     except FileNotFoundError:
@@ -472,6 +525,7 @@ def run_flask_server():
 # Start all services in separate threads
 threading.Thread(target=handle_image_process_server, daemon=True).start()
 threading.Thread(target=handle_net_test_server, daemon=True).start()
+threading.Thread(target=handle_sar_log_server, daemon=True).start()
 threading.Thread(target=handle_system_metrics_server, daemon=True).start()
 threading.Thread(target=run_flask_server, daemon=True).start()
 
