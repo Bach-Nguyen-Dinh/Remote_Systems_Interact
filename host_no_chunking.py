@@ -404,6 +404,38 @@ def serve_image(filename):
     """Serve images from the SAVE_DIR directory."""
     return send_from_directory(SAVE_DIR, filename)
 
+SAR_LOG_IMAGE_TYPES = {
+    "overall_cpu_usage":    "overall_cpu_usage_",
+    "cpu_power":            "cpu_power_",
+    "cpu_cores_usage":      "cpu_cores_usage_",
+    "cpu_cores_frequency":  "cpu_cores_frequency_",
+    "cpu_temperature":      "cpu_temperature_",
+    "memory_usage":         "memory_usage_",
+}
+
+@app.route('/sar_log/image/<image_type>')
+def serve_sar_log_image(image_type):
+    if image_type not in SAR_LOG_IMAGE_TYPES:
+        return "Unknown image type", 400
+    try:
+        folders = sorted([
+            d for d in os.listdir(SAR_LOGS_DIR)
+            if os.path.isdir(os.path.join(SAR_LOGS_DIR, d))
+        ])
+    except FileNotFoundError:
+        return "No log data", 404
+    if not folders:
+        return "No log data", 404
+    folder_path = os.path.join(SAR_LOGS_DIR, folders[-1])
+    prefix = SAR_LOG_IMAGE_TYPES[image_type]
+    try:
+        matches = [f for f in os.listdir(folder_path) if f.startswith(prefix) and f.endswith('.webp')]
+    except FileNotFoundError:
+        return "Log folder not found", 404
+    if not matches:
+        return "Image not found", 404
+    return send_from_directory(folder_path, matches[0])
+
 @app.route('/sar_colored_image')
 def serve_sar_colored_image():
     """Serve the SAR colorized image matching the selected CPHD file."""

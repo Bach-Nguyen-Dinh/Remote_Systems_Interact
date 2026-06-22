@@ -38,7 +38,7 @@
             overflow: hidden;
         }
 
-        .profiler-image-container .img-profiler {
+        .profiler-image-container img-profiler {
             display: none;
             position: absolute;
             top: 0;
@@ -69,98 +69,62 @@
     <div id="wrapper">
     <div class="profiler-images-row">
         <div class="profiler-image-container">
-            <div class="no-data-overlay-profiler">No data</div>
-            <img class="img-profiler" id="profiler_overall_cpu_usage">
+            <div id="noData_profiler" class="no-data-overlay-profiler">No data</div>
+            <img id="profiler_overall_cpu_usage">
         </div>
         <div class="profiler-image-container">
-            <div class="no-data-overlay-profiler">No data</div>
-            <img class="img-profiler" id="profiler_cpu_power">
-        </div>
-    </div>
-    <div class="profiler-images-row">
-        <div class="profiler-image-container">
-            <div class="no-data-overlay-profiler">No data</div>
-            <img class="img-profiler" id="profiler_cpu_cores_usage">
-        </div>
-        <div class="profiler-image-container">
-            <div class="no-data-overlay-profiler">No data</div>
-            <img class="img-profiler" id="profiler_cpu_cores_frequency">
+            <div id="noData_profiler" class="no-data-overlay-profiler">No data</div>
+            <img id="profiler_cpu_power">
         </div>
     </div>
     <div class="profiler-images-row">
         <div class="profiler-image-container">
-            <div class="no-data-overlay-profiler">No data</div>
-            <img class="img-profiler" id="profiler_cpu_temperature">
+            <div id="noData_profiler" class="no-data-overlay-profiler">No data</div>
+            <img id="profiler_cpu_cores_usage">
         </div>
         <div class="profiler-image-container">
-            <div class="no-data-overlay-profiler">No data</div>
-            <img class="img-profiler" id="profiler_memory_usage">
+            <div id="noData_profiler" class="no-data-overlay-profiler">No data</div>
+            <img id="profiler_cpu_cores_frequency">
+        </div>
+    </div>
+    <div class="profiler-images-row">
+        <div class="profiler-image-container">
+            <div id="noData_profiler" class="no-data-overlay-profiler">No data</div>
+            <img id="profiler_cpu_temperature">
+        </div>
+        <div class="profiler-image-container">
+            <div id="noData_profiler" class="no-data-overlay-profiler">No data</div>
+            <img id="profiler_memory_usage">
         </div>
     </div>
     </div>
 
     <script>
-        (function () {
-            const isDirectAccess_profiler = window.location.port === '3000';
-            const FLASK_BASE_PROFILER = isDirectAccess_profiler
-                ? `http://${window.location.hostname}:5000`
-                : `https://${window.location.hostname}`;
+        const isDirectAccess = window.location.port === '3000';
+        FLASK_BASE = isDirectAccess
+            ? `http://${window.location.hostname}:5000`
+            : `https://${window.location.hostname}`
 
-            const IMAGE_MAP = [
-                { id: 'profiler_overall_cpu_usage',   type: 'overall_cpu_usage'   },
-                { id: 'profiler_cpu_power',            type: 'cpu_power'           },
-                { id: 'profiler_cpu_cores_usage',      type: 'cpu_cores_usage'     },
-                { id: 'profiler_cpu_cores_frequency',  type: 'cpu_cores_frequency' },
-                { id: 'profiler_cpu_temperature',      type: 'cpu_temperature'     },
-                { id: 'profiler_memory_usage',         type: 'memory_usage'        },
-            ];
+        function updateAnalysis() {
+            fetch(`${FLASK_BASE}/process_analysis`)
+                .then(response => {
+                    if (!response.ok) throw new Error("Failed to fetch image.");
+                    return response.blob();
+                })
+                
+        }
 
-            function clearAnalysis() {
-                IMAGE_MAP.forEach(({ id }) => {
-                    const img = document.getElementById(id);
-                    img.src = '';
-                    img.style.display = 'none';
-                    img.previousElementSibling.style.display = 'flex';
-                });
-            }
+        // Fired while panel was collapsed — show on mount
+        if (localStorage.getItem('update_analysis_pending')) {
+            updateAnalysis();
+        }
 
-            function updateAnalysis() {
-                clearAnalysis();
-                const bust = Date.now();
-                IMAGE_MAP.forEach(({ id, type }) => {
-                    const img = document.getElementById(id);
-                    img.onload = () => {
-                        img.style.display = 'block';
-                        img.previousElementSibling.style.display = 'none';
-                    };
-                    img.onerror = () => {
-                        img.src = '';
-                        img.style.display = 'none';
-                        img.previousElementSibling.style.display = 'flex';
-                    };
-                    img.src = `${FLASK_BASE_PROFILER}/sar_log/image/${type}?t=${bust}`;
-                });
-            }
-
-            // Fired while panel was collapsed — show on mount
-            if (localStorage.getItem('update_analysis_pending')) {
-                localStorage.removeItem('update_analysis_pending');
-                updateAnalysis();
-            }
-
-            // Replace with fresh closure each render so the listener always uses
-            // the current updateAnalysis (stale closures break after re-injection)
-            if (window._analysisUpdateHandler) {
-                window.removeEventListener('update_analysis', window._analysisUpdateHandler);
-            }
-            window._analysisUpdateHandler = function () {
-                // If DOM is detached (row collapsed), preserve flag for on-mount check
-                if (!document.getElementById('profiler_overall_cpu_usage')) return;
-                localStorage.removeItem('update_analysis_pending');
-                updateAnalysis();
-            };
-            window.addEventListener('update_analysis', window._analysisUpdateHandler);
-        })();
+        // Fired while panel is visible
+        if (!window._helloListenerAdded) {
+            window._helloListenerAdded = true;
+            window.addEventListener('update_analysis', updateAnalysis);
+        }
     </script>
 </body>
 </html>
+
