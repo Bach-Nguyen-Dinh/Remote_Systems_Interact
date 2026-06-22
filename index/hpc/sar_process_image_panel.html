@@ -38,7 +38,7 @@
         .images-row {
             display: flex;
             flex-direction: row;
-            gap: 20px;
+            gap: 8px;
             flex: 1;
             height: 100%;
             min-height: 0;
@@ -181,6 +181,86 @@
         document.getElementById("processedImage2").style.display = "none";
 
         let lastTifFilename = "lastFile"; // Store the last processed tif_filename
+
+        const SAR_STATE_KEY = 'sarPanelState_v1';
+
+        function saveState() {
+            const getText = id => { const el = document.getElementById(id); return el ? el.textContent : null; };
+            const select = document.getElementById("menuDropdown");
+            const img1 = document.getElementById("processedImage1");
+            const img2 = document.getElementById("processedImage2");
+            const state = {
+                lastTifFilename: lastTifFilename,
+                status: getText("status"),
+                files: select ? Array.from(select.options).map(o => o.value).filter(v => v) : [],
+                selectedFile: select ? select.value : null,
+                fileProps: {
+                    fileSize: getText("fileSize"),
+                    totalPulses: getText("totalPulses"),
+                    centreFreq: getText("centreFreq"),
+                    imageSize: getText("imageSize"),
+                    resolution: getText("resolution"),
+                    areaSize: getText("areaSize"),
+                },
+                outputProps: {
+                    outFileSize: getText("outFileSize"),
+                    reductionFactor: getText("reductionFactor"),
+                    sizeCompared: getText("sizeCompared"),
+                    sarProcTime: getText("sarProcTime"),
+                },
+                showImage1: img1 ? img1.style.display !== "none" : false,
+                showImage2: img2 ? img2.style.display !== "none" : false,
+                cphdFilename: select ? select.value : null,
+            };
+            localStorage.setItem(SAR_STATE_KEY, JSON.stringify(state));
+        }
+
+        function applyTextState(state) {
+            const setText = (id, val) => { const el = document.getElementById(id); if (el && val != null) el.textContent = val; };
+            setText("status", state.status);
+            const select = document.getElementById("menuDropdown");
+            if (select && state.files && state.files.length > 0) {
+                select.innerHTML = '';
+                state.files.forEach(file => {
+                    const opt = document.createElement('option');
+                    opt.value = file;
+                    opt.textContent = file;
+                    select.appendChild(opt);
+                });
+                if (state.selectedFile) select.value = state.selectedFile;
+            }
+            const fp = state.fileProps || {};
+            setText("fileSize", fp.fileSize);
+            setText("totalPulses", fp.totalPulses);
+            setText("centreFreq", fp.centreFreq);
+            setText("imageSize", fp.imageSize);
+            setText("resolution", fp.resolution);
+            setText("areaSize", fp.areaSize);
+            const op = state.outputProps || {};
+            setText("outFileSize", op.outFileSize);
+            setText("reductionFactor", op.reductionFactor);
+            setText("sizeCompared", op.sizeCompared);
+            setText("sarProcTime", op.sarProcTime);
+        }
+
+        function restoreState() {
+            const raw = localStorage.getItem(SAR_STATE_KEY);
+            if (!raw) return;
+            try {
+                const state = JSON.parse(raw);
+                if (state.lastTifFilename) lastTifFilename = state.lastTifFilename;
+                // Restore images by re-fetching from Flask (server retains them until reset)
+                if (state.showImage1 && state.cphdFilename) {
+                    fetchProcessedFile(state.cphdFilename);
+                } else if (state.showImage2 && state.cphdFilename) {
+                    fetchColorizedImage(state.cphdFilename);
+                }
+                // Restore text values after a short delay to allow other panels to render
+                setTimeout(() => applyTextState(state), 200);
+            } catch (e) {
+                console.error("SAR state restore error:", e);
+            }
+        }
         let testDurationLwEthOnb = null; // Variable to store selected duration
         let testDurationUpEthOnb = null;
         let sarProcTimer = null;  // SAR run flag
@@ -318,6 +398,7 @@
                     document.getElementById("processedImage1").src = imageUrl;
                     document.getElementById("processedImage1").style.display = "block";
                     document.getElementById("noData1").style.display = "none";
+                    saveState();
                     setTimeout(() => fetchColorizedImage(cphdFilename), 3000);
                 })
                 .catch(() => {
@@ -341,6 +422,7 @@
                         document.getElementById("processedImage2").src = URL.createObjectURL(blob);
                         document.getElementById("processedImage2").style.display = "block";
                         document.getElementById("noData2").style.display = "none";
+                        saveState();
                     })
                     .catch(() => {
                         if (Date.now() - start < timeout) setTimeout(poll, interval);
@@ -390,6 +472,7 @@
                     if (data.files && data.files.filename === selectedOption) {
                         fetchFileSize();
                         statusElement.textContent = "Command sent... Load.";
+                        setTimeout(saveState, 100);
                         return;
                     }
                     await new Promise(resolve => setTimeout(resolve, 500));
@@ -482,6 +565,8 @@
                             document.getElementById("resolution").textContent = data.files.tif_resolution.toFixed(2) + " meters";
                         }
 
+                        saveState();
+
                         // Fetch and display the new tif image, then colored image after 3s
                         fetchProcessedFile(selectedOption);
 
@@ -508,6 +593,7 @@
 
         function resetMenu() {
             lastTifFilename = "lastFile";
+            localStorage.removeItem(SAR_STATE_KEY);
             const statusElement = document.getElementById("status");
 
             // Stop processing timer if running
@@ -1413,6 +1499,25 @@
                 console.error('Error:', error);
                 document.getElementById("statusNet_UpEthAdtBw").innerText = "Error sending";
             });
+        }
+
+        restoreState();
+
+        // Grafana re-inserts panel HTML on row expand without re-executing scripts.
+        // This observer survives in global scope and triggers restore when the panel re-appears.
+        if (!window._sarPanelObserver) {
+            window._sarPanelObserver = new MutationObserver((mutations) => {
+                for (const mutation of mutations) {
+                    for (const node of mutation.addedNodes) {
+                        if (node.nodeType !== 1) continue;
+                        if (node.id === 'processedImage1' || node.querySelector('#processedImage1')) {
+                            if (localStorage.getItem(SAR_STATE_KEY)) restoreState();
+                            return;
+                        }
+                    }
+                }
+            });
+            window._sarPanelObserver.observe(document.body, { childList: true, subtree: true });
         }
 
         window.addEventListener("storage", (e) => {
