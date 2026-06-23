@@ -331,6 +331,9 @@
                     document.getElementById("processedImage1").style.display = "block";
                     document.getElementById("noData1").style.display = "none";
                     setTimeout(() => fetchColorizedImage(cphdFilename), 3000);
+                    // Trigger process analysis panel (same Grafana window — custom event works)
+                    localStorage.setItem('update_analysis_pending', '1');
+                    window.dispatchEvent(new CustomEvent('update_analysis'));
                 })
                 .catch(() => {
                     document.getElementById("processedImage1").style.display = "none";
