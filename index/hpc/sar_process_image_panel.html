@@ -170,7 +170,7 @@
     </div>
 
     <script>
-        const isDirectAccess = window.location.port === '3000';
+        var isDirectAccess = window.location.port === '3000';
         FLASK_BASE = isDirectAccess
             ? `http://${window.location.hostname}:5000`
             : `https://${window.location.hostname}`
@@ -180,91 +180,86 @@
         document.getElementById("processedImage1").style.display = "none";
         document.getElementById("processedImage2").style.display = "none";
 
-        let lastTifFilename = "lastFile"; // Store the last processed tif_filename
+        var lastTifFilename = "lastFile";
+        var lastCphdFilename = null;
+        var sarInputProps = null;   // CPHD input file properties
+        var sarOutputProps = null;  // TIF output properties
+        var sarShowImage1 = false;
+        var sarShowImage2 = false;
 
-        const SAR_STATE_KEY = 'sarPanelState_v1';
+        var SAR_STATE_KEY = 'sarPanelState_v1';
 
         function saveState() {
-            const getText = id => { const el = document.getElementById(id); return el ? el.textContent : null; };
-            const select = document.getElementById("menuDropdown");
-            const img1 = document.getElementById("processedImage1");
-            const img2 = document.getElementById("processedImage2");
-            const state = {
+            localStorage.setItem(SAR_STATE_KEY, JSON.stringify({
                 lastTifFilename: lastTifFilename,
-                status: getText("status"),
-                files: select ? Array.from(select.options).map(o => o.value).filter(v => v) : [],
-                selectedFile: select ? select.value : null,
-                fileProps: {
-                    fileSize: getText("fileSize"),
-                    totalPulses: getText("totalPulses"),
-                    centreFreq: getText("centreFreq"),
-                    imageSize: getText("imageSize"),
-                    resolution: getText("resolution"),
-                    areaSize: getText("areaSize"),
-                },
-                outputProps: {
-                    outFileSize: getText("outFileSize"),
-                    reductionFactor: getText("reductionFactor"),
-                    sizeCompared: getText("sizeCompared"),
-                    sarProcTime: getText("sarProcTime"),
-                },
-                showImage1: img1 ? img1.style.display !== "none" : false,
-                showImage2: img2 ? img2.style.display !== "none" : false,
-                cphdFilename: select ? select.value : null,
-            };
-            localStorage.setItem(SAR_STATE_KEY, JSON.stringify(state));
+                cphdFilename: lastCphdFilename,
+                inputProps: sarInputProps,
+                outputProps: sarOutputProps,
+                showImage1: sarShowImage1,
+                showImage2: sarShowImage2,
+            }));
         }
 
-        function applyTextState(state) {
-            const setText = (id, val) => { const el = document.getElementById(id); if (el && val != null) el.textContent = val; };
-            setText("status", state.status);
-            const select = document.getElementById("menuDropdown");
-            if (select && state.files && state.files.length > 0) {
-                select.innerHTML = '';
-                state.files.forEach(file => {
-                    const opt = document.createElement('option');
-                    opt.value = file;
-                    opt.textContent = file;
-                    select.appendChild(opt);
-                });
-                if (state.selectedFile) select.value = state.selectedFile;
+        function clearState() {
+            sarInputProps = null;
+            sarOutputProps = null;
+            sarShowImage1 = false;
+            sarShowImage2 = false;
+            lastCphdFilename = null;
+            localStorage.removeItem(SAR_STATE_KEY);
+        }
+
+        function applyTextState() {
+            var setText = function(id, val) { var el = document.getElementById(id); if (el && val != null) el.textContent = val; };
+            if (sarInputProps) {
+                setText("fileSize", sarInputProps.fileSize);
+                setText("totalPulses", sarInputProps.totalPulses);
+                setText("centreFreq", sarInputProps.centreFreq);
+                setText("imageSize", sarInputProps.imageSize);
+                setText("resolution", sarInputProps.resolution);
+                setText("areaSize", sarInputProps.areaSize);
             }
-            const fp = state.fileProps || {};
-            setText("fileSize", fp.fileSize);
-            setText("totalPulses", fp.totalPulses);
-            setText("centreFreq", fp.centreFreq);
-            setText("imageSize", fp.imageSize);
-            setText("resolution", fp.resolution);
-            setText("areaSize", fp.areaSize);
-            const op = state.outputProps || {};
-            setText("outFileSize", op.outFileSize);
-            setText("reductionFactor", op.reductionFactor);
-            setText("sizeCompared", op.sizeCompared);
-            setText("sarProcTime", op.sarProcTime);
+            if (sarOutputProps) {
+                setText("outFileSize", sarOutputProps.outFileSize);
+                setText("reductionFactor", sarOutputProps.reductionFactor);
+                setText("sizeCompared", sarOutputProps.sizeCompared);
+                setText("sarProcTime", sarOutputProps.sarProcTime);
+            }
         }
 
         function restoreState() {
-            const raw = localStorage.getItem(SAR_STATE_KEY);
+            var raw = localStorage.getItem(SAR_STATE_KEY);
             if (!raw) return;
             try {
-                const state = JSON.parse(raw);
+                var state = JSON.parse(raw);
                 if (state.lastTifFilename) lastTifFilename = state.lastTifFilename;
-                // Restore images by re-fetching from Flask (server retains them until reset)
-                if (state.showImage1 && state.cphdFilename) {
-                    fetchProcessedFile(state.cphdFilename);
-                } else if (state.showImage2 && state.cphdFilename) {
+                if (state.cphdFilename) lastCphdFilename = state.cphdFilename;
+                if (state.inputProps) sarInputProps = state.inputProps;
+                if (state.outputProps) sarOutputProps = state.outputProps;
+                if (state.showImage1) {
+                    sarShowImage1 = true;
+                    fetch(FLASK_BASE + '/images/tif_image.webp')
+                        .then(function(r) { if (!r.ok) throw new Error(); return r.blob(); })
+                        .then(function(blob) {
+                            document.getElementById("processedImage1").src = URL.createObjectURL(blob);
+                            document.getElementById("processedImage1").style.display = "block";
+                            document.getElementById("noData1").style.display = "none";
+                        })
+                        .catch(function() {});
+                }
+                if (state.showImage2 && state.cphdFilename) {
+                    sarShowImage2 = true;
                     fetchColorizedImage(state.cphdFilename);
                 }
-                // Restore text values after a short delay to allow other panels to render
-                setTimeout(() => applyTextState(state), 200);
+                setTimeout(applyTextState, 200);
             } catch (e) {
                 console.error("SAR state restore error:", e);
             }
         }
-        let testDurationLwEthOnb = null; // Variable to store selected duration
-        let testDurationUpEthOnb = null;
-        let sarProcTimer = null;  // SAR run flag
-        let sarProcStartTime = null;  // store the start time for SAR processing
+        var testDurationLwEthOnb = null; // Variable to store selected duration
+        var testDurationUpEthOnb = null;
+        var sarProcTimer = null;  // SAR run flag
+        var sarProcStartTime = null;  // store the start time for SAR processing
         
         function fetchFileList() {
             const statusElement = document.getElementById("status");
@@ -333,58 +328,39 @@
         }
 
         function fetchFileSize() {
-            const selectedFile = document.getElementById("menuDropdown").value;
+            var selectedFile = document.getElementById("menuDropdown").value;
             if (!selectedFile) return;
 
-            fetch(`${FLASK_BASE}/get_cphd_file_properties`)
-                .then(response => response.json())
-                .then(data => {
+            fetch(FLASK_BASE + '/get_cphd_file_properties')
+                .then(function(response) { return response.json(); })
+                .then(function(data) {
+                    var props = { fileSize: 'N/A', totalPulses: 'N/A', centreFreq: 'N/A', imageSize: 'N/A', resolution: 'N/A', areaSize: 'N/A' };
                     if (data.files.filename === selectedFile) {
-                        document.getElementById("fileSize").textContent = data.files.size;
+                        props.fileSize = data.files.size;
                         if (data.files.metadata) {
-                            const m = data.files.metadata;
-                            document.getElementById("totalPulses").textContent = m.numVectors != null ? m.numVectors.toLocaleString() : "N/A";
+                            var m = data.files.metadata;
+                            props.totalPulses = m.numVectors != null ? m.numVectors.toLocaleString() : 'N/A';
                             if (m.fxC != null) {
-                                const freqGHz = (m.fxC / 1e9).toFixed(1);
-                                const band = getFrequencyBand(m.fxC);
-                                document.getElementById("centreFreq").textContent = freqGHz + " GHz" + (band ? " (" + band + " band)" : "");
-                            } else {
-                                document.getElementById("centreFreq").textContent = "N/A";
+                                var band = getFrequencyBand(m.fxC);
+                                props.centreFreq = (m.fxC / 1e9).toFixed(1) + ' GHz' + (band ? ' (' + band + ' band)' : '');
                             }
-                            document.getElementById("imageSize").textContent = (m.numLines != null && m.numSamples != null) ? m.numLines + " x " + m.numSamples : "N/A";
-                            document.getElementById("resolution").textContent = m.lineSpacing != null ? m.lineSpacing.toFixed(2) + " meters" : "N/A";
+                            props.imageSize = (m.numLines != null && m.numSamples != null) ? m.numLines + ' x ' + m.numSamples : 'N/A';
+                            props.resolution = m.lineSpacing != null ? m.lineSpacing.toFixed(2) + ' meters' : 'N/A';
                             if (m.numLines != null && m.lineSpacing != null && m.numSamples != null && m.sampleSpacing != null) {
-                                const areaSqM = m.numLines * m.lineSpacing * m.numSamples * m.sampleSpacing;
-                                const areaSqKm = areaSqM / 1e6;
-                                document.getElementById("areaSize").textContent = areaSqKm.toFixed(2) + " km²";
-                            } else {
-                                document.getElementById("areaSize").textContent = "N/A";
+                                props.areaSize = (m.numLines * m.lineSpacing * m.numSamples * m.sampleSpacing / 1e6).toFixed(2) + ' km²';
                             }
-                        } else {
-                            document.getElementById("totalPulses").textContent = "N/A";
-                            document.getElementById("centreFreq").textContent = "N/A";
-                            document.getElementById("imageSize").textContent = "N/A";
-                            document.getElementById("resolution").textContent = "N/A";
-                            document.getElementById("areaSize").textContent = "N/A";
                         }
-                    } else {
-                        document.getElementById("fileSize").textContent = "N/A";
-                        document.getElementById("totalPulses").textContent = "N/A";
-                        document.getElementById("centreFreq").textContent = "N/A";
-                        document.getElementById("imageSize").textContent = "N/A";
-                        document.getElementById("resolution").textContent = "N/A";
-                        document.getElementById("areaSize").textContent = "N/A";
                     }
+                    document.getElementById("fileSize").textContent = props.fileSize;
+                    document.getElementById("totalPulses").textContent = props.totalPulses;
+                    document.getElementById("centreFreq").textContent = props.centreFreq;
+                    document.getElementById("imageSize").textContent = props.imageSize;
+                    document.getElementById("resolution").textContent = props.resolution;
+                    document.getElementById("areaSize").textContent = props.areaSize;
+                    sarInputProps = props;
+                    saveState();
                 })
-                .catch(error => {
-                    console.error("Error fetching file size:", error);
-                    document.getElementById("fileSize").textContent = "N/A";
-                    document.getElementById("totalPulses").textContent = "N/A";
-                    document.getElementById("centreFreq").textContent = "N/A";
-                    document.getElementById("imageSize").textContent = "N/A";
-                    document.getElementById("resolution").textContent = "N/A";
-                    document.getElementById("areaSize").textContent = "N/A";
-                });
+                .catch(function(error) { console.error("Error fetching file size:", error); });
         }
         
         function fetchProcessedFile(cphdFilename) {
@@ -398,9 +374,9 @@
                     document.getElementById("processedImage1").src = imageUrl;
                     document.getElementById("processedImage1").style.display = "block";
                     document.getElementById("noData1").style.display = "none";
+                    sarShowImage1 = true;
                     saveState();
                     setTimeout(() => fetchColorizedImage(cphdFilename), 3000);
-                    // Trigger process analysis panel (same Grafana window — custom event works)
                     localStorage.setItem('update_analysis_pending', '1');
                     window.dispatchEvent(new CustomEvent('update_analysis'));
                 })
@@ -425,6 +401,7 @@
                         document.getElementById("processedImage2").src = URL.createObjectURL(blob);
                         document.getElementById("processedImage2").style.display = "block";
                         document.getElementById("noData2").style.display = "none";
+                        sarShowImage2 = true;
                         saveState();
                     })
                     .catch(() => {
@@ -448,6 +425,9 @@
                 statusElement.textContent = "Please select a file first.";
                 return;
             }
+
+            // Clear all saved state — new load session
+            clearState();
 
             // Reset images and output properties
             document.getElementById("processedImage1").src = "";
@@ -475,7 +455,6 @@
                     if (data.files && data.files.filename === selectedOption) {
                         fetchFileSize();
                         statusElement.textContent = "Command sent... Load.";
-                        setTimeout(saveState, 100);
                         return;
                     }
                     await new Promise(resolve => setTimeout(resolve, 500));
@@ -488,16 +467,21 @@
         }
 
         async function sendRun() {
-            lastTifFilename = null; // Force re-fetch and update
-            
+            lastTifFilename = null;
+
             const selectedOption = document.getElementById("menuDropdown").value;
             const statusElement = document.getElementById("status");
-        
+
             if (!selectedOption) {
                 statusElement.textContent = "Please select a file first.";
                 return;
             }
-        
+            lastCphdFilename = selectedOption;
+            // Clear output state — new run session
+            sarOutputProps = null;
+            sarShowImage1 = false;
+            sarShowImage2 = false;
+
             try {
                 // Send the "RUN" command
                 await fetch(`${FLASK_BASE}/send_message`, {
@@ -559,15 +543,21 @@
                         document.getElementById("sarProcTime").textContent = finalElapsed.toFixed(2) + "s";
         
                         // Update output file properties
-                        document.getElementById("outFileSize").textContent = data.files.size;
-                        document.getElementById("reductionFactor").textContent = "x" + data.files.reduction_scale + " or " + data.files.reduction_factor + "%";
-                        document.getElementById("sizeCompared").textContent = data.files.size_compared + "%";
-                        // document.getElementById("sarProcTime").textContent = data.files.sar_proc_time + "s";
+                        var outSize = data.files.size;
+                        var outReduction = "x" + data.files.reduction_scale + " or " + data.files.reduction_factor + "%";
+                        var outSizeCompared = data.files.size_compared + "%";
+                        var outProcTime = finalElapsed.toFixed(2) + "s";
+                        document.getElementById("outFileSize").textContent = outSize;
+                        document.getElementById("reductionFactor").textContent = outReduction;
+                        document.getElementById("sizeCompared").textContent = outSizeCompared;
 
                         if (data.files.tif_resolution != null) {
-                            document.getElementById("resolution").textContent = data.files.tif_resolution.toFixed(2) + " meters";
+                            var res = data.files.tif_resolution.toFixed(2) + " meters";
+                            document.getElementById("resolution").textContent = res;
+                            if (sarInputProps) sarInputProps.resolution = res;
                         }
 
+                        sarOutputProps = { outFileSize: outSize, reductionFactor: outReduction, sizeCompared: outSizeCompared, sarProcTime: outProcTime };
                         saveState();
 
                         // Fetch and display the new tif image, then colored image after 3s
@@ -596,7 +586,7 @@
 
         function resetMenu() {
             lastTifFilename = "lastFile";
-            localStorage.removeItem(SAR_STATE_KEY);
+            clearState();
             const statusElement = document.getElementById("status");
 
             // Stop processing timer if running
