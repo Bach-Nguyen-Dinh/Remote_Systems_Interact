@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SAR Option Selector</title>
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .dropdown-container-sar-proc {
+            display: flex;
+            flex-direction: column;
+            border-radius: 2px;
+        }
+
+        .select-sar-proc {
+            font-size: 14px;
+            width: 100%;
+            max-width: 270px;
+            height: 40px;
+            display: flex;
+            border-radius: 2px;
+            box-sizing: border-box;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+    </style>
+</head>
+<body>
+    <div class="dropdown-container-sar-proc">
+        <h2>Input</h2>
+        <select id="menuDropdown" class="select-sar-proc">
+            <option value="" disabled selected>Select input data</option>
+        </select>
+        <div class="status-container">
+            <p id="status">&nbsp;</p>
+        </div>
+        <div class="status-info">
+            <p><strong>CPHD File Size:</strong> <span id="fileSize">N/A</span></p>
+            <p><strong>Pulses:</strong> <span id="totalPulses">N/A</span></p>
+            <p><strong>Frequency:</strong> <span id="centreFreq">N/A</span></p>
+            <p><strong>Image Size:</strong> <span id="imageSize">N/A</span></p>
+            <p><strong>Resolution:</strong> <span id="resolution">N/A</span></p>
+            <p><strong>Area Size:</strong> <span id="areaSize">N/A</span></p>
+        </div>
+    </div>
+    <script>
+        
+    </script>
+</body>
+</html>
