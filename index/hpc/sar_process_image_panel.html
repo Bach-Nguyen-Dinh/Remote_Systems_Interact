@@ -19,15 +19,6 @@
             border-radius: 2px;
         }
 
-        select {
-            font-size: 14px;
-            /* padding: 10px; */
-            width: 270px;
-            height: 40px;
-            display: flex;
-            border-radius: 2px;
-        }
-
         .status-container {
             font-size: 14px;
             height: 20px;
@@ -76,58 +67,6 @@
             color: rgba(204, 204, 220, 0.65);
             font-size: 18px;
             pointer-events: none;
-        }
-
-        .button-container {
-            display: flex;
-            justify-content: center;
-        }
-
-        /* Style for all buttons */
-        .button-container button {
-            width: 80px;
-            height: 40px;
-            border-radius: 2px;
-            border: none;
-            cursor: pointer;
-        }
-
-        /* First container's buttons: Refresh and Load */
-        .button-container:nth-child(1) button {
-            background-color: #2372cc;
-            color: white;
-        }
-
-        .button-container:nth-child(1) button:hover {
-            background-color: #3696ff;
-        }
-
-        .button-container:nth-child(1) button:nth-child(2) {
-            background-color: #218838;
-            color: white;
-        }
-
-        .button-container:nth-child(1) button:nth-child(2):hover {
-            background-color: #34d058;
-        }
-
-        /* Second container's buttons: Run and Reset */
-        .button-container:nth-child(2) button:nth-child(1) {
-            background-color: #2372cc;
-            color: white;
-        }
-
-        .button-container:nth-child(2) button:nth-child(1):hover {
-            background-color: #3696ff;
-        }
-
-        .button-container:nth-child(2) button:nth-child(2) {
-            background-color: #ca2715;
-            color: white;
-        }
-
-        .button-container:nth-child(2) button:nth-child(2):hover {
-            background-color: #ff4c47;
         }
         
         /* Make each <p> for the information data a flex container for label and data alignment */
@@ -187,6 +126,11 @@
         var sarShowImage1 = false;
         var sarShowImage2 = false;
 
+        var testDurationLwEthOnb = null; // Variable to store selected duration
+        var testDurationUpEthOnb = null;
+        var sarProcTimer = null;  // SAR run flag
+        var sarProcStartTime = null;  // store the start time for SAR processing
+
         var SAR_STATE_KEY = 'sarPanelState_v1';
 
         function saveState() {
@@ -212,12 +156,12 @@
         function applyTextState() {
             var setText = function(id, val) { var el = document.getElementById(id); if (el && val != null) el.textContent = val; };
             if (sarInputProps) {
-                setText("fileSize", sarInputProps.fileSize);
-                setText("totalPulses", sarInputProps.totalPulses);
-                setText("centreFreq", sarInputProps.centreFreq);
-                setText("imageSize", sarInputProps.imageSize);
+                setText("cphd_file_size", sarInputProps.cphd_file_size);
+                setText("total_pulses", sarInputProps.total_pulses);
+                setText("centre_freq", sarInputProps.centre_freq);
+                setText("img_size", sarInputProps.img_size);
                 setText("resolution", sarInputProps.resolution);
-                setText("areaSize", sarInputProps.areaSize);
+                setText("area_size", sarInputProps.area_size);
             }
             if (sarOutputProps) {
                 setText("outFileSize", sarOutputProps.outFileSize);
@@ -256,56 +200,6 @@
                 console.error("SAR state restore error:", e);
             }
         }
-        var testDurationLwEthOnb = null; // Variable to store selected duration
-        var testDurationUpEthOnb = null;
-        var sarProcTimer = null;  // SAR run flag
-        var sarProcStartTime = null;  // store the start time for SAR processing
-        
-        function fetchFileList() {
-            const statusElement = document.getElementById("status");
-            statusElement.textContent = "Fetching file list..."; // Show status message
-
-            fetch(`${FLASK_BASE}/send_message`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ message: "4" })  
-            })
-            .then(() => {
-                setTimeout(() => {
-                    fetch(`${FLASK_BASE}/get_cphd_files`)
-                        .then(response => response.json())
-                        .then(data => {
-                            console.log("Fetched CPHD files:", data.files);
-
-                            const select = document.getElementById("menuDropdown");
-                            select.innerHTML = ''; // Clear existing options
-
-                            if (data.files.length === 0) {
-                                statusElement.textContent = "No CPHD files found.";
-                                select.innerHTML = '<option value="" disabled>No files available</option>';
-                                document.getElementById("fileSize").textContent = "N/A";
-                            } else {
-                                statusElement.textContent = `Fetched ${data.files.length} file(s).`;
-
-                                data.files.forEach(file => {
-                                    const option = document.createElement('option');
-                                    option.value = file;
-                                    option.textContent = file;
-                                    select.appendChild(option);
-                                });
-                            }
-                        })
-                        .catch(error => {
-                            console.error('Error fetching CPHD files:', error);
-                            statusElement.textContent = "Error fetching file list.";
-                        });
-                }, 500);
-            })
-            .catch(error => {
-                console.error("Error sending fetch command:", error);
-                statusElement.textContent = "Error requesting file fetch.";
-            });
-        }
 
         function getFrequencyBand(freqHz) {
             const bands = [
@@ -325,42 +219,6 @@
             ];
             const match = bands.find(b => freqHz >= b.min && freqHz < b.max);
             return match ? match.name : null;
-        }
-
-        function fetchFileSize() {
-            var selectedFile = document.getElementById("menuDropdown").value;
-            if (!selectedFile) return;
-
-            fetch(FLASK_BASE + '/get_cphd_file_properties')
-                .then(function(response) { return response.json(); })
-                .then(function(data) {
-                    var props = { fileSize: 'N/A', totalPulses: 'N/A', centreFreq: 'N/A', imageSize: 'N/A', resolution: 'N/A', areaSize: 'N/A' };
-                    if (data.files.filename === selectedFile) {
-                        props.fileSize = data.files.size;
-                        if (data.files.metadata) {
-                            var m = data.files.metadata;
-                            props.totalPulses = m.numVectors != null ? m.numVectors.toLocaleString() : 'N/A';
-                            if (m.fxC != null) {
-                                var band = getFrequencyBand(m.fxC);
-                                props.centreFreq = (m.fxC / 1e9).toFixed(1) + ' GHz' + (band ? ' (' + band + ' band)' : '');
-                            }
-                            props.imageSize = (m.numLines != null && m.numSamples != null) ? m.numLines + ' x ' + m.numSamples : 'N/A';
-                            props.resolution = m.lineSpacing != null ? m.lineSpacing.toFixed(2) + ' meters' : 'N/A';
-                            if (m.numLines != null && m.lineSpacing != null && m.numSamples != null && m.sampleSpacing != null) {
-                                props.areaSize = (m.numLines * m.lineSpacing * m.numSamples * m.sampleSpacing / 1e6).toFixed(2) + ' km²';
-                            }
-                        }
-                    }
-                    document.getElementById("fileSize").textContent = props.fileSize;
-                    document.getElementById("totalPulses").textContent = props.totalPulses;
-                    document.getElementById("centreFreq").textContent = props.centreFreq;
-                    document.getElementById("imageSize").textContent = props.imageSize;
-                    document.getElementById("resolution").textContent = props.resolution;
-                    document.getElementById("areaSize").textContent = props.areaSize;
-                    sarInputProps = props;
-                    saveState();
-                })
-                .catch(function(error) { console.error("Error fetching file size:", error); });
         }
         
         function fetchProcessedFile(cphdFilename) {
@@ -417,59 +275,10 @@
             document.getElementById("noData2").style.display = "flex";
         }
 
-        async function sendLoad() {
-            const selectedOption = document.getElementById("menuDropdown").value;
-            const statusElement = document.getElementById("status");
-
-            if (!selectedOption) {
-                statusElement.textContent = "Please select a file first.";
-                return;
-            }
-
-            // Clear all saved state — new load session
-            clearState();
-
-            // Reset images and output properties
-            document.getElementById("processedImage1").src = "";
-            document.getElementById("processedImage1").style.display = "none";
-            document.getElementById("noData1").style.display = "flex";
-            clearColorizedImage();
-            document.getElementById("outFileSize").textContent = "N/A";
-            document.getElementById("reductionFactor").textContent = "N/A";
-            document.getElementById("sizeCompared").textContent = "N/A";
-            document.getElementById("sarProcTime").textContent = "N/A";
-
-            try {
-                await fetch(`${FLASK_BASE}/send_message`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ message: `SIZE:${selectedOption}` })
-                });
-                statusElement.textContent = "Loading file properties...";
-
-                const startTime = Date.now();
-                const timeout = 30 * 1000;
-                while (Date.now() - startTime < timeout) {
-                    const response = await fetch(`${FLASK_BASE}/get_cphd_file_properties`);
-                    const data = await response.json();
-                    if (data.files && data.files.filename === selectedOption) {
-                        fetchFileSize();
-                        statusElement.textContent = "Command sent... Load.";
-                        return;
-                    }
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                }
-                statusElement.textContent = "Timeout waiting for file properties.";
-            } catch (error) {
-                console.error("Error:", error);
-                statusElement.textContent = "Error sending command.";
-            }
-        }
-
         async function sendRun() {
             lastTifFilename = null;
 
-            const selectedOption = document.getElementById("menuDropdown").value;
+            const selectedOption = document.getElementById("menu_sar_input_data").value;
             const statusElement = document.getElementById("status");
 
             if (!selectedOption) {
@@ -608,14 +417,14 @@
                 console.error("Error:", error);
                 statusElement.textContent = "Error sending command.";
             });
-            document.getElementById("menuDropdown").innerHTML = '<option value="" disabled selected>Click "Refresh" to fetch</option>';
+            document.getElementById("menu_sar_input_data").innerHTML = '<option value="" disabled selected>Click "Refresh" to fetch</option>';
             document.getElementById("status").textContent = "";
-            document.getElementById("totalPulses").textContent = "N/A";
-            document.getElementById("fileSize").textContent = "N/A";
-            document.getElementById("imageSize").textContent = "N/A";
+            document.getElementById("total_pulses").textContent = "N/A";
+            document.getElementById("cphd_file_size").textContent = "N/A";
+            document.getElementById("img_size").textContent = "N/A";
             document.getElementById("resolution").textContent = "N/A";
-            document.getElementById("areaSize").textContent = "N/A";
-            document.getElementById("centreFreq").textContent = "N/A"
+            document.getElementById("area_size").textContent = "N/A";
+            document.getElementById("centre_freq").textContent = "N/A"
             // Reset images
             document.getElementById("processedImage1").src = "";
             document.getElementById("processedImage1").style.display = "none";
