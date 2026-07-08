@@ -3,7 +3,6 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SAR Option Selector</title>
     <style>
         html, body {
             height: 100%;
@@ -14,13 +13,13 @@
             flex-direction: column;
         }
 
-        .dropdown-container-sar-proc {
+        .dropdown-container-sar {
             display: flex;
             flex-direction: column;
             border-radius: 2px;
         }
 
-        .select-sar-proc {
+        .select-sar {
             font-size: 14px;
             width: 100%;
             max-width: 270px;
@@ -35,24 +34,164 @@
     </style>
 </head>
 <body>
-    <div class="dropdown-container-sar-proc">
+    <div class="dropdown-container-sar">
         <h2>Input</h2>
-        <select id="menuDropdown" class="select-sar-proc">
+        <select id="menu_sar_input_data" class="select-sar" onclick="fetch_list_sar_input_data()" onchange="sendLoad()">
             <option value="" disabled selected>Select input data</option>
         </select>
         <div class="status-container">
             <p id="status">&nbsp;</p>
         </div>
         <div class="status-info">
-            <p><strong>CPHD File Size:</strong> <span id="fileSize">N/A</span></p>
-            <p><strong>Pulses:</strong> <span id="totalPulses">N/A</span></p>
-            <p><strong>Frequency:</strong> <span id="centreFreq">N/A</span></p>
-            <p><strong>Image Size:</strong> <span id="imageSize">N/A</span></p>
+            <p><strong>CPHD File Size:</strong> <span id="cphd_file_size">N/A</span></p>
+            <p><strong>Pulses:</strong> <span id="total_pulses">N/A</span></p>
+            <p><strong>Frequency:</strong> <span id="centre_freq">N/A</span></p>
+            <p><strong>Image Size:</strong> <span id="img_size">N/A</span></p>
             <p><strong>Resolution:</strong> <span id="resolution">N/A</span></p>
-            <p><strong>Area Size:</strong> <span id="areaSize">N/A</span></p>
+            <p><strong>Area Size:</strong> <span id="area_size">N/A</span></p>
         </div>
     </div>
     <script>
+        var is_direct_access_sar_input_data = window.location.port === '3000';
+        FLASK_BASE_SAR_INPUT_DATA = is_direct_access_sar_input_data
+            ? `http://${window.location.hostname}:5000`
+            : `https://${window.location.hostname}`
+        
+        function fetch_list_sar_input_data() {
+            const statusElement = document.getElementById("status");
+            const select = document.getElementById("menu_sar_input_data");
+            const previouslySelected = select.value; // preserve current selection across rebuild
+            statusElement.textContent = "Fetching file list..."; // Show status message
+
+            fetch(`${FLASK_BASE_SAR_INPUT_DATA}/send_message`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: "4" })
+            })
+            .then(() => {
+                setTimeout(() => {
+                    fetch(`${FLASK_BASE_SAR_INPUT_DATA}/get_cphd_files`)
+                        .then(response => response.json())
+                        .then(data => {
+                            console.log("Fetched CPHD files:", data.files);
+
+                            select.innerHTML = ''; // Clear existing options
+
+                            if (data.files.length === 0) {
+                                statusElement.textContent = "No CPHD files found.";
+                                select.innerHTML = '<option value="" disabled>No files available</option>';
+                                document.getElementById("cphd_file_size").textContent = "N/A";
+                            } else {
+                                statusElement.textContent = `Fetched ${data.files.length} file(s).`;
+
+                                data.files.forEach(file => {
+                                    const option = document.createElement('option');
+                                    option.value = file;
+                                    option.textContent = file;
+                                    select.appendChild(option);
+                                });
+
+                                if (data.files.includes(previouslySelected)) {
+                                    select.value = previouslySelected;
+                                }
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error fetching CPHD files:', error);
+                            statusElement.textContent = "Error fetching file list.";
+                        });
+                }, 500);
+            })
+            .catch(error => {
+                console.error("Error sending fetch command:", error);
+                statusElement.textContent = "Error requesting file fetch.";
+            });
+        }
+
+        function fetch_properties_sar_input_data() {
+            var selectedFile = document.getElementById("menu_sar_input_data").value;
+            if (!selectedFile) return;
+
+            fetch(FLASK_BASE_SAR_INPUT_DATA + '/get_cphd_file_properties')
+                .then(function(response) { return response.json(); })
+                .then(function(data) {
+                    var props = { cphd_file_size: 'N/A', total_pulses: 'N/A', centre_freq: 'N/A', img_size: 'N/A', resolution: 'N/A', area_size: 'N/A' };
+                    if (data.files.filename === selectedFile) {
+                        props.cphd_file_size = data.files.size;
+                        if (data.files.metadata) {
+                            var m = data.files.metadata;
+                            props.total_pulses = m.numVectors != null ? m.numVectors.toLocaleString() : 'N/A';
+                            if (m.fxC != null) {
+                                var band = getFrequencyBand(m.fxC);
+                                props.centre_freq = (m.fxC / 1e9).toFixed(1) + ' GHz' + (band ? ' (' + band + ' band)' : '');
+                            }
+                            props.img_size = (m.numLines != null && m.numSamples != null) ? m.numLines + ' x ' + m.numSamples : 'N/A';
+                            props.resolution = m.lineSpacing != null ? m.lineSpacing.toFixed(2) + ' meters' : 'N/A';
+                            if (m.numLines != null && m.lineSpacing != null && m.numSamples != null && m.sampleSpacing != null) {
+                                props.area_size = (m.numLines * m.lineSpacing * m.numSamples * m.sampleSpacing / 1e6).toFixed(2) + ' km²';
+                            }
+                        }
+                    }
+                    document.getElementById("cphd_file_size").textContent = props.cphd_file_size;
+                    document.getElementById("total_pulses").textContent = props.total_pulses;
+                    document.getElementById("centre_freq").textContent = props.centre_freq;
+                    document.getElementById("img_size").textContent = props.img_size;
+                    document.getElementById("resolution").textContent = props.resolution;
+                    document.getElementById("area_size").textContent = props.area_size;
+                    sarInputProps = props;
+                    saveState();
+                })
+                .catch(function(error) { console.error("Error fetching file size:", error); });
+        }
+
+        async function sendLoad() {
+            const selectedOption = document.getElementById("menu_sar_input_data").value;
+            const statusElement = document.getElementById("status");
+
+            if (!selectedOption) {
+                statusElement.textContent = "Please select a file first.";
+                return;
+            }
+
+            // Clear all saved state — new load session
+            clearState();
+
+            // Reset images and output properties
+            document.getElementById("processedImage1").src = "";
+            document.getElementById("processedImage1").style.display = "none";
+            document.getElementById("noData1").style.display = "flex";
+            clearColorizedImage();
+            document.getElementById("outFileSize").textContent = "N/A";
+            document.getElementById("reductionFactor").textContent = "N/A";
+            document.getElementById("sizeCompared").textContent = "N/A";
+            document.getElementById("sarProcTime").textContent = "N/A";
+
+            try {
+                await fetch(`${FLASK_BASE_SAR_INPUT_DATA}/send_message`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ message: `SIZE:${selectedOption}` })
+                });
+                statusElement.textContent = "Loading file properties...";
+
+                const startTime = Date.now();
+                const timeout = 30 * 1000;
+                while (Date.now() - startTime < timeout) {
+                    const response = await fetch(`${FLASK_BASE_SAR_INPUT_DATA}/get_cphd_file_properties`);
+                    const data = await response.json();
+                    if (data.files && data.files.filename === selectedOption) {
+                        fetch_properties_sar_input_data();
+                        statusElement.textContent = "Command sent... Load.";
+                        return;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+                statusElement.textContent = "Timeout waiting for file properties.";
+            } catch (error) {
+                console.error("Error:", error);
+                statusElement.textContent = "Error sending command.";
+            }
+        }
         
     </script>
 </body>
