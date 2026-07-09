@@ -8,6 +8,7 @@ import time
 import json
 import os
 import glob
+import signal
 
 # IMAGE_PATH_2 = "/home/root/Desktop/Bach/backprojection_result_small.png"  
 # IMAGE_PATH_1 = "/home/root/Desktop/Bach/backprojection_histogram.png"
@@ -26,6 +27,8 @@ SYSINFO_PORT = 12345
 NETTEST_PORT = 29102
 NETTEST_PORT_RDB = 29103
 IMAGE_PORT = 55555
+SAR_LOG_PORT = 55557
+SAR_CTRL_PORT = 55558
 
 LISTEN_IP = "0.0.0.0"
 LISTEN_PORT = 54321
@@ -57,6 +60,8 @@ bwValue = 0
 sar_proc_time = 0
 ai_card_power_cache = None
 ai_card_temp_cache = None
+sar_process = None  # Popen handle of the currently running SAR program
+sar_stop_requested = False
 
 def optimize_tif(image_path, output_path, format="webp", max_size=(800, 800), quality=85):
     """
@@ -112,36 +117,191 @@ def send_image(image_path):
     except Exception as e:
         print(f"Error sending image: {e}")
 
-def handle_image_sending(filename):
-    global sar_proc_time
+def send_sar_logs():
+    if not os.path.exists(SAR_LOGS):
+        print("SAR_LOGS directory not found, skipping log transfer")
+        return
+
+    log_dirs = sorted([
+        d for d in os.listdir(SAR_LOGS)
+        if os.path.isdir(os.path.join(SAR_LOGS, d))
+    ])
+    if not log_dirs:
+        print("No SAR log folders found")
+        return
+
+    latest = log_dirs[-1]
+    latest_path = os.path.join(SAR_LOGS, latest)
+    print(f"Preparing to send SAR log folder: {latest}")
+
+    prepared_files = []  # list of (send_name, data_bytes)
+    tmp_paths = []
+
+    for fname in sorted(os.listdir(latest_path)):
+        src_path = os.path.join(latest_path, fname)
+        if not os.path.isfile(src_path):
+            continue
+        if fname.lower().endswith('.png'):
+            webp_name = os.path.splitext(fname)[0] + '.webp'
+            tmp_path = f"/tmp/sar_log_{webp_name}"
+            optimize_tif(src_path, tmp_path, format='webp', max_size=(800, 800), quality=85)
+            if os.path.exists(tmp_path):
+                with open(tmp_path, 'rb') as f:
+                    prepared_files.append((webp_name, f.read()))
+                tmp_paths.append(tmp_path)
+        elif fname.lower().endswith('.csv'):
+            with open(src_path, 'rb') as f:
+                prepared_files.append((fname, f.read()))
+
+    if not prepared_files:
+        print("No files prepared from SAR log folder")
+        return
+
+    try:
+        manifest = {
+            "folder": latest,
+            "files": [{"name": name, "size": len(data)} for name, data in prepared_files]
+        }
+        manifest_bytes = json.dumps(manifest).encode()
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.connect((HOST_IP, SAR_LOG_PORT))
+            sock.sendall(len(manifest_bytes).to_bytes(4, byteorder='big'))
+            sock.sendall(manifest_bytes)
+            for name, data in prepared_files:
+                sock.sendall(len(data).to_bytes(8, byteorder='big'))
+                sock.sendall(data)
+                print(f"Sent log file: {name} ({len(data)} bytes)")
+
+        print(f"SAR log folder '{latest}' sent to host")
+    except Exception as e:
+        print(f"Error sending SAR logs: {e}")
+    finally:
+        for tmp in tmp_paths:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+
+
+def send_sar_status(status):
+    """Report SAR program start/finish (with PID) to the host."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.connect((HOST_IP, SAR_CTRL_PORT))
+            sock.sendall(json.dumps(status).encode())
+    except Exception as e:
+        print(f"Error sending SAR status: {e}")
+
+def stop_sar_process(message):
+    """Send Ctrl+C (SIGINT) to the running SAR process group, if any."""
+    global sar_stop_requested
+    process = sar_process
+    if process is None or process.poll() is not None:
+        print("No SAR process running, nothing to stop")
+        return
+    parts = message.split(":", 1)
+    if len(parts) == 2 and parts[1].isdigit() and int(parts[1]) != process.pid:
+        print(f"STOPSAR pid {parts[1]} does not match running SAR pid {process.pid}, ignoring")
+        return
+    sar_stop_requested = True
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGINT)
+        print(f"Sent SIGINT (Ctrl+C) to SAR process group of PID {process.pid}")
+    except ProcessLookupError:
+        print("SAR process already exited")
+
+def find_new_output_tif(known_tifs):
+    """Return the newest tiff in OUT_TIF_PATH that appeared or changed since the run started."""
+    candidates = []
+    for path in glob.glob(os.path.join(OUT_TIF_PATH, "*.tiff")):
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        if path not in known_tifs or mtime > known_tifs[path]:
+            candidates.append((mtime, path))
+    if not candidates:
+        return None
+    return max(candidates)[1]
+
+def handle_image_sending(filename, on_image_sent=None):
+    global sar_proc_time, sar_process, sar_stop_requested
 
     start_time = time.perf_counter()
-    # Start the SAR program as a subprocess
-    process = subprocess.Popen(["profiler", SAR_PROG, *PROFILER_OPTION, "--file", filename])
-    print(f"SAR program started with PID {process.pid}")
+    sar_stop_requested = False
 
-    # While the process is still running, print "processing..."
+    # Snapshot existing outputs so a new tiff can be detected while the
+    # profiler is still running (log plots are generated after the SAR compute)
+    known_tifs = {}
+    for path in glob.glob(os.path.join(OUT_TIF_PATH, "*.tiff")):
+        try:
+            known_tifs[path] = os.path.getmtime(path)
+        except OSError:
+            pass
+
+    # Start the SAR program as a subprocess in its own process group
+    # so SIGINT can reach the whole group (profiler + SAR program)
+    process = subprocess.Popen(["profiler", SAR_PROG, *PROFILER_OPTION, "--file", filename],
+                               start_new_session=True)
+    sar_process = process
+    print(f"SAR program started with PID {process.pid}")
+    send_sar_status({"sar_pid": process.pid, "status": "started"})
+
+    sent_tif_path = None
+    pending_tif = None
+    pending_size = -1
+
+    # While the process is still running, print "processing..." and watch for
+    # the output tiff so it can be sent before the profiler finishes its logs
     while process.poll() is None:
         print("processing...")
+        if sent_tif_path is None and not sar_stop_requested:
+            new_tif = find_new_output_tif(known_tifs)
+            if new_tif:
+                try:
+                    size = os.path.getsize(new_tif)
+                except OSError:
+                    size = -1
+                if new_tif == pending_tif and size == pending_size and size > 0:
+                    # size unchanged for one interval: file fully written
+                    sar_proc_time = round(time.perf_counter() - start_time, 1)
+                    print(f"SAR processing time: {sar_proc_time:.1f}s")
+                    send_image(new_tif)
+                    if on_image_sent:
+                        on_image_sent(new_tif)
+                    sent_tif_path = new_tif
+                else:
+                    pending_tif, pending_size = new_tif, size
         time.sleep(1)
+
+    sar_process = None
+    send_sar_status({"sar_pid": process.pid, "status": "finished"})
+
+    if sar_stop_requested:
+        print("SAR program stopped by reset, skipping output transfer")
+        return None
 
     print("done")
 
-    end_time = time.perf_counter()
-    sar_proc_time = round(end_time - start_time, 1)
-    print(f"SAR processing time: {sar_proc_time:.1f}s")
+    # Fallback: output tiff was not caught while the process was running
+    # (e.g. written right before exit) — send it now, as before
+    if sent_tif_path is None:
+        sar_proc_time = round(time.perf_counter() - start_time, 1)
+        print(f"SAR processing time: {sar_proc_time:.1f}s")
 
-    # Find the most recently created .tif file in OUT_TIF_PATH
-    tif_files = glob.glob(os.path.join(OUT_TIF_PATH, "*.tiff"))
-    if not tif_files:
-        print("No .tif files found in output directory.")
-        return
+        tif_files = glob.glob(os.path.join(OUT_TIF_PATH, "*.tiff"))
+        if not tif_files:
+            print("No .tif files found in output directory.")
+            return None
 
-    # Sort by modification time, newest first
-    image_path = max(tif_files, key=os.path.getmtime)
+        sent_tif_path = max(tif_files, key=os.path.getmtime)
+        send_image(sent_tif_path)
+        if on_image_sent:
+            on_image_sent(sent_tif_path)
 
-    send_image(image_path)
-    return image_path
+    send_sar_logs()
+    return sent_tif_path
 
 def send_cphd_files_list():
     global cphd_files
@@ -224,10 +384,14 @@ def get_metadata_from_cphd(filePath):
     return None
 
 def process_cphd_file(filePath, filename):
-    global sar_proc_time
+    # Properties are sent from the callback as soon as the image goes out,
+    # so the dashboard can stop its computing timer before the logs are done
+    tif_path = handle_image_sending(filename,
+                                    on_image_sent=lambda p: send_tif_properties(p, filePath))
+    if tif_path is None:
+        print("No SAR output to report")
 
-    tif_path = handle_image_sending(filename)
-
+def send_tif_properties(tif_path, filePath):
     # send the properties of the processed image
     tif_size = os.path.getsize(tif_path)
     cphd_size = os.path.getsize(filePath)
@@ -443,6 +607,8 @@ def listen_for_messages():
                     if filePath and os.path.exists(filePath):
                         print("file exist, start processing")
                         threading.Thread(target=process_cphd_file, args=(filePath, filename), daemon=True).start()
+                elif message.startswith("STOPSAR"):
+                    stop_sar_process(message)
                 elif message.startswith("NETRUN:"):
                     # handle run iperf test in thread to avoid blocking other tasks
                     _, netTestDuration, netTestInterface = message.split(":", 2)

@@ -14,6 +14,7 @@ SYSINFO_PORT = 12345  # Port for system metrics
 NETTEST_PORT = 29102
 IMAGE_PORT = 55555
 SAR_LOG_PORT = 55557
+SAR_CTRL_PORT = 55558
 FLASK_PORT = 5000
 
 TARGET_IP = "10.42.0.101"  # Target system IP
@@ -51,6 +52,8 @@ cphd_file_list = []  # Global list to store CPHD file names
 cphd_file_properties = []  # Global list to store properties of a CPHD file
 tif_file_properties = []
 current_run_cphd = None  # CPHD filename currently being/last processed
+sar_run_pid = None  # PID of the SAR program currently running on the target
+sar_log_version = 0  # bumped whenever a new SAR log folder is received
 final_results = {
     "sender_transfer": "",
     "sender_bitrate": "",
@@ -142,6 +145,7 @@ def recv_exact(conn, n):
     return data
 
 def handle_sar_log_server():
+    global sar_log_version
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_socket.bind((HOST_IP, SAR_LOG_PORT))
@@ -167,8 +171,30 @@ def handle_sar_log_server():
                             f.write(data)
                         print(f"Saved SAR log file: {save_path} ({file_size} bytes)")
                     print(f"SAR log folder '{folder}' saved to {log_dir}")
+                    sar_log_version += 1
                 except Exception as e:
                     print(f"Error receiving SAR logs: {e}")
+
+def handle_sar_ctrl_server():
+    global sar_run_pid
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind((HOST_IP, SAR_CTRL_PORT))
+        server_socket.listen(1)
+        print(f"Listening for SAR status on {HOST_IP}:{SAR_CTRL_PORT}...")
+        while True:
+            conn, addr = server_socket.accept()
+            with conn:
+                try:
+                    status = json.loads(conn.recv(4096).decode())
+                    if status.get("status") == "started":
+                        sar_run_pid = status.get("sar_pid")
+                        print(f"SAR program started on target with PID {sar_run_pid}")
+                    elif status.get("status") == "finished":
+                        sar_run_pid = None
+                        print(f"SAR program with PID {status.get('sar_pid')} finished on target")
+                except Exception as e:
+                    print(f"Error receiving SAR status: {e}")
 
 def handle_net_test_server():
     save_path = None
@@ -332,6 +358,8 @@ def send_message():
     if message == "3":
         flag_get_image = False
         delete_all_files()
+    elif message == "STOPSAR":
+        return stop_sar_if_running()
     elif message.startswith("RUN:"):
         global tif_file_properties, current_run_cphd
         flag_get_image = True
@@ -350,6 +378,13 @@ def send_message():
             return forward_message_to_target(message)
     return forward_message_to_target(message)   
     
+def stop_sar_if_running():
+    """Forward a Ctrl+C request for the running SAR process to the target."""
+    if sar_run_pid is None:
+        return jsonify({"status": "success", "message": "no SAR process running"})
+    print(f"Requesting target to stop SAR process {sar_run_pid}")
+    return forward_message_to_target(f"STOPSAR:{sar_run_pid}")
+
 def delete_all_files():
     """Deletes all files in the SAVE_DIR directory."""
     global cphd_file_list, cphd_file_properties, tif_file_properties, current_run_cphd
@@ -435,6 +470,11 @@ def serve_sar_log_image(image_type):
     if not matches:
         return "Image not found", 404
     return send_from_directory(folder_path, matches[0])
+
+@app.route('/sar_log/status')
+def sar_log_status():
+    """Version counter that increments each time a new SAR log folder arrives."""
+    return jsonify({"version": sar_log_version})
 
 @app.route('/sar_colored_image')
 def serve_sar_colored_image():
@@ -558,6 +598,7 @@ def run_flask_server():
 threading.Thread(target=handle_image_process_server, daemon=True).start()
 threading.Thread(target=handle_net_test_server, daemon=True).start()
 threading.Thread(target=handle_sar_log_server, daemon=True).start()
+threading.Thread(target=handle_sar_ctrl_server, daemon=True).start()
 threading.Thread(target=handle_system_metrics_server, daemon=True).start()
 threading.Thread(target=run_flask_server, daemon=True).start()
 

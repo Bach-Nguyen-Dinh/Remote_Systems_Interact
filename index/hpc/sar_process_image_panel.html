@@ -130,6 +130,7 @@
         var testDurationUpEthOnb = null;
         var sarProcTimer = null;  // SAR run flag
         var sarProcStartTime = null;  // store the start time for SAR processing
+        var sarRunSession = 0;  // bumped on each run/reset to abort a stale sendRun polling loop
 
         var SAR_STATE_KEY = 'sarPanelState_v1';
 
@@ -235,8 +236,6 @@
                     sarShowImage1 = true;
                     saveState();
                     setTimeout(() => fetchColorizedImage(cphdFilename), 3000);
-                    localStorage.setItem('update_analysis_pending', '1');
-                    window.dispatchEvent(new CustomEvent('update_analysis'));
                 })
                 .catch(() => {
                     document.getElementById("processedImage1").style.display = "none";
@@ -269,6 +268,29 @@
             poll();
         }
 
+        function notifyAnalysisWhenLogsReady(baselineVersion, runSession) {
+            // The output image now arrives before the profiler logs, so refresh
+            // the analysis panel only once the new log folder reaches the host
+            const start = Date.now();
+            const timeout = 900 * 1000;
+            function poll() {
+                if (sarRunSession !== runSession || Date.now() - start > timeout) return;
+                fetch(`${FLASK_BASE}/sar_log/status`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (sarRunSession !== runSession) return;
+                        if (baselineVersion === null || data.version !== baselineVersion) {
+                            localStorage.setItem('update_analysis_pending', '1');
+                            window.dispatchEvent(new CustomEvent('update_analysis'));
+                        } else {
+                            setTimeout(poll, 2000);
+                        }
+                    })
+                    .catch(() => setTimeout(poll, 2000));
+            }
+            poll();
+        }
+
         function clearColorizedImage() {
             document.getElementById("processedImage2").src = "";
             document.getElementById("processedImage2").style.display = "none";
@@ -277,6 +299,7 @@
 
         async function sendRun() {
             lastTifFilename = null;
+            const runSession = ++sarRunSession;
 
             const selectedOption = document.getElementById("menu_sar_input_data").value;
             const statusElement = document.getElementById("status");
@@ -292,6 +315,15 @@
             sarShowImage2 = false;
 
             try {
+                // Baseline log version, to detect when this run's profiler logs arrive
+                let logVersionBaseline = null;
+                try {
+                    const logStatus = await fetch(`${FLASK_BASE}/sar_log/status`);
+                    logVersionBaseline = (await logStatus.json()).version;
+                } catch (e) {
+                    logVersionBaseline = null;
+                }
+
                 // Send the "RUN" command
                 await fetch(`${FLASK_BASE}/send_message`, {
                     method: "POST",
@@ -332,11 +364,12 @@
                 const timeout = 900 * 1000;
                 let fileUpdated = false;
         
-                while (!fileUpdated && (Date.now() - startTime < timeout)) {
+                while (!fileUpdated && sarRunSession === runSession && (Date.now() - startTime < timeout)) {
                     // Fetch the output file properties
                     const response = await fetch(`${FLASK_BASE}/get_tif_file_properties`);
                     const data = await response.json();
-        
+                    if (sarRunSession !== runSession) return; // aborted by reset while awaiting
+
                     // Check if tif_filename has changed
                     if (data.files.tif_filename && data.files.tif_filename !== lastTifFilename) {
                         statusElement.textContent = "Getting output properties ... Data Fetched.";
@@ -372,17 +405,22 @@
                         // Fetch and display the new tif image, then colored image after 3s
                         fetchProcessedFile(selectedOption);
 
+                        // Refresh the analysis panel once the profiler logs arrive later
+                        notifyAnalysisWhenLogsReady(logVersionBaseline, runSession);
+
                         // Update the last processed filename
                         lastTifFilename = data.files.tif_filename;
         
                         fileUpdated = true;
                     } else {
                         statusElement.textContent = "Waiting for processed file...";
-                        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for 2 seconds before retrying
+                        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for 1 second before retrying
                     }
                 }
         
-                if (!fileUpdated) {
+                if (sarRunSession !== runSession) {
+                    return; // aborted by reset, leave the status set by resetMenu
+                } else if (!fileUpdated) {
                     statusElement.textContent = "Getting output properties ... Timeout.";
                 } else {
                     statusElement.textContent = "Getting output properties ... Done.";
@@ -396,6 +434,7 @@
         function resetMenu() {
             lastTifFilename = "lastFile";
             clearState();
+            sarRunSession++;  // abort any in-flight sendRun polling loop
             const statusElement = document.getElementById("status");
 
             // Stop processing timer if running
@@ -404,20 +443,30 @@
                 sarProcTimer = null;
             }
 
+            // Ask the backend to Ctrl+C the SAR program on the target (no-op if none
+            // is running), then send the normal reset command
             fetch(`${FLASK_BASE}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ message: "3"})
+                body: JSON.stringify({ message: "STOPSAR" })
             })
+            .catch(error => {
+                console.error("Error sending STOPSAR:", error);
+            })
+            .then(() => fetch(`${FLASK_BASE}/send_message`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: "3"})
+            }))
             .then(response => response.json())
             .then(data => {
-                statusElement.textContent = "Command sent... Reset.";
+                // statusElement.textContent = "Command sent... Reset.";
             })
             .catch(error => {
                 console.error("Error:", error);
                 statusElement.textContent = "Error sending command.";
             });
-            document.getElementById("menu_sar_input_data").innerHTML = '<option value="" disabled selected>Click "Refresh" to fetch</option>';
+            document.getElementById("menu_sar_input_data").innerHTML = '<option value="" disabled selected>Select input data</option>';
             document.getElementById("status").textContent = "";
             document.getElementById("total_pulses").textContent = "N/A";
             document.getElementById("cphd_file_size").textContent = "N/A";
