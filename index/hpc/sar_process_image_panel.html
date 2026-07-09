@@ -114,25 +114,64 @@
             ? `http://${window.location.hostname}:5000`
             : `https://${window.location.hostname}`
 
-        document.getElementById("noData1").style.display = "flex";
-        document.getElementById("noData2").style.display = "flex";
-        document.getElementById("processedImage1").style.display = "none";
-        document.getElementById("processedImage2").style.display = "none";
-
-        var lastTifFilename = "lastFile";
-        var lastCphdFilename = null;
-        var sarInputProps = null;   // CPHD input file properties
-        var sarOutputProps = null;  // TIF output properties
-        var sarShowImage1 = false;
-        var sarShowImage2 = false;
-
-        var testDurationLwEthOnb = null; // Variable to store selected duration
-        var testDurationUpEthOnb = null;
-        var sarProcTimer = null;  // SAR run flag
-        var sarProcStartTime = null;  // store the start time for SAR processing
-        var sarRunSession = 0;  // bumped on each run/reset to abort a stale sendRun polling loop
-
         var SAR_STATE_KEY = 'sarPanelState_v1';
+
+        // --- Runtime state that MUST survive Grafana row collapse/expand ---
+        // On row expand Grafana re-executes this whole script in the same global
+        // scope. A plain `var x = 0;` re-runs the assignment and would clobber the
+        // state of an in-flight run (aborting its poller / orphaning its timer).
+        // Declaring the vars bare (no initializer) leaves any existing value
+        // untouched on re-execution; we seed defaults only once, guarded by a
+        // window flag. Live handles (timer id, poller flag) live on `window` so a
+        // re-execution can still see and manage them.
+        var lastTifFilename, lastCphdFilename, sarInputProps, sarOutputProps,
+            sarShowImage1, sarShowImage2, sarProcStartTime, sarRunSession,
+            sarRunning, sarStatus, sarSelectedInput, sarInputFileList,
+            testDurationLwEthOnb, testDurationUpEthOnb;
+        if (!window._sarRuntimeInit) {
+            window._sarRuntimeInit = true;
+            lastTifFilename = "lastFile";
+            lastCphdFilename = null;
+            sarInputProps = null;   // CPHD input file properties
+            sarOutputProps = null;  // TIF output properties
+            sarShowImage1 = false;
+            sarShowImage2 = false;
+            sarProcStartTime = null; // start time for SAR processing (ms epoch)
+            sarRunSession = 0;       // bumped on each run/reset to abort a stale poller
+            sarRunning = false;      // true while a SAR process is in progress
+            sarStatus = "";          // last status message
+            sarSelectedInput = null; // currently selected CPHD file
+            sarInputFileList = [];   // options currently in the input dropdown
+            testDurationLwEthOnb = null;
+            testDurationUpEthOnb = null;
+        }
+
+        // Null-guarded DOM helpers — elements are absent while the row is collapsed.
+        function sarSetText(id, val) { var el = document.getElementById(id); if (el) el.textContent = val; }
+        function setStatusDom(text) { var el = document.getElementById("status"); if (el) el.textContent = text; }
+        function setStatus(text) { sarStatus = text; setStatusDom(text); saveState(); }
+
+        // Display timer. Its id lives on window so a script re-execution (row
+        // expand) can never orphan a running interval, and the callback is
+        // null-guarded so it keeps ticking harmlessly while the row is collapsed.
+        function startSarTimer() {
+            if (window._sarTimerInterval) clearInterval(window._sarTimerInterval);
+            window._sarTimerInterval = setInterval(function() {
+                if (!sarProcStartTime) return;
+                var elapsed = (Date.now() - sarProcStartTime) / 1000;
+                sarSetText("sarProcTime", elapsed.toFixed(2) + "s");
+            }, 100);
+        }
+        function stopSarTimer() {
+            if (window._sarTimerInterval) { clearInterval(window._sarTimerInterval); window._sarTimerInterval = null; }
+        }
+
+        (function initImagesDom() {
+            var n1 = document.getElementById("noData1"); if (n1) n1.style.display = "flex";
+            var n2 = document.getElementById("noData2"); if (n2) n2.style.display = "flex";
+            var p1 = document.getElementById("processedImage1"); if (p1) p1.style.display = "none";
+            var p2 = document.getElementById("processedImage2"); if (p2) p2.style.display = "none";
+        })();
 
         function saveState() {
             localStorage.setItem(SAR_STATE_KEY, JSON.stringify({
@@ -142,15 +181,39 @@
                 outputProps: sarOutputProps,
                 showImage1: sarShowImage1,
                 showImage2: sarShowImage2,
+                running: sarRunning,
+                startTime: sarProcStartTime,
+                status: sarStatus,
+                selectedInput: sarSelectedInput,
+                inputFileList: sarInputFileList,
             }));
         }
 
-        function clearState() {
+        // Clear run results but KEEP the input dropdown selection/list — used when
+        // the user picks a new file, so the picker survives across collapse/expand.
+        function clearResultState() {
             sarInputProps = null;
             sarOutputProps = null;
             sarShowImage1 = false;
             sarShowImage2 = false;
             lastCphdFilename = null;
+            sarRunning = false;
+            saveState();
+        }
+
+        // Full reset, including the input dropdown selection/list and the timer.
+        function clearAllState() {
+            stopSarTimer();
+            sarInputProps = null;
+            sarOutputProps = null;
+            sarShowImage1 = false;
+            sarShowImage2 = false;
+            lastCphdFilename = null;
+            sarRunning = false;
+            sarProcStartTime = null;
+            sarStatus = "";
+            sarSelectedInput = null;
+            sarInputFileList = [];
             localStorage.removeItem(SAR_STATE_KEY);
         }
 
@@ -172,6 +235,36 @@
             }
         }
 
+        // Rebuild the input dropdown (options + selection) from persisted state.
+        // The <select> is recreated empty when the row re-expands, so we repopulate
+        // it here rather than relying on the DOM surviving.
+        function restoreInputDropdown() {
+            var select = document.getElementById("menu_sar_input_data");
+            if (!select) return;
+            var files = sarInputFileList || [];
+            var selected = sarSelectedInput || null;
+            if (!files.length && !selected) return; // nothing to restore
+
+            select.innerHTML = '';
+            var placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = 'Select input data';
+            placeholder.disabled = true;
+            select.appendChild(placeholder);
+
+            var list = files.slice();
+            if (selected && list.indexOf(selected) === -1) list.push(selected);
+            list.forEach(function(file) {
+                var option = document.createElement('option');
+                option.value = file;
+                option.textContent = file;
+                select.appendChild(option);
+            });
+
+            if (selected) select.value = selected;
+            else placeholder.selected = true;
+        }
+
         function restoreState() {
             var raw = localStorage.getItem(SAR_STATE_KEY);
             if (!raw) return;
@@ -181,14 +274,23 @@
                 if (state.cphdFilename) lastCphdFilename = state.cphdFilename;
                 if (state.inputProps) sarInputProps = state.inputProps;
                 if (state.outputProps) sarOutputProps = state.outputProps;
+                if (state.selectedInput) sarSelectedInput = state.selectedInput;
+                if (state.inputFileList) sarInputFileList = state.inputFileList;
+                if (typeof state.startTime === 'number') sarProcStartTime = state.startTime;
+                if (state.status != null) sarStatus = state.status;
+
+                restoreInputDropdown();
+                setStatusDom(sarStatus);
+
                 if (state.showImage1) {
                     sarShowImage1 = true;
                     fetch(FLASK_BASE + '/images/tif_image.webp')
                         .then(function(r) { if (!r.ok) throw new Error(); return r.blob(); })
                         .then(function(blob) {
-                            document.getElementById("processedImage1").src = URL.createObjectURL(blob);
-                            document.getElementById("processedImage1").style.display = "block";
-                            document.getElementById("noData1").style.display = "none";
+                            var img = document.getElementById("processedImage1");
+                            var nd = document.getElementById("noData1");
+                            if (img) { img.src = URL.createObjectURL(blob); img.style.display = "block"; }
+                            if (nd) nd.style.display = "none";
                         })
                         .catch(function() {});
                 }
@@ -197,6 +299,22 @@
                     fetchColorizedImage(state.cphdFilename);
                 }
                 setTimeout(applyTextState, 200);
+
+                // Resume an in-progress run.
+                //  - Collapse/expand: the poller and timer are still alive (their
+                //    window handles survive re-execution), so we leave them running.
+                //  - Full page reload: those handles are gone, so re-attach a timer
+                //    and a completion poller derived from the persisted start time.
+                if (state.running) {
+                    sarRunning = true;
+                    if (!window._sarPollerActive) {
+                        window._sarPollerActive = true; // claim now to avoid a double resume
+                        startSarTimer();
+                        resumeSarPoller(++sarRunSession);
+                    } else if (!window._sarTimerInterval) {
+                        startSarTimer();
+                    }
+                }
             } catch (e) {
                 console.error("SAR state restore error:", e);
             }
@@ -229,17 +347,21 @@
                     return response.blob();
                 })
                 .then(imageBlob => {
-                    const imageUrl = URL.createObjectURL(imageBlob);
-                    document.getElementById("processedImage1").src = imageUrl;
-                    document.getElementById("processedImage1").style.display = "block";
-                    document.getElementById("noData1").style.display = "none";
+                    // Persist first so a collapsed row still restores the image later.
                     sarShowImage1 = true;
                     saveState();
+                    const imageUrl = URL.createObjectURL(imageBlob);
+                    var img = document.getElementById("processedImage1");
+                    var nd = document.getElementById("noData1");
+                    if (img) { img.src = imageUrl; img.style.display = "block"; }
+                    if (nd) nd.style.display = "none";
                     setTimeout(() => fetchColorizedImage(cphdFilename), 3000);
                 })
                 .catch(() => {
-                    document.getElementById("processedImage1").style.display = "none";
-                    document.getElementById("noData1").style.display = "flex";
+                    var img = document.getElementById("processedImage1");
+                    var nd = document.getElementById("noData1");
+                    if (img) img.style.display = "none";
+                    if (nd) nd.style.display = "flex";
                 });
         }
 
@@ -255,11 +377,13 @@
                         return response.blob();
                     })
                     .then(blob => {
-                        document.getElementById("processedImage2").src = URL.createObjectURL(blob);
-                        document.getElementById("processedImage2").style.display = "block";
-                        document.getElementById("noData2").style.display = "none";
+                        // Persist first so a collapsed row still restores the image later.
                         sarShowImage2 = true;
                         saveState();
+                        var img = document.getElementById("processedImage2");
+                        var nd = document.getElementById("noData2");
+                        if (img) { img.src = URL.createObjectURL(blob); img.style.display = "block"; }
+                        if (nd) nd.style.display = "none";
                     })
                     .catch(() => {
                         if (Date.now() - start < timeout) setTimeout(poll, interval);
@@ -292,23 +416,23 @@
         }
 
         function clearColorizedImage() {
-            document.getElementById("processedImage2").src = "";
-            document.getElementById("processedImage2").style.display = "none";
-            document.getElementById("noData2").style.display = "flex";
+            var img = document.getElementById("processedImage2");
+            if (img) { img.src = ""; img.style.display = "none"; }
+            var nd = document.getElementById("noData2");
+            if (nd) nd.style.display = "flex";
         }
 
         async function sendRun() {
-            lastTifFilename = null;
-            const runSession = ++sarRunSession;
-
-            const selectedOption = document.getElementById("menu_sar_input_data").value;
-            const statusElement = document.getElementById("status");
-
+            const selectedOption = (document.getElementById("menu_sar_input_data") || {}).value || sarSelectedInput;
             if (!selectedOption) {
-                statusElement.textContent = "Please select a file first.";
+                setStatus("Please select a file first.");
                 return;
             }
+
+            const runSession = ++sarRunSession;
+            lastTifFilename = null;
             lastCphdFilename = selectedOption;
+            sarSelectedInput = selectedOption;
             // Clear output state — new run session
             sarOutputProps = null;
             sarShowImage1 = false;
@@ -330,118 +454,129 @@
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ message: `RUN:${selectedOption}` })
                 });
-        
-                statusElement.textContent = "Command sent... Run";
-        
+
+                setStatus("Command sent... Run");
+
                 // Reset images
-                document.getElementById("processedImage1").src = "";
-                document.getElementById("processedImage1").style.display = "none";
-                document.getElementById("noData1").style.display = "flex";
+                var p1 = document.getElementById("processedImage1");
+                if (p1) { p1.src = ""; p1.style.display = "none"; }
+                var nd1 = document.getElementById("noData1");
+                if (nd1) nd1.style.display = "flex";
                 clearColorizedImage();
                 // Reset output properties
-                document.getElementById("outFileSize").textContent = "N/A";
-                document.getElementById("reductionFactor").textContent = "N/A";
-                document.getElementById("sizeCompared").textContent = "N/A";
+                sarSetText("outFileSize", "N/A");
+                sarSetText("reductionFactor", "N/A");
+                sarSetText("sizeCompared", "N/A");
 
-                // document.getElementById("sarProcTime").textContent = "N/A";
-                // START TIMER - Initialize and start counting
+                // START TIMER — persist running state first so a full page reload
+                // (or a row collapse/expand) can resume the timer from this instant.
+                sarRunning = true;
                 sarProcStartTime = Date.now();
-                document.getElementById("sarProcTime").textContent = "0.00s";
+                sarSetText("sarProcTime", "0.00s");
+                saveState();
+                startSarTimer();
 
-                // Clear any existing timer
-                if (sarProcTimer) {
-                    clearInterval(sarProcTimer);
-                }
-                
-                // Update timer every 100ms for smooth counting
-                sarProcTimer = setInterval(() => {
-                    const elapsed = (Date.now() - sarProcStartTime) / 1000;
-                    document.getElementById("sarProcTime").textContent = elapsed.toFixed(2) + "s";
-                }, 100);
+                // Poll for the processed output. This runs to completion even if the
+                // row is collapsed (it writes to localStorage, not just the DOM).
+                await runSarPoller(selectedOption, runSession, logVersionBaseline);
+            } catch (error) {
+                console.error("Error:", error);
+                setStatus("Error sending command.");
+            }
+        }
 
-                // Set timeout
+        // Poll the host for the processed output and, once it arrives, persist +
+        // render the results. DOM-independent (null-guarded), so it completes
+        // correctly whether or not the panel row is currently expanded.
+        async function runSarPoller(cphdFilename, runSession, logVersionBaseline) {
+            window._sarPollerActive = true;
+            try {
                 const startTime = Date.now();
                 const timeout = 900 * 1000;
                 let fileUpdated = false;
-        
+
                 while (!fileUpdated && sarRunSession === runSession && (Date.now() - startTime < timeout)) {
-                    // Fetch the output file properties
                     const response = await fetch(`${FLASK_BASE}/get_tif_file_properties`);
                     const data = await response.json();
-                    if (sarRunSession !== runSession) return; // aborted by reset while awaiting
+                    if (sarRunSession !== runSession) return; // aborted by reset/new run
 
-                    // Check if tif_filename has changed
                     if (data.files.tif_filename && data.files.tif_filename !== lastTifFilename) {
-                        statusElement.textContent = "Getting output properties ... Data Fetched.";
+                        setStatus("Getting output properties ... Data Fetched.");
 
-                        // STOP TIMER when we receive response
-                        if (sarProcTimer) {
-                            clearInterval(sarProcTimer);
-                            sarProcTimer = null;
-                        }
-
-                        // Calculate final elapsed time
+                        // STOP TIMER and freeze the final elapsed time
+                        stopSarTimer();
                         const finalElapsed = (Date.now() - sarProcStartTime) / 1000;
-                        document.getElementById("sarProcTime").textContent = finalElapsed.toFixed(2) + "s";
-        
-                        // Update output file properties
+                        sarSetText("sarProcTime", finalElapsed.toFixed(2) + "s");
+
                         var outSize = data.files.size;
                         var outReduction = "x" + data.files.reduction_scale + " or " + data.files.reduction_factor + "%";
                         var outSizeCompared = data.files.size_compared + "%";
                         var outProcTime = finalElapsed.toFixed(2) + "s";
-                        document.getElementById("outFileSize").textContent = outSize;
-                        document.getElementById("reductionFactor").textContent = outReduction;
-                        document.getElementById("sizeCompared").textContent = outSizeCompared;
+                        sarSetText("outFileSize", outSize);
+                        sarSetText("reductionFactor", outReduction);
+                        sarSetText("sizeCompared", outSizeCompared);
 
                         if (data.files.tif_resolution != null) {
                             var res = data.files.tif_resolution.toFixed(2) + " meters";
-                            document.getElementById("resolution").textContent = res;
+                            sarSetText("resolution", res);
                             if (sarInputProps) sarInputProps.resolution = res;
                         }
 
                         sarOutputProps = { outFileSize: outSize, reductionFactor: outReduction, sizeCompared: outSizeCompared, sarProcTime: outProcTime };
+                        sarRunning = false;
+                        lastTifFilename = data.files.tif_filename;
                         saveState();
 
                         // Fetch and display the new tif image, then colored image after 3s
-                        fetchProcessedFile(selectedOption);
+                        fetchProcessedFile(cphdFilename);
 
                         // Refresh the analysis panel once the profiler logs arrive later
                         notifyAnalysisWhenLogsReady(logVersionBaseline, runSession);
 
-                        // Update the last processed filename
-                        lastTifFilename = data.files.tif_filename;
-        
                         fileUpdated = true;
                     } else {
-                        statusElement.textContent = "Waiting for processed file...";
-                        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for 1 second before retrying
+                        setStatus("Waiting for processed file...");
+                        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait before retrying
                     }
                 }
-        
+
                 if (sarRunSession !== runSession) {
-                    return; // aborted by reset, leave the status set by resetMenu
+                    return; // aborted, leave status set by the aborter
                 } else if (!fileUpdated) {
-                    statusElement.textContent = "Getting output properties ... Timeout.";
+                    stopSarTimer();
+                    sarRunning = false;
+                    saveState();
+                    setStatus("Getting output properties ... Timeout.");
                 } else {
-                    statusElement.textContent = "Getting output properties ... Done.";
+                    setStatus("Getting output properties ... Done.");
                 }
             } catch (error) {
                 console.error("Error:", error);
-                statusElement.textContent = "Error sending command.";
+                setStatus("Error sending command.");
+            } finally {
+                window._sarPollerActive = false;
             }
         }
 
-        function resetMenu() {
-            lastTifFilename = "lastFile";
-            clearState();
-            sarRunSession++;  // abort any in-flight sendRun polling loop
-            const statusElement = document.getElementById("status");
-
-            // Stop processing timer if running
-            if (sarProcTimer) {
-                clearInterval(sarProcTimer);
-                sarProcTimer = null;
+        // Resume a run whose page was fully reloaded mid-processing (the original
+        // sendRun poller was destroyed). Re-establishes the analysis log baseline,
+        // then re-attaches the completion poller using the persisted start time.
+        async function resumeSarPoller(runSession) {
+            let logVersionBaseline = null;
+            try {
+                const logStatus = await fetch(`${FLASK_BASE}/sar_log/status`);
+                logVersionBaseline = (await logStatus.json()).version;
+            } catch (e) {
+                logVersionBaseline = null;
             }
+            if (sarRunSession !== runSession) { window._sarPollerActive = false; return; }
+            runSarPoller(lastCphdFilename || sarSelectedInput, runSession, logVersionBaseline);
+        }
+
+        function resetMenu() {
+            sarRunSession++;   // abort any in-flight poller
+            clearAllState();   // stops the timer, wipes persisted state incl. selection
+            lastTifFilename = "lastFile";
 
             // Ask the backend to Ctrl+C the SAR program on the target (no-op if none
             // is running), then send the normal reset command
@@ -464,26 +599,28 @@
             })
             .catch(error => {
                 console.error("Error:", error);
-                statusElement.textContent = "Error sending command.";
+                setStatusDom("Error sending command.");
             });
-            document.getElementById("menu_sar_input_data").innerHTML = '<option value="" disabled selected>Select input data</option>';
-            document.getElementById("status").textContent = "";
-            document.getElementById("total_pulses").textContent = "N/A";
-            document.getElementById("cphd_file_size").textContent = "N/A";
-            document.getElementById("img_size").textContent = "N/A";
-            document.getElementById("resolution").textContent = "N/A";
-            document.getElementById("area_size").textContent = "N/A";
-            document.getElementById("centre_freq").textContent = "N/A"
+            var sel = document.getElementById("menu_sar_input_data");
+            if (sel) sel.innerHTML = '<option value="" disabled selected>Select input data</option>';
+            sarSetText("status", "");
+            sarSetText("total_pulses", "N/A");
+            sarSetText("cphd_file_size", "N/A");
+            sarSetText("img_size", "N/A");
+            sarSetText("resolution", "N/A");
+            sarSetText("area_size", "N/A");
+            sarSetText("centre_freq", "N/A");
             // Reset images
-            document.getElementById("processedImage1").src = "";
-            document.getElementById("processedImage1").style.display = "none";
-            document.getElementById("noData1").style.display = "flex";
+            var p1 = document.getElementById("processedImage1");
+            if (p1) { p1.src = ""; p1.style.display = "none"; }
+            var nd1 = document.getElementById("noData1");
+            if (nd1) nd1.style.display = "flex";
             clearColorizedImage();
             // Reset output properties
-            document.getElementById("outFileSize").textContent = "N/A";
-            document.getElementById("reductionFactor").textContent = "N/A";
-            document.getElementById("sizeCompared").textContent = "N/A";
-            document.getElementById("sarProcTime").textContent = "N/A";
+            sarSetText("outFileSize", "N/A");
+            sarSetText("reductionFactor", "N/A");
+            sarSetText("sizeCompared", "N/A");
+            sarSetText("sarProcTime", "N/A");
         }
         
         // ================================================================================================================
@@ -1277,7 +1414,15 @@
                 for (const mutation of mutations) {
                     for (const node of mutation.addedNodes) {
                         if (node.nodeType !== 1) continue;
-                        if (node.id === 'processedImage1' || node.querySelector('#processedImage1')) {
+                        // Any SAR panel re-appearing (image, input picker, or output)
+                        // should trigger a restore. restoreState is idempotent and
+                        // null-guarded, so restoring whatever is currently present is safe.
+                        var isPanel = node.id === 'processedImage1' || node.id === 'menu_sar_input_data' ||
+                            node.id === 'sarProcTime' ||
+                            (node.querySelector && (node.querySelector('#processedImage1') ||
+                                node.querySelector('#menu_sar_input_data') ||
+                                node.querySelector('#sarProcTime')));
+                        if (isPanel) {
                             if (localStorage.getItem(SAR_STATE_KEY)) restoreState();
                             return;
                         }

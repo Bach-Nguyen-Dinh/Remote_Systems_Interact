@@ -51,26 +51,22 @@
             <p><strong>Area Size:</strong> <span id="area_size">N/A</span></p>
         </div>
     </div>
-    <script>
-        var is_direct_access_sar_input_data = window.location.port === '3000';
-        FLASK_BASE_SAR_INPUT_DATA = is_direct_access_sar_input_data
-            ? `http://${window.location.hostname}:5000`
-            : `https://${window.location.hostname}`
-        
+    <script>        
         function fetch_list_sar_input_data() {
             const statusElement = document.getElementById("status");
             const select = document.getElementById("menu_sar_input_data");
             const previouslySelected = select.value; // preserve current selection across rebuild
-            statusElement.textContent = "Fetching file list..."; // Show status message
+            // statusElement.textContent = "Fetching file list..."; // Show status message
+            statusElement.textContent = "";
 
-            fetch(`${FLASK_BASE_SAR_INPUT_DATA}/send_message`, {
+            fetch(`${FLASK_BASE}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: "4" })
             })
             .then(() => {
                 setTimeout(() => {
-                    fetch(`${FLASK_BASE_SAR_INPUT_DATA}/get_cphd_files`)
+                    fetch(`${FLASK_BASE}/get_cphd_files`)
                         .then(response => response.json())
                         .then(data => {
                             console.log("Fetched CPHD files:", data.files);
@@ -82,7 +78,7 @@
                                 select.innerHTML = '<option value="" disabled>No files available</option>';
                                 document.getElementById("cphd_file_size").textContent = "N/A";
                             } else {
-                                statusElement.textContent = `Fetched ${data.files.length} file(s).`;
+                                // statusElement.textContent = `Fetched ${data.files.length} file(s).`;
 
                                 data.files.forEach(file => {
                                     const option = document.createElement('option');
@@ -94,6 +90,12 @@
                                 if (data.files.includes(previouslySelected)) {
                                     select.value = previouslySelected;
                                 }
+
+                                // Persist the option list (and current selection) so the
+                                // dropdown survives a Grafana row collapse/expand.
+                                sarInputFileList = data.files;
+                                sarSelectedInput = select.value || sarSelectedInput;
+                                saveState();
                             }
                         })
                         .catch(error => {
@@ -112,7 +114,7 @@
             var selectedFile = document.getElementById("menu_sar_input_data").value;
             if (!selectedFile) return;
 
-            fetch(FLASK_BASE_SAR_INPUT_DATA + '/get_cphd_file_properties')
+            fetch(FLASK_BASE + '/get_cphd_file_properties')
                 .then(function(response) { return response.json(); })
                 .then(function(data) {
                     var props = { cphd_file_size: 'N/A', total_pulses: 'N/A', centre_freq: 'N/A', img_size: 'N/A', resolution: 'N/A', area_size: 'N/A' };
@@ -153,10 +155,14 @@
                 return;
             }
 
-            // Clear all saved state — new load session
-            clearState();
+            // Clear run results for the new load session, but keep the picker; then
+            // record the newly selected file so it survives a row collapse/expand.
+            clearResultState();
+            sarSelectedInput = selectedOption;
+            saveState();
 
             // Reset images and output properties
+            statusElement.textContent = "";
             document.getElementById("processedImage1").src = "";
             document.getElementById("processedImage1").style.display = "none";
             document.getElementById("noData1").style.display = "flex";
@@ -167,21 +173,21 @@
             document.getElementById("sarProcTime").textContent = "N/A";
 
             try {
-                await fetch(`${FLASK_BASE_SAR_INPUT_DATA}/send_message`, {
+                await fetch(`${FLASK_BASE}/send_message`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ message: `SIZE:${selectedOption}` })
                 });
-                statusElement.textContent = "Loading file properties...";
+                // statusElement.textContent = "Loading file properties...";
 
                 const startTime = Date.now();
                 const timeout = 30 * 1000;
                 while (Date.now() - startTime < timeout) {
-                    const response = await fetch(`${FLASK_BASE_SAR_INPUT_DATA}/get_cphd_file_properties`);
+                    const response = await fetch(`${FLASK_BASE}/get_cphd_file_properties`);
                     const data = await response.json();
                     if (data.files && data.files.filename === selectedOption) {
                         fetch_properties_sar_input_data();
-                        statusElement.textContent = "Command sent... Load.";
+                        // statusElement.textContent = "Command sent... Load.";
                         return;
                     }
                     await new Promise(resolve => setTimeout(resolve, 500));
