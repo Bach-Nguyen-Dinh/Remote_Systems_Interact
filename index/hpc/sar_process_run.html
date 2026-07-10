@@ -26,15 +26,28 @@
         .buttonBlue-sar:hover {
             background-color: #3696ff;
         }
+        /* Running state: kept visible and still clickable (so a click can report
+           "already running"), but visually disabled — dimmed, greyed, not-allowed
+           cursor, and no hover brightening. */
+        .buttonBlue-sar.running,
+        .buttonBlue-sar.running:hover {
+            background-color: #6b7a8f;
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
     <div class="sar-run-wrapper">
-        <button class="buttonBlue-sar" onclick="sendRun()">Run</button>
+        <button id="sarRunButton" class="buttonBlue-sar" onclick="sendRun()">Run</button>
     </div>
 
     <script>
-        
+        // This panel's row may collapse/expand independently, which recreates the
+        // button. Re-sync its disabled look with the current run state on each
+        // (re-)execution. updateRunButtonState lives in the image panel's script,
+        // which shares this global scope; guard in case it isn't loaded yet.
+        if (typeof updateRunButtonState === 'function') updateRunButtonState();
     </script>
 </body>
 </html>

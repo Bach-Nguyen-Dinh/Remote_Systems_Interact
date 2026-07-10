@@ -149,7 +149,25 @@
         // Null-guarded DOM helpers — elements are absent while the row is collapsed.
         function sarSetText(id, val) { var el = document.getElementById(id); if (el) el.textContent = val; }
         function setStatusDom(text) { var el = document.getElementById("status"); if (el) el.textContent = text; }
-        function setStatus(text) { sarStatus = text; setStatusDom(text); saveState(); }
+        // While a transient message is showing, keep tracking/persisting the real
+        // status but don't let it overwrite the transient text in the DOM.
+        function setStatus(text) { sarStatus = text; if (!window._sarTransientActive) setStatusDom(text); saveState(); }
+
+        // Briefly show a message over the live status, then revert to whatever the
+        // real status is by then. Used for the "already running" click feedback so
+        // it stays visible for a few seconds instead of being clobbered by the
+        // poller's next status update. Timer id lives on window to survive a row
+        // re-expand (script re-execution).
+        function showTransientStatus(text, ms) {
+            window._sarTransientActive = true;
+            setStatusDom(text);
+            if (window._sarTransientTimer) clearTimeout(window._sarTransientTimer);
+            window._sarTransientTimer = setTimeout(function() {
+                window._sarTransientActive = false;
+                window._sarTransientTimer = null;
+                setStatusDom(sarStatus); // revert to the current real status
+            }, ms);
+        }
 
         // Display timer. Its id lives on window so a script re-execution (row
         // expand) can never orphan a running interval, and the callback is
@@ -199,6 +217,7 @@
             lastCphdFilename = null;
             sarRunning = false;
             saveState();
+            updateRunButtonState();
         }
 
         // Full reset, including the input dropdown selection/list and the timer.
@@ -248,7 +267,7 @@
             select.innerHTML = '';
             var placeholder = document.createElement('option');
             placeholder.value = '';
-            placeholder.textContent = 'Select input data';
+            placeholder.textContent = 'Click to choose input data';
             placeholder.disabled = true;
             select.appendChild(placeholder);
 
@@ -307,6 +326,7 @@
                 //    and a completion poller derived from the persisted start time.
                 if (state.running) {
                     sarRunning = true;
+                    updateRunButtonState();
                     if (!window._sarPollerActive) {
                         window._sarPollerActive = true; // claim now to avoid a double resume
                         startSarTimer();
@@ -422,7 +442,33 @@
             if (nd) nd.style.display = "flex";
         }
 
+        // Reflect the running state on the Run button (in the separate run panel)
+        // without hiding it: dim it and switch the cursor to not-allowed. The
+        // button stays clickable so sendRun() can still surface the "already
+        // running" message on an attempted click. Null-guarded because the run
+        // panel row may be collapsed (button absent from the DOM).
+        function updateRunButtonState() {
+            // Reset/Stop button lives in a separate panel: "Stop" while a SAR
+            // process is running, "Reset" otherwise. Updated independently of the
+            // Run button below, since that row may be collapsed (button absent).
+            var resetBtn = document.getElementById("sarResetButton");
+            if (resetBtn) resetBtn.textContent = sarRunning ? "Stop" : "Reset";
+
+            var btn = document.getElementById("sarRunButton");
+            if (!btn) return;
+            if (sarRunning) btn.classList.add("running");
+            else btn.classList.remove("running");
+        }
+
         async function sendRun() {
+            // Block re-entry while a SAR process is already in progress. The
+            // button is not natively disabled (so this handler still fires), which
+            // lets us tell the user what happened instead of silently ignoring it.
+            if (sarRunning) {
+                showTransientStatus("SAR process is already running.", 3000);
+                return;
+            }
+
             const selectedOption = (document.getElementById("menu_sar_input_data") || {}).value || sarSelectedInput;
             if (!selectedOption) {
                 setStatus("Please select a file first.");
@@ -455,7 +501,7 @@
                     body: JSON.stringify({ message: `RUN:${selectedOption}` })
                 });
 
-                setStatus("Command sent... Run");
+                // setStatus("Command sent... Run");
 
                 // Reset images
                 var p1 = document.getElementById("processedImage1");
@@ -474,6 +520,7 @@
                 sarProcStartTime = Date.now();
                 sarSetText("sarProcTime", "0.00s");
                 saveState();
+                updateRunButtonState();
                 startSarTimer();
 
                 // Poll for the processed output. This runs to completion even if the
@@ -501,7 +548,7 @@
                     if (sarRunSession !== runSession) return; // aborted by reset/new run
 
                     if (data.files.tif_filename && data.files.tif_filename !== lastTifFilename) {
-                        setStatus("Getting output properties ... Data Fetched.");
+                        setStatus("");
 
                         // STOP TIMER and freeze the final elapsed time
                         stopSarTimer();
@@ -525,7 +572,9 @@
                         sarOutputProps = { outFileSize: outSize, reductionFactor: outReduction, sizeCompared: outSizeCompared, sarProcTime: outProcTime };
                         sarRunning = false;
                         lastTifFilename = data.files.tif_filename;
+                        setStatus("CPHD file processed");
                         saveState();
+                        updateRunButtonState();
 
                         // Fetch and display the new tif image, then colored image after 3s
                         fetchProcessedFile(cphdFilename);
@@ -535,7 +584,7 @@
 
                         fileUpdated = true;
                     } else {
-                        setStatus("Waiting for processed file...");
+                        setStatus("Processing CPHD file");
                         await new Promise(resolve => setTimeout(resolve, 1000)); // Wait before retrying
                     }
                 }
@@ -546,9 +595,10 @@
                     stopSarTimer();
                     sarRunning = false;
                     saveState();
-                    setStatus("Getting output properties ... Timeout.");
+                    updateRunButtonState();
+                    // setStatus("Getting output properties ... Timeout.");
                 } else {
-                    setStatus("Getting output properties ... Done.");
+                    // setStatus("Getting output properties ... Done.");
                 }
             } catch (error) {
                 console.error("Error:", error);
@@ -576,6 +626,7 @@
         function resetMenu() {
             sarRunSession++;   // abort any in-flight poller
             clearAllState();   // stops the timer, wipes persisted state incl. selection
+            updateRunButtonState(); // re-enable the Run button (sarRunning now false)
             lastTifFilename = "lastFile";
 
             // Ask the backend to Ctrl+C the SAR program on the target (no-op if none
@@ -602,7 +653,7 @@
                 setStatusDom("Error sending command.");
             });
             var sel = document.getElementById("menu_sar_input_data");
-            if (sel) sel.innerHTML = '<option value="" disabled selected>Select input data</option>';
+            if (sel) sel.innerHTML = '<option value="" disabled selected>Click to choose input data</option>';
             sarSetText("status", "");
             sarSetText("total_pulses", "N/A");
             sarSetText("cphd_file_size", "N/A");
@@ -695,7 +746,7 @@
                     document.getElementById('upLat_LwEthOnb').textContent = `${jitterMs.toFixed(4)} ms`;
                     document.getElementById('upLostTotal_LwEthOnb').textContent = `${lostPackets.toFixed(4)}/${totalPackets.toFixed(4)} Gbits (${lostPercent.toFixed(2)}%)`;
          
-                    statusNetElement.textContent = "Waiting for results... Done";
+                    statusNetElement.textContent = "";
                 })
                 .catch(error => {
                     statusNetElement.textContent = "Test run error";

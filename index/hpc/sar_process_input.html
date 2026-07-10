@@ -36,78 +36,140 @@
 <body>
     <div class="dropdown-container-sar">
         <h2>Input</h2>
-        <select id="menu_sar_input_data" class="select-sar" onclick="fetch_list_sar_input_data()" onchange="sendLoad()">
-            <option value="" disabled selected>Select input data</option>
+        <select id="menu_sar_input_data" class="select-sar" onmouseenter="refresh_sar_input_list()" onfocus="refresh_sar_input_list()" onchange="sendLoad()" onblur="sarFlushPendingFileList()">
+            <option value="" disabled selected>Click to choose input data</option>
         </select>
         <div class="status-container">
             <p id="status">&nbsp;</p>
         </div>
         <div class="status-info">
-            <p><strong>CPHD File Size:</strong> <span id="cphd_file_size">N/A</span></p>
+            <p><strong>CPHD file size:</strong> <span id="cphd_file_size">N/A</span></p>
             <p><strong>Pulses:</strong> <span id="total_pulses">N/A</span></p>
             <p><strong>Frequency:</strong> <span id="centre_freq">N/A</span></p>
-            <p><strong>Image Size:</strong> <span id="img_size">N/A</span></p>
+            <p><strong>Image size:</strong> <span id="img_size">N/A</span></p>
             <p><strong>Resolution:</strong> <span id="resolution">N/A</span></p>
-            <p><strong>Area Size:</strong> <span id="area_size">N/A</span></p>
+            <p><strong>Area size:</strong> <span id="area_size">N/A</span></p>
         </div>
     </div>
     <script>        
-        function fetch_list_sar_input_data() {
-            const statusElement = document.getElementById("status");
-            const select = document.getElementById("menu_sar_input_data");
-            const previouslySelected = select.value; // preserve current selection across rebuild
-            // statusElement.textContent = "Fetching file list..."; // Show status message
-            statusElement.textContent = "";
+        // Module-level state (var, not let/const, so the script can safely
+        // re-execute on Grafana row expand — see project notes).
+        var sarMenuRefreshInFlight = false; // guards against overlapping refreshes
+        var sarPendingFileList = null;      // list that arrived while the menu was open
+        var sarLastRefreshTs = 0;           // throttle timestamp for hover-driven refresh
+
+        // Is the native dropdown currently open? While a <select>'s popup is open the
+        // element holds focus, so activeElement === select is a reliable proxy. We use
+        // this to guarantee we NEVER mutate the <option> list while the user is looking
+        // at (and about to click) it.
+        function sarMenuIsOpen() {
+            var select = document.getElementById("menu_sar_input_data");
+            return !!select && document.activeElement === select;
+        }
+
+        // Apply a freshly fetched file list to the <select>, but only touch the DOM
+        // when the list actually changed — and preserve the current selection so an
+        // in-progress interaction isn't disturbed.
+        function sarApplyFileList(files) {
+            var select = document.getElementById("menu_sar_input_data");
+            if (!select) return;
+            files = files || [];
+
+            if (files.length === 0) {
+                select.innerHTML = '<option value="" disabled selected>No files available</option>';
+                var sz = document.getElementById("cphd_file_size");
+                if (sz) sz.textContent = "N/A";
+                sarInputFileList = [];
+                saveState();
+                return;
+            }
+
+            // Compare against the file options currently rendered (ignore placeholder).
+            var current = Array.prototype.map.call(select.options, function(o) { return o.value; })
+                               .filter(function(v) { return v !== ""; });
+            var changed = current.length !== files.length ||
+                          files.some(function(f, i) { return f !== current[i]; });
+
+            if (changed) {
+                var keep = select.value; // preserve the user's current selection
+                select.innerHTML = '';
+                var placeholder = document.createElement('option');
+                placeholder.value = '';
+                placeholder.textContent = 'Click to choose input data';
+                placeholder.disabled = true;
+                select.appendChild(placeholder);
+                files.forEach(function(file) {
+                    var option = document.createElement('option');
+                    option.value = file;
+                    option.textContent = file;
+                    select.appendChild(option);
+                });
+                if (keep && files.indexOf(keep) !== -1) select.value = keep;
+                else placeholder.selected = true;
+            }
+
+            // Persist the option list (and current selection) so the dropdown
+            // survives a Grafana row collapse/expand.
+            sarInputFileList = files;
+            sarSelectedInput = select.value || sarSelectedInput;
+            saveState();
+        }
+
+        // Refresh the CPHD file list from the target. Triggered on HOVER (mouseenter)
+        // — and focus for keyboard users — so the fetch completes and the options are
+        // rebuilt in the moment BEFORE the user opens the menu, while it is still
+        // closed. That way the click opens an already-current, stable list and no
+        // rebuild ever races the open.
+        //
+        // Belt-and-suspenders: if the user hovers and clicks so fast that the fetch is
+        // still in flight when the menu opens, we must NOT rebuild the options then, or
+        // the option under the cursor becomes a detached "ghost" whose click never
+        // commits (onchange/sendLoad never fires, load request silently dropped). In
+        // that case we stash the result and apply it once the menu closes (blur). The
+        // only exception is a menu with no real options yet (first population): there's
+        // nothing live to ghost, so we apply immediately.
+        function refresh_sar_input_list() {
+            if (sarMenuRefreshInFlight) return;
+            // Throttle: hovering fires repeatedly; don't spam the target with "4".
+            // If we refreshed very recently the list is already current.
+            if (Date.now() - sarLastRefreshTs < 1500) return;
+            sarLastRefreshTs = Date.now();
+            sarMenuRefreshInFlight = true;
+            document.getElementById("status").textContent = "";
 
             fetch(`${FLASK_BASE}/send_message`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ message: "4" })
             })
-            .then(() => {
-                setTimeout(() => {
-                    fetch(`${FLASK_BASE}/get_cphd_files`)
-                        .then(response => response.json())
-                        .then(data => {
-                            console.log("Fetched CPHD files:", data.files);
-
-                            select.innerHTML = ''; // Clear existing options
-
-                            if (data.files.length === 0) {
-                                statusElement.textContent = "No CPHD files found.";
-                                select.innerHTML = '<option value="" disabled>No files available</option>';
-                                document.getElementById("cphd_file_size").textContent = "N/A";
-                            } else {
-                                // statusElement.textContent = `Fetched ${data.files.length} file(s).`;
-
-                                data.files.forEach(file => {
-                                    const option = document.createElement('option');
-                                    option.value = file;
-                                    option.textContent = file;
-                                    select.appendChild(option);
-                                });
-
-                                if (data.files.includes(previouslySelected)) {
-                                    select.value = previouslySelected;
-                                }
-
-                                // Persist the option list (and current selection) so the
-                                // dropdown survives a Grafana row collapse/expand.
-                                sarInputFileList = data.files;
-                                sarSelectedInput = select.value || sarSelectedInput;
-                                saveState();
-                            }
-                        })
-                        .catch(error => {
-                            console.error('Error fetching CPHD files:', error);
-                            statusElement.textContent = "Error fetching file list.";
-                        });
-                }, 500);
+            .then(function() { return new Promise(function(res) { setTimeout(res, 500); }); })
+            .then(function() { return fetch(`${FLASK_BASE}/get_cphd_files`); })
+            .then(function(response) { return response.json(); })
+            .then(function(data) {
+                var files = data.files || [];
+                console.log("Fetched CPHD files:", files);
+                var select = document.getElementById("menu_sar_input_data");
+                var hasOptions = !!select && Array.prototype.some.call(select.options, function(o) { return o.value !== ""; });
+                if (!sarMenuIsOpen() || !hasOptions) {
+                    sarApplyFileList(files);
+                } else {
+                    sarPendingFileList = files; // defer until the menu closes
+                }
             })
-            .catch(error => {
-                console.error("Error sending fetch command:", error);
-                statusElement.textContent = "Error requesting file fetch.";
-            });
+            .catch(function(error) {
+                console.error('Error fetching CPHD files:', error);
+                document.getElementById("status").textContent = "Error fetching file list.";
+            })
+            .finally(function() { sarMenuRefreshInFlight = false; });
+        }
+
+        // Apply a list that arrived while the menu was open, now that it has closed.
+        function sarFlushPendingFileList() {
+            if (sarPendingFileList !== null) {
+                var files = sarPendingFileList;
+                sarPendingFileList = null;
+                sarApplyFileList(files);
+            }
         }
 
         function fetch_properties_sar_input_data() {
@@ -147,7 +209,8 @@
         }
 
         async function sendLoad() {
-            const selectedOption = document.getElementById("menu_sar_input_data").value;
+            const select = document.getElementById("menu_sar_input_data");
+            const selectedOption = select.value;
             const statusElement = document.getElementById("status");
 
             if (!selectedOption) {
@@ -155,22 +218,48 @@
                 return;
             }
 
+            // Don't tear down an in-progress run by loading a new file. Loading
+            // calls clearResultState() (sarRunning=false) which would re-enable the
+            // Run button and orphan the active poller/timer. Block it, keep the Run
+            // button greyed, and revert the dropdown to the running file.
+            if (typeof sarRunning !== "undefined" && sarRunning) {
+                if (typeof showTransientStatus === "function") {
+                    showTransientStatus("SAR process is already running.", 3000);
+                } else {
+                    statusElement.textContent = "SAR process is already running.";
+                }
+                if (typeof sarSelectedInput !== "undefined" && sarSelectedInput) {
+                    select.value = sarSelectedInput;
+                }
+                if (typeof updateRunButtonState === "function") updateRunButtonState();
+                return;
+            }
+
             // Clear run results for the new load session, but keep the picker; then
             // record the newly selected file so it survives a row collapse/expand.
-            clearResultState();
+            //
+            // Every call/element below lives in a SIBLING Grafana panel (image/output).
+            // When those rows are collapsed their HTML is removed from the shared DOM
+            // and their scripts' globals may be undefined, so an unguarded call here
+            // (e.g. document.getElementById("processedImage1").src) throws a
+            // TypeError/ReferenceError and aborts sendLoad BEFORE the SIZE request is
+            // sent below — making the load silently fail. Guard everything so the
+            // load request always goes out regardless of which rows are expanded.
+            if (typeof clearResultState === "function") clearResultState();
             sarSelectedInput = selectedOption;
-            saveState();
+            if (typeof saveState === "function") saveState();
 
-            // Reset images and output properties
+            // Reset images and output properties (skip any element whose panel row
+            // is currently collapsed and therefore not in the DOM).
             statusElement.textContent = "";
-            document.getElementById("processedImage1").src = "";
-            document.getElementById("processedImage1").style.display = "none";
-            document.getElementById("noData1").style.display = "flex";
-            clearColorizedImage();
-            document.getElementById("outFileSize").textContent = "N/A";
-            document.getElementById("reductionFactor").textContent = "N/A";
-            document.getElementById("sizeCompared").textContent = "N/A";
-            document.getElementById("sarProcTime").textContent = "N/A";
+            var setEl = function(id, fn) { var el = document.getElementById(id); if (el) fn(el); };
+            setEl("processedImage1", function(el) { el.src = ""; el.style.display = "none"; });
+            setEl("noData1", function(el) { el.style.display = "flex"; });
+            if (typeof clearColorizedImage === "function") clearColorizedImage();
+            setEl("outFileSize", function(el) { el.textContent = "N/A"; });
+            setEl("reductionFactor", function(el) { el.textContent = "N/A"; });
+            setEl("sizeCompared", function(el) { el.textContent = "N/A"; });
+            setEl("sarProcTime", function(el) { el.textContent = "N/A"; });
 
             try {
                 await fetch(`${FLASK_BASE}/send_message`, {

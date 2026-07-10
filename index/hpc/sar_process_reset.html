@@ -30,10 +30,19 @@
 </head>
 <body>
     <div class="sar-reset-wrapper">
-        <button class="buttonRed-sar" onclick="resetMenu()">Reset</button>
+        <button id="sarResetButton" class="buttonRed-sar" onclick="resetMenu()">Reset</button>
     </div>
 
     <script>
+        // Label reflects SAR state: "Stop" while a process is running (this button
+        // also sends STOPSAR to the target), otherwise "Reset". Set it on every
+        // (re-)execution so it is correct when this Grafana row re-expands mid-run.
+        // Live transitions are driven by updateRunButtonState() in the image panel;
+        // sarRunning is a shared global defined there.
+        (function () {
+            var btn = document.getElementById("sarResetButton");
+            if (btn) btn.textContent = (typeof sarRunning !== "undefined" && sarRunning) ? "Stop" : "Reset";
+        })();
     </script>
 </body>
 </html>
