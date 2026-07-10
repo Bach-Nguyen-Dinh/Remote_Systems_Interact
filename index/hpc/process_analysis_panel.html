@@ -115,7 +115,15 @@
                 { id: 'profiler_memory_usage',         type: 'memory_usage'        },
             ];
 
+            // Persisted "analysis is being shown" flag. On a Grafana row
+            // collapse/expand (or a full page reload) this whole script re-runs
+            // against a fresh, empty DOM. This flag lets the mount logic below
+            // re-fetch and re-display the profiler images so they survive the
+            // event, mirroring the SAR image panel's persistence approach.
+            const PROFILER_SHOWN_KEY = 'profiler_analysis_shown';
+
             function clearAnalysis() {
+                localStorage.removeItem(PROFILER_SHOWN_KEY);
                 IMAGE_MAP.forEach(({ id }) => {
                     const img = document.getElementById(id);
                     img.src = '';
@@ -126,6 +134,9 @@
 
             function updateAnalysis() {
                 clearAnalysis();
+                // Record intent to show — clearAnalysis() above cleared it, so set
+                // it after. A later collapse/expand re-reads this and restores.
+                localStorage.setItem(PROFILER_SHOWN_KEY, '1');
                 const bust = Date.now();
                 IMAGE_MAP.forEach(({ id, type }) => {
                     const img = document.getElementById(id);
@@ -145,6 +156,10 @@
             // Fired while panel was collapsed — show on mount
             if (localStorage.getItem('update_analysis_pending')) {
                 localStorage.removeItem('update_analysis_pending');
+                updateAnalysis();
+            } else if (localStorage.getItem(PROFILER_SHOWN_KEY)) {
+                // Analysis images were on screen before this row collapse/expand
+                // (or page reload) — re-fetch and re-display them.
                 updateAnalysis();
             }
 
@@ -169,6 +184,10 @@
                 window.removeEventListener('clear_analysis', window._analysisClearHandler);
             }
             window._analysisClearHandler = function () {
+                // Always drop the persisted "shown" flag, even while the row is
+                // collapsed (DOM detached) — otherwise a reset done with this row
+                // collapsed would let the images reappear on re-expand.
+                localStorage.removeItem(PROFILER_SHOWN_KEY);
                 if (!document.getElementById('profiler_overall_cpu_usage')) return;
                 clearAnalysis();
             };
