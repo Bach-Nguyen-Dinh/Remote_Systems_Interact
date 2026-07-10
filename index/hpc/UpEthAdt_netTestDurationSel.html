@@ -25,7 +25,15 @@
     </div>
 
     <script>
-        let testDurationUpEthAdt = null;
+        // Persist selection in-memory on `window` so it survives Grafana row
+        // collapse/expand (JS scope stays alive) but resets to "Select Duration"
+        // on a real page reload. The guard prevents the value being wiped when
+        // the script re-executes on row re-expand. `var` (not `let`) is required
+        // because top-level `let` throws redeclaration on that re-execution.
+        if (typeof window.testDurationUpEthAdt === "undefined") {
+            window.testDurationUpEthAdt = null;
+        }
+        var testDurationUpEthAdt;
 
         function populateDurationDropdownUpEthAdt() {
             let dropdown = document.getElementById("durationDropdown_UpEthAdt");
@@ -49,22 +57,19 @@
                 dropdown.appendChild(option);
             }
 
-            // Restore previously selected value so it survives row collapse/expand
-            try {
-                const saved = localStorage.getItem("durationUpEthAdt");
-                if (saved) {
-                    dropdown.value = saved;
-                    testDurationUpEthAdt = parseInt(saved, 10);
-                }
-            } catch (e) {}
+            // Restore in-memory selection so it survives row collapse/expand.
+            // On a fresh page load window.testDurationUpEthAdt is null, so the
+            // dropdown stays on the disabled "Select Duration" default.
+            if (window.testDurationUpEthAdt != null) {
+                dropdown.value = String(window.testDurationUpEthAdt);
+            }
         }
 
         function setTestDurationUpEthAdt() {
             const dropdown = document.getElementById("durationDropdown_UpEthAdt");
-            testDurationUpEthAdt = parseInt(dropdown.value, 10);
+            window.testDurationUpEthAdt = parseInt(dropdown.value, 10);
             document.getElementById("statusNet_UpEthAdt").textContent = "";
 
-            localStorage.setItem("durationUpEthAdt", dropdown.value);
             localStorage.setItem("panelSync", JSON.stringify({
                 type: "duration",
                 value: dropdown.value
