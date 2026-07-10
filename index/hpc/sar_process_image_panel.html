@@ -672,8 +672,14 @@
             sarSetText("reductionFactor", "N/A");
             sarSetText("sizeCompared", "N/A");
             sarSetText("sarProcTime", "N/A");
+
+            // Clear the profiler analysis panel images too. Drop any pending
+            // update so a queued refresh can't repopulate them after the reset,
+            // then tell the analysis panel to wipe whatever it is showing.
+            localStorage.removeItem('update_analysis_pending');
+            window.dispatchEvent(new CustomEvent('clear_analysis'));
         }
-        
+
         // ================================================================================================================
         // ========================================= Lower Ethernet Port on board =========================================
         // ================================================================================================================

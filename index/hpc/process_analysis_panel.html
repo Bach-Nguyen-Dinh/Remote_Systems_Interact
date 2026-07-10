@@ -160,6 +160,19 @@
                 updateAnalysis();
             };
             window.addEventListener('update_analysis', window._analysisUpdateHandler);
+
+            // Fired by the SAR Reset button (resetMenu). Wipe the profiler images.
+            // If the row is collapsed the images aren't in the DOM anyway, and the
+            // reset already cleared the pending-update flag, so nothing will bring
+            // them back on re-expand.
+            if (window._analysisClearHandler) {
+                window.removeEventListener('clear_analysis', window._analysisClearHandler);
+            }
+            window._analysisClearHandler = function () {
+                if (!document.getElementById('profiler_overall_cpu_usage')) return;
+                clearAnalysis();
+            };
+            window.addEventListener('clear_analysis', window._analysisClearHandler);
         })();
     </script>
 </body>
