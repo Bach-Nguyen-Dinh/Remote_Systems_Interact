@@ -41,16 +41,26 @@
 <body>
     <div class="container-EthAdtNetTest">
         <div class="dropdown-container-EthAdtNetTest">
-                <p>Test duration</p>
-                <select id="durationDropdown_LwEthAdt"></select>
-                <div class="status-container-EthAdtNetTest">
-                    <p id="statusNet_LwEthAdt">&nbsp;</p>
-                </div>
+            <p>Test duration</p>
+            <select id="durationDropdown_LwEthAdt" 
+                onchange="setTestDuration_LwEthAdt()">
+            </select>
+            <div class="status-container-EthAdtNetTest">
+                <p id="statusNet_LwEthAdt">&nbsp;</p>
+            </div>
         </div>
     </div>
 
     <script>
-        let testDurationLwEthAdt = null;
+        // Persist selection in-memory on `window` so it survives Grafana row
+        // collapse/expand (JS scope stays alive) but resets to "Select Duration"
+        // on a real page reload. The guard prevents the value being wiped when
+        // the script re-executes on row re-expand. `var` (not `let`) is required
+        // because top-level `let` throws redeclaration on that re-execution.
+        if (typeof window.testDurationLwEthAdt === "undefined") {
+            window.testDurationLwEthAdt = null;
+        }
+        var testDurationLwEthAdt;
 
         function populateDurationDropdown_LwEthAdt() {
             let dropdown = document.getElementById("durationDropdown_LwEthAdt");
@@ -74,22 +84,26 @@
                 dropdown.appendChild(option);
             }
 
-            // Restore previously selected value so it survives row collapse/expand
-            try {
-                const saved = localStorage.getItem("durationLwEthAdt");
-                if (saved) {
-                    dropdown.value = saved;
-                    testDurationLwEthAdt = parseInt(saved, 10);
-                }
-            } catch (e) {}
+            // Restore in-memory selection so it survives row collapse/expand.
+            // On a fresh page load window.testDurationLwEthAdt is null, so the
+            // dropdown stays on the disabled "Select Duration" default.
+            if (window.testDurationLwEthAdt != null) {
+                dropdown.value = String(window.testDurationLwEthAdt);
+            }
         }
 
         function setTestDuration_LwEthAdt() {
+            document.getElementById("statusNet_LwEthAdt").textContent = "";
+            document.getElementById("upBW_LwEthAdt").textContent = "N/A";
+            document.getElementById("upLat_LwEthAdt").textContent = "N/A";
+            document.getElementById("upLostTotal_LwEthAdt").textContent = "N/A";
+            document.getElementById("downBW_LwEthAdt").textContent = "N/A";
+            document.getElementById("downLat_LwEthAdt").textContent = "N/A";
+            document.getElementById("downLostTotal_LwEthAdt").textContent = "N/A";
             const dropdown = document.getElementById("durationDropdown_LwEthAdt");
-            testDurationLwEthAdt = parseInt(dropdown.value, 10);
+            window.testDurationLwEthAdt = parseInt(dropdown.value, 10);
             document.getElementById("statusNet_LwEthAdt").textContent = "";
 
-            localStorage.setItem("durationLwEthAdt", dropdown.value);
             localStorage.setItem("panelSync", JSON.stringify({
                 type: "duration",
                 value: dropdown.value
