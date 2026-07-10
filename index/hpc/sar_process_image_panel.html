@@ -509,6 +509,10 @@
                 var nd1 = document.getElementById("noData1");
                 if (nd1) nd1.style.display = "flex";
                 clearColorizedImage();
+                // Clear the profiler analysis images too — they'll be repopulated
+                // when this run's profiler logs arrive (notifyAnalysisWhenLogsReady).
+                localStorage.removeItem('update_analysis_pending');
+                window.dispatchEvent(new CustomEvent('clear_analysis'));
                 // Reset output properties
                 sarSetText("outFileSize", "N/A");
                 sarSetText("reductionFactor", "N/A");

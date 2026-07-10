@@ -279,6 +279,12 @@
             setEl("processedImage1", function(el) { el.src = ""; el.style.display = "none"; });
             setEl("noData1", function(el) { el.style.display = "flex"; });
             if (typeof clearColorizedImage === "function") clearColorizedImage();
+            // Clear the profiler analysis images too, so a new input selection
+            // doesn't leave the previous run's analysis on screen. window/
+            // localStorage always exist, so this is safe even when sibling rows
+            // are collapsed.
+            localStorage.removeItem('update_analysis_pending');
+            window.dispatchEvent(new CustomEvent('clear_analysis'));
             setEl("outFileSize", function(el) { el.textContent = "N/A"; });
             setEl("reductionFactor", function(el) { el.textContent = "N/A"; });
             setEl("sizeCompared", function(el) { el.textContent = "N/A"; });
