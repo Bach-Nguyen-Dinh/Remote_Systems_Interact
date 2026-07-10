@@ -36,7 +36,7 @@
 <body>
     <div class="dropdown-container-sar">
         <h2>Input</h2>
-        <select id="menu_sar_input_data" class="select-sar" onmouseenter="refresh_sar_input_list()" onfocus="refresh_sar_input_list()" onchange="sendLoad()" onblur="sarFlushPendingFileList()">
+        <select id="menu_sar_input_data" class="select-sar" onmousedown="return sarGuardInteraction(event)" onkeydown="return sarGuardInteraction(event)" onmouseenter="refresh_sar_input_list()" onfocus="refresh_sar_input_list()" onchange="sendLoad()" onblur="sarFlushPendingFileList()">
             <option value="" disabled selected>Click to choose input data</option>
         </select>
         <div class="status-container">
@@ -57,6 +57,26 @@
         var sarMenuRefreshInFlight = false; // guards against overlapping refreshes
         var sarPendingFileList = null;      // list that arrived while the menu was open
         var sarLastRefreshTs = 0;           // throttle timestamp for hover-driven refresh
+
+        // Is a SAR run in progress? sarRunning lives in the sibling image panel's
+        // script (shared global scope); it may be undefined if that row is collapsed.
+        function sarIsRunning() {
+            return typeof sarRunning !== "undefined" && sarRunning;
+        }
+
+        // While a run is in progress, lock the input <select> WITHOUT disabling it
+        // (the disabled attribute would grey it out, which we don't want). Blocking
+        // the default action of mousedown/keydown stops the native popup from opening
+        // for both mouse and keyboard, so the user can't change the input file
+        // mid-run. Returning false (used by the inline `return sarGuardInteraction`)
+        // also cancels the default. When not running, allow normal interaction.
+        function sarGuardInteraction(event) {
+            if (sarIsRunning()) {
+                if (event) event.preventDefault();
+                return false;
+            }
+            return true;
+        }
 
         // Is the native dropdown currently open? While a <select>'s popup is open the
         // element holds focus, so activeElement === select is a reliable proxy. We use
@@ -129,6 +149,9 @@
         // only exception is a menu with no real options yet (first population): there's
         // nothing live to ghost, so we apply immediately.
         function refresh_sar_input_list() {
+            // Locked during a run: don't fetch or rebuild the option list, so the
+            // menu can't change under the user (and hover/focus do nothing).
+            if (sarIsRunning()) return;
             if (sarMenuRefreshInFlight) return;
             // Throttle: hovering fires repeatedly; don't spam the target with "4".
             // If we refreshed very recently the list is already current.
