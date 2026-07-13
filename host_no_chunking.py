@@ -65,75 +65,90 @@ final_results = {
     "receiver_loss": ""
 }
 netTestDuration = 0
-flag_get_image = False
 
 # Initialize Flask
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
 def handle_image_process_server():
-    global cphd_file_list, cphd_file_properties, tif_file_properties, flag_get_image
-    imageSaved = False
+    global cphd_file_list, cphd_file_properties, tif_file_properties
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_socket.bind((HOST_IP, IMAGE_PORT))
         server_socket.listen(1)
         print(f"Listening for incoming image on {HOST_IP}:{IMAGE_PORT}...")
         while True:
             conn, addr = server_socket.accept()
+            # A single un-typed channel carries both the binary TIF image and
+            # several JSON text messages (cphd list, cphd/tif properties). The
+            # kind is decided from the *content* of the connection, not from a
+            # host-side mode flag, so it no longer matters what the frontend
+            # asks the target to send while a RUN is still in progress. Each
+            # connection is fully isolated in try/except so a single malformed
+            # or mis-ordered message can never kill the accept loop.
             with conn:
-                print(f"Receiving data from {addr}")
-                # expect receiving an image only if there is no current saved image
-                # if new image is already saved, skip to expect other data
-                if flag_get_image == True and imageSaved == False:
-                    flag_get_image = False
-                    save_path = SAVE_PATH_TIF
-                    # Receive file size first
-                    file_size = int.from_bytes(conn.recv(8), byteorder="big")
-                    print(f"Expecting to receive {file_size} bytes...")
-                    # Receive the actual data
-                    received_data = b""
-                    while len(received_data) < file_size:
-                        # expect an image so can take the binary directly
-                        chunk = conn.recv(4096)
-                        if not chunk:
-                            break
-                        received_data += chunk
-                    if len(received_data) == file_size:
-                        with open(save_path, "wb") as f:
-                            f.write(received_data)
-                        print(f"Image received and saved as {save_path} ({len(received_data)} bytes)")
+                try:
+                    print(f"Receiving data from {addr}")
+                    # Peek the first byte without consuming it: every JSON
+                    # message starts with '{', while the image is prefixed with
+                    # an 8-byte big-endian size header whose top byte is 0x00.
+                    first_byte = conn.recv(1, socket.MSG_PEEK)
+                    if not first_byte:
+                        print("Empty connection, nothing to read")
+                        continue
+
+                    if first_byte == b"{":
+                        handle_image_port_text(conn)
                     else:
-                        print(f"Error: Received {len(received_data)} bytes, expected {file_size} bytes")
-                    imageSaved = True
-                else:
-                    save_path = None
-                    imageSaved = False
-                    # expect text so binary data have to be decoded
-                    data = conn.recv(4096).decode()
-                    try:
-                        received_data = json.loads(data)
-                        # Check if it's a list of CPHD files
-                        if "cphd_files" in received_data:
-                            cphd_file_list = received_data["cphd_files"]
-                            print(f"Updated CPHD file list: {cphd_file_list}")
-                        # Check if it's the CPHD file's metrics
-                        elif "filename" in received_data and "size" in received_data:
-                            file_name = received_data["filename"]
-                            file_size_str = received_data["size"]
-                            print(f"File '{file_name}' has a size of '{file_size_str}'.")
-                            # Update the dictionary to store the formatted size
-                            cphd_file_properties = received_data
-                        # Check if it's the TIF file's metrics
-                        elif "tif_filename" in received_data:
-                            file_name = received_data["tif_filename"]
-                            file_size_str = received_data["size"]
-                            print(f"File '{file_name}' has a size of '{file_size_str}'.")
-                            tif_file_properties = received_data
-                        else:
-                            print(f"Received unknown data: {received_data}")
-                    except json.JSONDecodeError as e:
-                        print(f"Error decoding received data: {e}")
-                print(f"Current save path: {save_path}")
+                        handle_image_port_image(conn)
+                except Exception as e:
+                    print(f"Error handling image-port connection from {addr}: {e}")
+
+def handle_image_port_image(conn):
+    """Receive the binary TIF image (8-byte size header followed by data)."""
+    save_path = SAVE_PATH_TIF
+    file_size = int.from_bytes(recv_exact(conn, 8), byteorder="big")
+    print(f"Expecting to receive {file_size} bytes...")
+    received_data = recv_exact(conn, file_size)
+    with open(save_path, "wb") as f:
+        f.write(received_data)
+    print(f"Image received and saved as {save_path} ({len(received_data)} bytes)")
+    print(f"Current save path: {save_path}")
+
+def handle_image_port_text(conn):
+    """Receive and dispatch a JSON text message on the image port."""
+    global cphd_file_list, cphd_file_properties, tif_file_properties
+    # JSON messages are small and the target closes the socket after sending,
+    # so read until EOF to be sure we have the whole payload.
+    raw = b""
+    while True:
+        chunk = conn.recv(4096)
+        if not chunk:
+            break
+        raw += chunk
+    try:
+        received_data = json.loads(raw.decode())
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        print(f"Error decoding received data: {e}")
+        return
+    # Check if it's a list of CPHD files
+    if "cphd_files" in received_data:
+        cphd_file_list = received_data["cphd_files"]
+        print(f"Updated CPHD file list: {cphd_file_list}")
+    # Check if it's the CPHD file's metrics
+    elif "filename" in received_data and "size" in received_data:
+        file_name = received_data["filename"]
+        file_size_str = received_data["size"]
+        print(f"File '{file_name}' has a size of '{file_size_str}'.")
+        cphd_file_properties = received_data
+    # Check if it's the TIF file's metrics
+    elif "tif_filename" in received_data:
+        file_name = received_data["tif_filename"]
+        file_size_str = received_data["size"]
+        print(f"File '{file_name}' has a size of '{file_size_str}'.")
+        tif_file_properties = received_data
+    else:
+        print(f"Received unknown data: {received_data}")
 
 def recv_exact(conn, n):
     data = b""
@@ -350,19 +365,17 @@ def handle_system_metrics_server():
 # Flask route to send messages to target system
 @app.route('/send_message', methods=['POST'])
 def send_message():
-    global message, flag_get_image
+    global message
     data = request.get_json()
     message = data.get("message", "Default message from host")
     print(message)
 
     if message == "3":
-        flag_get_image = False
         delete_all_files()
     elif message == "STOPSAR":
         return stop_sar_if_running()
     elif message.startswith("RUN:"):
         global tif_file_properties, current_run_cphd
-        flag_get_image = True
         current_run_cphd = message[4:]
         tif_file_properties = []
     elif message.startswith("NETRUN:"):
