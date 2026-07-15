@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live system utilisation</title>
+    <style>
+        /* ------------------------------------------------------------------
+           Live system-utilisation monitor, served by combined_hpc.py and
+           embeddable in Grafana via an <iframe>. The whole dashboard is driven
+           by ONE request per refresh (GET /system_metrics); the time-series
+           panels keep their own rolling history client-side. The Grafana dark
+           theme is reproduced here because the iframe does not inherit it.
+           ------------------------------------------------------------------ */
+        :root {
+            --bg:            #111217;
+            --panel-bg:      #181b1f;
+            --border:        #28292f;
+            --input-border:  #2c3235;
+            --text:          rgba(204, 204, 220, 0.90);
+            --text-weak:     rgba(204, 204, 220, 0.65);
+            --text-faint:    rgba(204, 204, 220, 0.40);
+            --blue:          #3696ff;
+            --track:         #2c3036;
+            --grid:          rgba(204, 204, 220, 0.09);
+            --green:         #73bf69;
+            --yellow:        #fade2a;
+            --orange:        #ff9830;
+            --red:           #f2495c;
+        }
+
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; height: 100%; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            font-size: 13px;
+            -webkit-font-smoothing: antialiased;
+            padding: 10px 12px 24px;
+        }
+
+        /* ---- top bar ---- */
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+        .topbar h1 {
+            font-size: 15px;
+            font-weight: 400;
+            color: var(--text);
+            margin: 0;
+        }
+        .controls { display: flex; align-items: center; gap: 10px; }
+        .status-dot {
+            width: 9px; height: 9px; border-radius: 50%;
+            background: var(--green);
+            box-shadow: 0 0 6px rgba(115, 191, 105, 0.6);
+        }
+        .status-dot.stale { background: var(--red); box-shadow: 0 0 6px rgba(242, 73, 92, 0.6); }
+        .last-update { color: var(--text-faint); font-size: 11px; min-width: 74px; text-align: right; }
+        .controls label { color: var(--text-weak); }
+        .refresh-select {
+            height: 30px;
+            padding: 0 26px 0 10px;
+            border-radius: 3px;
+            border: 1px solid var(--input-border);
+            background: #0e0f12;
+            color: var(--text);
+            font-size: 13px;
+            cursor: pointer;
+            appearance: none;
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' fill='none' stroke='%23a0a0ab' stroke-width='1.5'/></svg>");
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+        }
+        .refresh-select:focus { outline: none; border-color: var(--blue); }
+
+        /* ---- panels / grid ---- */
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            grid-auto-rows: 92px;
+            grid-auto-flow: row dense;
+            gap: 8px;
+        }
+        .panel {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            padding: 8px 10px;
+            min-width: 0;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        .panel-title {
+            font-size: 12px;
+            color: var(--text-weak);
+            margin-bottom: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .col-2 { grid-column: span 2; }
+        .row-2 { grid-row: span 2; }
+
+        /* ---- stat tiles ---- */
+        .stat { justify-content: center; }
+        .stat .value {
+            font-weight: 500;
+            line-height: 1.05;
+            color: var(--text);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .stat .value .unit { color: var(--text-weak); font-weight: 400; margin-left: 4px; }
+        .stat.big .value { font-size: 30px; }
+        .stat.hero { align-items: flex-start; }
+        .stat.hero .value { font-size: 64px; font-weight: 300; }
+        .stat.mid .value { font-size: 22px; }
+
+        /* ---- arc gauges ---- */
+        .gauge { align-items: center; }
+        .gauge .gauge-wrap { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; width: 100%; }
+        .gauge-svg { width: 100%; height: 100%; max-height: 150px; }
+        .gauge-val { font-size: 17px; font-weight: 500; text-anchor: middle; dominant-baseline: middle; }
+
+        /* ---- bar gauges ---- */
+        .bar-row { display: flex; align-items: center; gap: 10px; margin-top: auto; margin-bottom: auto; }
+        .bar-track { flex: 1; height: 12px; background: #0e0f12; border-radius: 2px; overflow: hidden; }
+        .bar-fill { height: 100%; width: 0%; background: var(--green); border-radius: 2px; transition: width 0.25s linear, background 0.25s; }
+        .bar-val { flex: 0 0 auto; color: var(--text); font-variant-numeric: tabular-nums; min-width: 56px; text-align: right; }
+
+        /* ---- time-series ---- */
+        .chart-wrap { flex: 1; min-height: 0; position: relative; }
+        canvas { display: block; width: 100%; height: 100%; }
+        .legend { display: flex; gap: 16px; font-size: 11px; color: var(--text-weak); margin-top: 4px; flex-wrap: wrap; }
+        .legend span { display: inline-flex; align-items: center; gap: 5px; }
+        .legend i { width: 18px; height: 3px; border-radius: 2px; display: inline-block; }
+
+        /* ---- per-core section ---- */
+        .section-head {
+            margin: 20px 0 8px;
+            font-size: 13px;
+            color: var(--text-weak);
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 6px;
+        }
+        .cores {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 8px;
+        }
+        .core-card {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            padding: 8px 10px;
+            display: flex;
+            gap: 8px;
+            min-width: 0;
+            height: 118px;
+        }
+        .core-left { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+        .core-title { font-size: 12px; color: var(--text-weak); margin-bottom: 2px; }
+        .core-chart { flex: 1; min-height: 0; position: relative; }
+        .core-right { flex: 0 0 92px; display: flex; flex-direction: column; align-items: center; }
+        .core-right .lbl { font-size: 11px; color: var(--text-faint); margin-bottom: 2px; }
+        .core-right .gauge-wrap { flex: 1; width: 100%; display: flex; align-items: center; justify-content: center; min-height: 0; }
+
+        .loading { color: var(--text-faint); padding: 40px 0; text-align: center; }
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <h1>Live system utilisation</h1>
+        <div class="controls">
+            <span class="status-dot" id="statusDot" title="live"></span>
+            <span class="last-update" id="lastUpdate">—</span>
+            <label for="refreshSelect">Refresh</label>
+            <select id="refreshSelect" class="refresh-select">
+                <option value="1000">1s</option>
+                <option value="2000">2s</option>
+                <option value="5000">5s</option>
+                <option value="30000">30s</option>
+                <option value="60000">1m</option>
+            </select>
+        </div>
+    </div>
+
+    <!-- ===================== summary panels ===================== -->
+    <div class="summary">
+        <div class="panel stat hero col-2 row-2">
+            <div class="panel-title">Total Power</div>
+            <div class="value"><span id="v_total_power">—</span><span class="unit">W</span></div>
+        </div>
+
+        <div class="panel stat mid">
+            <div class="panel-title">CPU Package Power</div>
+            <div class="value"><span id="v_cpu_power">—</span><span class="unit">W</span></div>
+        </div>
+        <div class="panel stat mid">
+            <div class="panel-title">AI Power</div>
+            <div class="value"><span id="v_ai_power">—</span><span class="unit">W</span></div>
+        </div>
+        <div class="panel stat mid">
+            <div class="panel-title">Fans Power</div>
+            <div class="value"><span id="v_fan_power">—</span><span class="unit">W</span></div>
+        </div>
+        <div class="panel stat mid">
+            <div class="panel-title">Uptime</div>
+            <div class="value" style="font-size:17px" id="v_uptime">—</div>
+        </div>
+
+        <div class="panel gauge row-2" data-gauge="cpu_usage">
+            <div class="panel-title">Overall CPU Usage</div>
+            <div class="gauge-wrap"></div>
+        </div>
+        <div class="panel gauge row-2" data-gauge="cpu_temp">
+            <div class="panel-title">CPU Temperature</div>
+            <div class="gauge-wrap"></div>
+        </div>
+        <div class="panel gauge row-2" data-gauge="ai_ext">
+            <div class="panel-title">AI External Temperature</div>
+            <div class="gauge-wrap"></div>
+        </div>
+        <div class="panel gauge row-2" data-gauge="ai_int1">
+            <div class="panel-title">AI Internal Temperature 1</div>
+            <div class="gauge-wrap"></div>
+        </div>
+        <div class="panel gauge row-2" data-gauge="ai_int2">
+            <div class="panel-title">AI Internal Temperature 2</div>
+            <div class="gauge-wrap"></div>
+        </div>
+        <div class="panel gauge row-2" data-gauge="ai_int3">
+            <div class="panel-title">AI Internal Temperature 3</div>
+            <div class="gauge-wrap"></div>
+        </div>
+
+        <div class="panel stat big">
+            <div class="panel-title">Cores</div>
+            <div class="value" id="v_cores">—</div>
+        </div>
+        <div class="panel stat big">
+            <div class="panel-title">Total Memory</div>
+            <div class="value"><span id="v_total_mem">—</span><span class="unit">GiB</span></div>
+        </div>
+        <div class="panel stat big">
+            <div class="panel-title">Total Swap</div>
+            <div class="value"><span id="v_total_swap">—</span><span class="unit">GiB</span></div>
+        </div>
+        <div class="panel stat big">
+            <div class="panel-title">Total Disk</div>
+            <div class="value"><span id="v_total_disk">—</span><span class="unit">GiB</span></div>
+        </div>
+
+        <div class="panel col-2">
+            <div class="panel-title">Disk Usage</div>
+            <div class="bar-row">
+                <div class="bar-track"><div class="bar-fill" id="bar_disk"></div></div>
+                <span class="bar-val" id="v_disk">—</span>
+            </div>
+        </div>
+        <div class="panel col-2">
+            <div class="panel-title">Swap Usage</div>
+            <div class="bar-row">
+                <div class="bar-track"><div class="bar-fill" id="bar_swap"></div></div>
+                <span class="bar-val" id="v_swap">—</span>
+            </div>
+        </div>
+        <div class="panel col-2">
+            <div class="panel-title">Memory Usage</div>
+            <div class="bar-row">
+                <div class="bar-track"><div class="bar-fill" id="bar_mem"></div></div>
+                <span class="bar-val" id="v_mem">—</span>
+            </div>
+        </div>
+
+        <div class="panel col-2 row-2">
+            <div class="panel-title">Wireless Network</div>
+            <div class="chart-wrap"><canvas id="net_chart"></canvas></div>
+            <div class="legend">
+                <span><i style="background:var(--green)"></i>Down <b id="net_down">0 B/s</b></span>
+                <span><i style="background:var(--yellow)"></i>Up <b id="net_up">0 B/s</b></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================== per-core section ===================== -->
+    <div class="section-head">Per-core usage &amp; frequency</div>
+    <div class="cores" id="cores"><div class="loading">Connecting to /system_metrics …</div></div>
+
+    <script>
+    (function () {
+        "use strict";
+        var BASE = window.location.origin;
+        var SVGNS = "http://www.w3.org/2000/svg";
+        var WINDOW = 150;                 // points kept per time-series (rolling)
+        var STORE_KEY = "sysMonRefreshMs";
+
+        var C = { green: "#73bf69", yellow: "#fade2a", orange: "#ff9830", red: "#f2495c" };
+
+        // ---------- formatting ----------
+        function n2(v) { return (v == null || isNaN(v)) ? "N/A" : Number(v).toFixed(2); }
+        function gib(bytes) {
+            if (bytes == null || isNaN(bytes)) return "N/A";
+            var g = bytes / (1024 * 1024 * 1024);
+            if (g >= 100) return g.toFixed(0);
+            if (g >= 10) return g.toFixed(1);
+            return g.toFixed(2);
+        }
+        function fmtUptime(s) {
+            if (s == null || isNaN(s)) return "N/A";
+            s = Math.floor(s);
+            var d = Math.floor(s / 86400); s %= 86400;
+            var h = Math.floor(s / 3600); s %= 3600;
+            var m = Math.floor(s / 60);
+            var plural = function (n, w) { return n + " " + w + (n === 1 ? "" : "s"); };
+            if (d > 0) return plural(d, "day") + ", " + plural(h, "hour");
+            return plural(h, "hour") + ", " + plural(m, "minute");
+        }
+        function fmtRate(b) {
+            if (b == null || isNaN(b)) b = 0;
+            if (b >= 1048576) return (b / 1048576).toFixed(1) + " MiB/s";
+            if (b >= 1024) return (b / 1024).toFixed(0) + " KiB/s";
+            return Math.round(b) + " B/s";
+        }
+        function setText(id, v) { var el = document.getElementById(id); if (el) el.textContent = v; }
+        function clamp01(x) { return x < 0 ? 0 : (x > 1 ? 1 : x); }
+
+        // ---------- arc gauge ----------
+        var G_START = 225, G_SWEEP = 270, CX = 60, CY = 58, R = 46, SW = 12;
+        function polar(cx, cy, r, ang) {
+            var a = (ang - 90) * Math.PI / 180;
+            return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+        }
+        function arcPath(a0, a1) {
+            var s = polar(CX, CY, R, a0), e = polar(CX, CY, R, a1);
+            var large = ((a1 - a0) % 360 + 360) % 360 > 180 ? 1 : 0;
+            return "M " + s.x.toFixed(2) + " " + s.y.toFixed(2) +
+                   " A " + R + " " + R + " 0 " + large + " 1 " + e.x.toFixed(2) + " " + e.y.toFixed(2);
+        }
+        function mkPath(d, stroke, opacity) {
+            var p = document.createElementNS(SVGNS, "path");
+            if (d) p.setAttribute("d", d);
+            p.setAttribute("fill", "none");
+            p.setAttribute("stroke", stroke);
+            p.setAttribute("stroke-width", SW);
+            p.setAttribute("stroke-linecap", "round");
+            if (opacity != null) p.setAttribute("opacity", opacity);
+            return p;
+        }
+        // cfg: { min, max, thresholds:[{v,color}...ascending], fmt }
+        function makeGauge(wrap, cfg) {
+            var svg = document.createElementNS(SVGNS, "svg");
+            svg.setAttribute("viewBox", "0 0 120 118");
+            svg.setAttribute("class", "gauge-svg");
+            svg.appendChild(mkPath(arcPath(G_START, G_START + G_SWEEP), "#2c3036", null));
+            var th = cfg.thresholds;
+            for (var k = 0; k < th.length; k++) {
+                var v0 = th[k].v, v1 = (k + 1 < th.length) ? th[k + 1].v : cfg.max;
+                var f0 = clamp01((v0 - cfg.min) / (cfg.max - cfg.min));
+                var f1 = clamp01((v1 - cfg.min) / (cfg.max - cfg.min));
+                if (f1 - f0 > 0.001) {
+                    svg.appendChild(mkPath(arcPath(G_START + f0 * G_SWEEP, G_START + f1 * G_SWEEP), th[k].color, "0.25"));
+                }
+            }
+            var val = mkPath("", C.green, null);
+            svg.appendChild(val);
+            var txt = document.createElementNS(SVGNS, "text");
+            txt.setAttribute("x", "60"); txt.setAttribute("y", "60");
+            txt.setAttribute("class", "gauge-val");
+            svg.appendChild(txt);
+            wrap.appendChild(svg);
+
+            return function (value) {
+                if (value == null || isNaN(value)) {
+                    val.setAttribute("d", ""); txt.textContent = "N/A"; txt.setAttribute("fill", "rgba(204,204,220,0.65)");
+                    return;
+                }
+                var f = clamp01((value - cfg.min) / (cfg.max - cfg.min));
+                var col = th[0].color;
+                for (var i = 0; i < th.length; i++) if (value >= th[i].v) col = th[i].color;
+                val.setAttribute("stroke", col);
+                val.setAttribute("d", f <= 0.001 ? "" : arcPath(G_START, G_START + f * G_SWEEP));
+                txt.setAttribute("fill", col);
+                txt.textContent = cfg.fmt(value);
+            };
+        }
+
+        var TEMP_TH = [{ v: 0, color: C.green }, { v: 60, color: C.orange }, { v: 80, color: C.red }];
+        var tempCfg = function () {
+            return { min: 0, max: 100, thresholds: TEMP_TH, fmt: function (v) { return v.toFixed(2) + " °C"; } };
+        };
+        var gaugeUpdaters = {};
+        gaugeUpdaters.cpu_usage = makeGauge(document.querySelector('[data-gauge="cpu_usage"] .gauge-wrap'),
+            { min: 0, max: 100, thresholds: [{ v: 0, color: C.green }, { v: 70, color: C.orange }, { v: 90, color: C.red }],
+              fmt: function (v) { return v.toFixed(2) + "%"; } });
+        gaugeUpdaters.cpu_temp = makeGauge(document.querySelector('[data-gauge="cpu_temp"] .gauge-wrap'), tempCfg());
+        gaugeUpdaters.ai_ext = makeGauge(document.querySelector('[data-gauge="ai_ext"] .gauge-wrap'), tempCfg());
+        gaugeUpdaters.ai_int1 = makeGauge(document.querySelector('[data-gauge="ai_int1"] .gauge-wrap'), tempCfg());
+        gaugeUpdaters.ai_int2 = makeGauge(document.querySelector('[data-gauge="ai_int2"] .gauge-wrap'), tempCfg());
+        gaugeUpdaters.ai_int3 = makeGauge(document.querySelector('[data-gauge="ai_int3"] .gauge-wrap'), tempCfg());
+
+        // ---------- bar gauge ----------
+        function barColor(pct) { return pct >= 90 ? C.red : (pct >= 70 ? C.orange : C.green); }
+        function updateBar(barId, valId, pct) {
+            var bar = document.getElementById(barId);
+            if (bar) { bar.style.width = clamp01(pct / 100) * 100 + "%"; bar.style.background = barColor(pct); }
+            setText(valId, (pct == null || isNaN(pct)) ? "N/A" : pct.toFixed(2) + "%");
+        }
+
+        // ---------- canvas time-series ----------
+        // series: [{ data:[...], color:"#..", fill:bool }], opts:{ yMin,yMax,ticks,tickFmt,yLabels }
+        function drawSeries(canvas, series, opts) {
+            opts = opts || {};
+            var dpr = window.devicePixelRatio || 1;
+            var cssW = canvas.clientWidth || 200, cssH = canvas.clientHeight || 80;
+            var pxW = Math.round(cssW * dpr), pxH = Math.round(cssH * dpr);
+            if (canvas.width !== pxW || canvas.height !== pxH) { canvas.width = pxW; canvas.height = pxH; }
+            var ctx = canvas.getContext("2d");
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.clearRect(0, 0, cssW, cssH);
+
+            var padL = opts.yLabels ? 34 : 4, padR = 4, padT = 6, padB = 4;
+            var plotW = Math.max(1, cssW - padL - padR), plotH = Math.max(1, cssH - padT - padB);
+
+            var yMin = opts.yMin != null ? opts.yMin : 0;
+            var yMax = opts.yMax;
+            if (yMax == null) {
+                var mx = 0;
+                series.forEach(function (s) { s.data.forEach(function (v) { if (v > mx) mx = v; }); });
+                yMax = niceMax(mx);
+            }
+            if (yMax <= yMin) yMax = yMin + 1;
+            var yToPx = function (v) { return padT + plotH * (1 - (v - yMin) / (yMax - yMin)); };
+
+            var ticks = opts.ticks || [yMin, yMax];
+            ctx.strokeStyle = "rgba(204,204,220,0.09)";
+            ctx.fillStyle = "rgba(204,204,220,0.40)";
+            ctx.lineWidth = 1;
+            ctx.font = "10px Inter, Arial, sans-serif";
+            ctx.textBaseline = "middle";
+            ticks.forEach(function (t) {
+                var y = Math.round(yToPx(t)) + 0.5;
+                ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+                if (opts.yLabels) {
+                    ctx.textAlign = "right";
+                    ctx.fillText(opts.tickFmt ? opts.tickFmt(t) : String(t), padL - 5, y);
+                }
+            });
+
+            series.forEach(function (s) {
+                var data = s.data, len = data.length;
+                if (!len) return;
+                var start = Math.max(0, len - WINDOW);
+                var vis = data.slice(start), m = vis.length;
+                var xAt = function (j) { return padL + plotW * ((WINDOW - m + j) / (WINDOW - 1)); };
+                ctx.beginPath();
+                for (var j = 0; j < m; j++) {
+                    var x = xAt(j), y = yToPx(vis[j]);
+                    if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                }
+                if (s.fill) {
+                    var g = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+                    g.addColorStop(0, hexA(s.color, 0.30));
+                    g.addColorStop(1, hexA(s.color, 0.02));
+                    ctx.lineTo(xAt(m - 1), padT + plotH);
+                    ctx.lineTo(xAt(0), padT + plotH);
+                    ctx.closePath();
+                    ctx.fillStyle = g; ctx.fill();
+                    // re-stroke the line on top
+                    ctx.beginPath();
+                    for (var k = 0; k < m; k++) { var xx = xAt(k), yy = yToPx(vis[k]); if (k === 0) ctx.moveTo(xx, yy); else ctx.lineTo(xx, yy); }
+                }
+                ctx.strokeStyle = s.color; ctx.lineWidth = 1.5;
+                ctx.lineJoin = "round";
+                ctx.stroke();
+            });
+        }
+        function niceMax(v) {
+            if (v <= 0) return 1;
+            var exp = Math.pow(10, Math.floor(Math.log10(v)));
+            var f = v / exp;
+            var nice = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
+            return nice * exp;
+        }
+        function hexA(hex, a) {
+            var h = hex.replace("#", "");
+            var r = parseInt(h.substring(0, 2), 16), g = parseInt(h.substring(2, 4), 16), b = parseInt(h.substring(4, 6), 16);
+            return "rgba(" + r + "," + g + "," + b + "," + a + ")";
+        }
+
+        // ---------- rolling buffers ----------
+        var buffers = {};
+        function push(key, v) {
+            var b = buffers[key] || (buffers[key] = []);
+            b.push((v == null || isNaN(v)) ? 0 : v);
+            if (b.length > WINDOW) b.shift();
+        }
+
+        // ---------- per-core panels (built once, from first payload) ----------
+        var coreBuilt = false;
+        var coreFreqGauges = {};
+        var coreCanvases = {};
+        var freqCfg = { min: 0.8, max: 4.2,
+            thresholds: [{ v: 0.8, color: C.green }, { v: 3.0, color: C.orange }, { v: 4.0, color: C.red }],
+            fmt: function (v) { return v.toFixed(2) + " GHz"; } };
+
+        function coreIndices(usage) {
+            return Object.keys(usage)
+                .map(function (k) { var m = k.match(/core_(\d+)_usage/); return m ? parseInt(m[1], 10) : null; })
+                .filter(function (x) { return x != null; })
+                .sort(function (a, b) { return a - b; });
+        }
+        function buildCores(idxs) {
+            var host = document.getElementById("cores");
+            host.innerHTML = "";
+            idxs.forEach(function (i) {
+                var card = document.createElement("div");
+                card.className = "core-card";
+                var left = document.createElement("div"); left.className = "core-left";
+                var title = document.createElement("div"); title.className = "core-title"; title.textContent = "Core " + (i + 1);
+                var chart = document.createElement("div"); chart.className = "core-chart";
+                var cv = document.createElement("canvas");
+                chart.appendChild(cv); left.appendChild(title); left.appendChild(chart);
+                var right = document.createElement("div"); right.className = "core-right";
+                var lbl = document.createElement("div"); lbl.className = "lbl"; lbl.textContent = "Freq";
+                var gw = document.createElement("div"); gw.className = "gauge-wrap";
+                right.appendChild(lbl); right.appendChild(gw);
+                card.appendChild(left); card.appendChild(right);
+                host.appendChild(card);
+                coreCanvases[i] = cv;
+                coreFreqGauges[i] = makeGauge(gw, freqCfg);
+            });
+            coreBuilt = true;
+        }
+
+        // ---------- main update ----------
+        function update(d) {
+            // headline powers
+            setText("v_total_power", d.total_power == null ? "—" : Math.round(d.total_power));
+            setText("v_cpu_power", n2(d.cpu_power));
+            setText("v_ai_power", n2(d.ai_card_power));
+            setText("v_fan_power", n2(d.fan_power));
+            setText("v_uptime", fmtUptime(d.uptime_seconds));
+
+            // headline stats
+            setText("v_cores", d.num_threads != null ? d.num_threads
+                : (d.per_core_usage ? coreIndices(d.per_core_usage).length : "—"));
+            setText("v_total_mem", gib(d.total_memory));
+            setText("v_total_swap", gib(d.total_swap));
+            setText("v_total_disk", gib(d.total_disk_size));
+
+            // gauges
+            gaugeUpdaters.cpu_usage(d.cpu_usage);
+            gaugeUpdaters.cpu_temp(d.cpu_temperature);
+            var t = d.ai_card_temp || {};
+            gaugeUpdaters.ai_ext(t.ext_temp);
+            gaugeUpdaters.ai_int1(t.int_temp_1);
+            gaugeUpdaters.ai_int2(t.int_temp_2);
+            gaugeUpdaters.ai_int3(t.int_temp_3);
+
+            // bar gauges
+            updateBar("bar_disk", "v_disk", d.total_disk_usage);
+            updateBar("bar_swap", "v_swap", d.swap_usage);
+            updateBar("bar_mem", "v_mem", d.memory_usage);
+
+            // wireless network time-series
+            var wifi = (d.network && d.network.wlp3s0) || {};
+            var down = wifi.download_speed || 0, up = wifi.upload_speed || 0;
+            push("net_down", down); push("net_up", up);
+            setText("net_down", fmtRate(down)); setText("net_up", fmtRate(up));
+            drawSeries(document.getElementById("net_chart"),
+                [{ data: buffers.net_down, color: C.green, fill: false },
+                 { data: buffers.net_up, color: C.yellow, fill: false }],
+                { yMin: 0, yLabels: true, tickFmt: fmtRate, ticks: buildNetTicks() });
+
+            // per-core
+            var usage = d.per_core_usage || {}, freq = d.per_core_freq || {};
+            if (!coreBuilt) buildCores(coreIndices(usage));
+            Object.keys(coreCanvases).forEach(function (i) {
+                var u = usage["core_" + i + "_usage"];
+                push("core_" + i, u);
+                drawSeries(coreCanvases[i],
+                    [{ data: buffers["core_" + i], color: C.green, fill: true }],
+                    { yMin: 0, yMax: 100, yLabels: true, ticks: [0, 25, 50, 75, 100],
+                      tickFmt: function (v) { return v + "%"; } });
+                var fMhz = freq["core_" + i + "_frequency"];
+                coreFreqGauges[i](fMhz == null ? null : fMhz / 1000);
+            });
+        }
+
+        // network y-axis: derive nice ticks from current buffer maxima
+        function buildNetTicks() {
+            var mx = 0;
+            ["net_down", "net_up"].forEach(function (k) {
+                (buffers[k] || []).forEach(function (v) { if (v > mx) mx = v; });
+            });
+            var top = niceMax(mx);
+            return [0, top / 2, top];
+        }
+
+        // ---------- polling ----------
+        var timer = null, intervalMs = 1000, inFlight = false;
+        function markStatus(ok) {
+            var dot = document.getElementById("statusDot");
+            if (dot) dot.classList.toggle("stale", !ok);
+        }
+        function tick() {
+            if (inFlight) return;              // never overlap requests
+            inFlight = true;
+            fetch(BASE + "/system_metrics", { cache: "no-store" })
+                .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+                .then(function (d) {
+                    if (!d || d.cpu_usage == null) { markStatus(true); return; } // cache not filled yet
+                    update(d);
+                    markStatus(true);
+                    var ts = d.timestamp ? new Date(d.timestamp * 1000) : new Date();
+                    setText("lastUpdate", ts.toLocaleTimeString());
+                })
+                .catch(function () { markStatus(false); })
+                .finally(function () { inFlight = false; });
+        }
+        function startTimer(ms) {
+            intervalMs = ms;
+            if (timer) clearInterval(timer);
+            tick();                            // fire immediately, then on the interval
+            timer = setInterval(tick, ms);
+        }
+
+        var sel = document.getElementById("refreshSelect");
+        var saved = parseInt(localStorage.getItem(STORE_KEY), 10);
+        if (saved && [1000, 2000, 5000, 30000, 60000].indexOf(saved) !== -1) sel.value = String(saved);
+        sel.addEventListener("change", function () {
+            var ms = parseInt(sel.value, 10) || 1000;
+            localStorage.setItem(STORE_KEY, String(ms));
+            startTimer(ms);
+        });
+
+        // redraw on resize so canvases stay crisp without waiting for the next tick
+        var resizeRAF = null;
+        window.addEventListener("resize", function () {
+            if (resizeRAF) cancelAnimationFrame(resizeRAF);
+            resizeRAF = requestAnimationFrame(function () {
+                if (buffers.net_down) drawSeries(document.getElementById("net_chart"),
+                    [{ data: buffers.net_down, color: C.green, fill: false },
+                     { data: buffers.net_up, color: C.yellow, fill: false }],
+                    { yMin: 0, yLabels: true, tickFmt: fmtRate, ticks: buildNetTicks() });
+                Object.keys(coreCanvases).forEach(function (i) {
+                    if (buffers["core_" + i]) drawSeries(coreCanvases[i],
+                        [{ data: buffers["core_" + i], color: C.green, fill: true }],
+                        { yMin: 0, yMax: 100, yLabels: true, ticks: [0, 25, 50, 75, 100], tickFmt: function (v) { return v + "%"; } });
+                });
+            });
+        });
+
+        startTimer(parseInt(sel.value, 10) || 1000);
+    })();
+    </script>
+</body>
+</html>

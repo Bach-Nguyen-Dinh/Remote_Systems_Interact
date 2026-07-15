@@ -1,0 +1,1152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SAR Process</title>
+    <style>
+        /* ------------------------------------------------------------------
+           Standalone SAR-process frontend (with CPHD upload), served by
+           combined_hpc.py and embedded in Grafana via an <iframe>. The Grafana
+           dark theme is reproduced here because the iframe does not inherit it.
+           ------------------------------------------------------------------ */
+        :root {
+            --bg:            #111217;
+            --panel-bg:      #181b1f;
+            --border:        #28292f;
+            --input-border:  #2c3235;
+            --text:          rgba(204, 204, 220, 0.90);
+            --text-weak:     rgba(204, 204, 220, 0.65);
+            --heading:       rgba(204, 204, 220, 0.90);
+            --blue:          #2372cc;
+            --blue-hover:    #3696ff;
+            --red:           #ca2715;
+            --red-hover:     #ff4c47;
+        }
+
+        html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            font-size: 14px;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .app {
+            display: flex;
+            flex-direction: row;
+            height: 100%;
+            box-sizing: border-box;
+            padding: 12px;
+            gap: 12px;
+        }
+
+        .sidebar {
+            width: 300px;
+            flex: 0 0 300px;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .sidebar h2 {
+            font-size: 22px;
+            font-weight: 400;
+            color: var(--heading);
+            margin: 0 0 12px 0;
+        }
+        .section + .section { margin-top: 22px; }
+
+        .select-sar {
+            font-size: 14px;
+            width: 100%;
+            max-width: 270px;
+            height: 40px;
+            box-sizing: border-box;
+            padding: 0 8px;
+            border-radius: 2px;
+            border: 1px solid var(--input-border);
+            background-color: #0e0f12;
+            color: var(--text);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            cursor: pointer;
+        }
+        .select-sar:focus { outline: none; border-color: var(--blue); }
+
+        /* ---- Upload controls ---- */
+        .upload-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            max-width: 270px;
+            margin-top: 8px;
+        }
+        .upload-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            height: 30px;
+            padding: 0 12px;
+            border-radius: 2px;
+            border: 1px solid var(--input-border);
+            background: #1f2228;
+            color: var(--text);
+            cursor: pointer;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+        .upload-btn:hover { background: #2a2e36; }
+        .upload-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .storage-hint { font-size: 11px; color: var(--text-weak); }
+
+        .upload-progress-wrap {
+            max-width: 270px;
+            height: 6px;
+            margin-top: 8px;
+            background: #0e0f12;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .upload-progress-bar {
+            height: 100%;
+            width: 0%;
+            background: var(--blue);
+            transition: width 0.15s linear;
+        }
+        .upload-msg {
+            max-width: 270px;
+            margin-top: 6px;
+            font-size: 12px;
+            min-height: 14px;
+            word-break: break-word;
+        }
+        .upload-msg.error { color: #ff8a80; }
+        .upload-msg.ok    { color: var(--text-weak); }
+
+        .uploads-list { max-width: 270px; margin-top: 8px; }
+        .uploads-title { font-size: 11px; color: var(--text-weak); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+        .upload-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+            padding: 3px 0;
+            font-size: 12px;
+        }
+        .upload-item-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--text);
+        }
+        .upload-del {
+            flex: 0 0 auto;
+            width: 18px;
+            height: 18px;
+            line-height: 16px;
+            text-align: center;
+            border: none;
+            border-radius: 2px;
+            background: transparent;
+            color: var(--text-weak);
+            cursor: pointer;
+            font-size: 15px;
+        }
+        .upload-del:hover { background: var(--red); color: #fff; }
+
+        .status-container {
+            font-size: 13px;
+            min-height: 18px;
+            margin: 8px 0 6px 0;
+            font-weight: bold;
+            color: var(--text-weak);
+        }
+        .status-container p { margin: 0; }
+
+        .status-info p {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 9px 0;
+            font-size: 13px;
+        }
+        .status-info strong { font-weight: 500; color: var(--text); }
+        .status-info span   { color: var(--text-weak); text-align: right; }
+
+        .buttons-row {
+            display: flex;
+            flex-direction: row;
+            gap: 40px;
+            margin-top: 30px;
+            padding-left: 30px;
+        }
+        .buttonBlue-sar, .buttonRed-sar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 80px;
+            height: 40px;
+            border-radius: 2px;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .buttonBlue-sar { background-color: var(--blue); }
+        .buttonBlue-sar:hover { background-color: var(--blue-hover); }
+        .buttonBlue-sar.running,
+        .buttonBlue-sar.running:hover {
+            background-color: #6b7a8f;
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .buttonRed-sar { background-color: var(--red); }
+        .buttonRed-sar:hover { background-color: var(--red-hover); }
+
+        .images-row {
+            display: flex;
+            flex-direction: row;
+            gap: 12px;
+            flex: 1;
+            min-width: 0;
+            height: 100%;
+        }
+        .sar-image-container {
+            position: relative;
+            flex: 1;
+            min-width: 0;
+            background-color: var(--panel-bg);
+            border: 2px solid var(--border);
+            overflow: hidden;
+        }
+        .sar-image-container img {
+            display: none;
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            object-fit: cover;
+            object-position: center;
+        }
+        .no-data-overlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-weak);
+            font-size: 18px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <!-- ================= Left sidebar ================= -->
+        <div class="sidebar">
+            <!-- Input -->
+            <div class="section">
+                <h2>Input</h2>
+                <select id="menu_sar_input_data" class="select-sar"
+                        onmousedown="return sarGuardInteraction(event)"
+                        onkeydown="return sarGuardInteraction(event)"
+                        onmouseenter="refresh_sar_input_list()"
+                        onfocus="refresh_sar_input_list()"
+                        onchange="sendLoad()"
+                        onblur="sarFlushPendingFileList()">
+                    <option value="" disabled selected>Click to choose input data</option>
+                </select>
+
+                <!-- Upload -->
+                <div class="upload-row">
+                    <button id="uploadBtn" class="upload-btn" onclick="openUploadPicker()">⬆ Upload .cphd</button>
+                    <span id="storageHint" class="storage-hint"></span>
+                </div>
+                <input id="cphdFileInput" type="file" accept=".cphd" style="display:none" onchange="handleUploadFile(event)">
+                <div id="uploadProgressWrap" class="upload-progress-wrap" style="display:none">
+                    <div id="uploadProgressBar" class="upload-progress-bar"></div>
+                </div>
+                <div id="uploadMsg" class="upload-msg"></div>
+                <div id="uploadsList" class="uploads-list"></div>
+
+                <div class="status-container"><p id="status">&nbsp;</p></div>
+                <div class="status-info">
+                    <p><strong>CPHD file size:</strong> <span id="cphd_file_size">N/A</span></p>
+                    <p><strong>Pulses:</strong> <span id="total_pulses">N/A</span></p>
+                    <p><strong>Frequency:</strong> <span id="centre_freq">N/A</span></p>
+                    <p><strong>Image size:</strong> <span id="img_size">N/A</span></p>
+                    <p><strong>Resolution:</strong> <span id="resolution">N/A</span></p>
+                    <p><strong>Area size:</strong> <span id="area_size">N/A</span></p>
+                </div>
+            </div>
+
+            <!-- Output -->
+            <div class="section">
+                <h2>Output</h2>
+                <div class="status-info">
+                    <p><strong>Output file size:</strong> <span id="outFileSize">N/A</span></p>
+                    <p><strong>Reduction factor:</strong> <span id="reductionFactor">N/A</span></p>
+                    <p><strong>Size compared to original:</strong> <span id="sizeCompared">N/A</span></p>
+                    <p><strong>Computing time:</strong> <span id="sarProcTime">N/A</span></p>
+                </div>
+            </div>
+
+            <!-- Run / Reset -->
+            <div class="buttons-row">
+                <button id="sarRunButton" class="buttonBlue-sar" onclick="sendRun()">Run</button>
+                <button id="sarResetButton" class="buttonRed-sar" onclick="resetMenu()">Reset</button>
+            </div>
+        </div>
+
+        <!-- ================= Right: image windows ================= -->
+        <div class="images-row">
+            <div class="sar-image-container">
+                <div id="noData1" class="no-data-overlay">No data</div>
+                <img id="processedImage1">
+            </div>
+            <div class="sar-image-container">
+                <div id="noData2" class="no-data-overlay">No data</div>
+                <img id="processedImage2">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Served by the same Flask app that exposes the API, so requests are
+        // same-origin whether reached directly (http://<target>:5000/) or through
+        // the nginx proxy (https://<domain>/sar_app).
+        var FLASK_BASE = window.location.origin;
+
+        var SAR_STATE_KEY = 'sarPanelState_v1';
+        var UPLOAD_PREFIX = 'user_data/'; // relative-name prefix marking user uploads
+
+        // Runtime state (persisted so an iframe/page reload resumes a run).
+        var lastTifFilename = "lastFile";
+        var lastCphdFilename = null;
+        var sarInputProps = null;
+        var sarOutputProps = null;
+        var sarShowImage1 = false;
+        var sarShowImage2 = false;
+        var sarProcStartTime = null;
+        var sarRunSession = 0;
+        var sarRunning = false;
+        var sarStatus = "";
+        var sarSelectedInput = null;
+        var sarInputFileList = [];
+
+        var sarMenuRefreshInFlight = false;
+        var sarPendingFileList = null;
+        var sarLastRefreshTs = 0;
+
+        // ---- display helpers ----
+        // Uploads carry a "user_data/" prefix in their value; show just the basename.
+        function sarDisplayName(rel) {
+            if (rel && rel.indexOf(UPLOAD_PREFIX) === 0) return rel.slice(UPLOAD_PREFIX.length);
+            return rel;
+        }
+        function sarPlaceholderText() {
+            return (sarInputFileList && sarInputFileList.length) ? 'Click to choose input data' : 'Upload your data';
+        }
+        function fmtBytes(n) {
+            n = Number(n) || 0;
+            if (n >= 1e9) return (n / 1e9).toFixed(2) + ' GB';
+            if (n >= 1e6) return (n / 1e6).toFixed(1) + ' MB';
+            if (n >= 1e3) return (n / 1e3).toFixed(0) + ' KB';
+            return n + ' B';
+        }
+
+        function sarSetText(id, val) { var el = document.getElementById(id); if (el) el.textContent = val; }
+        function setStatusDom(text) { var el = document.getElementById("status"); if (el) el.textContent = text; }
+        function setStatus(text) { sarStatus = text; if (!window._sarTransientActive) setStatusDom(text); saveState(); }
+
+        function showTransientStatus(text, ms) {
+            window._sarTransientActive = true;
+            setStatusDom(text);
+            if (window._sarTransientTimer) clearTimeout(window._sarTransientTimer);
+            window._sarTransientTimer = setTimeout(function () {
+                window._sarTransientActive = false;
+                window._sarTransientTimer = null;
+                setStatusDom(sarStatus);
+            }, ms);
+        }
+
+        function startSarTimer() {
+            if (window._sarTimerInterval) clearInterval(window._sarTimerInterval);
+            window._sarTimerInterval = setInterval(function () {
+                if (!sarProcStartTime) return;
+                var elapsed = (Date.now() - sarProcStartTime) / 1000;
+                sarSetText("sarProcTime", elapsed.toFixed(2) + "s");
+            }, 100);
+        }
+        function stopSarTimer() {
+            if (window._sarTimerInterval) { clearInterval(window._sarTimerInterval); window._sarTimerInterval = null; }
+        }
+
+        function saveState() {
+            localStorage.setItem(SAR_STATE_KEY, JSON.stringify({
+                lastTifFilename: lastTifFilename,
+                cphdFilename: lastCphdFilename,
+                inputProps: sarInputProps,
+                outputProps: sarOutputProps,
+                showImage1: sarShowImage1,
+                showImage2: sarShowImage2,
+                running: sarRunning,
+                startTime: sarProcStartTime,
+                status: sarStatus,
+                selectedInput: sarSelectedInput,
+                inputFileList: sarInputFileList,
+            }));
+        }
+
+        function clearResultState() {
+            sarInputProps = null;
+            sarOutputProps = null;
+            sarShowImage1 = false;
+            sarShowImage2 = false;
+            lastCphdFilename = null;
+            sarRunning = false;
+            saveState();
+            updateRunButtonState();
+        }
+
+        function clearAllState() {
+            stopSarTimer();
+            sarInputProps = null;
+            sarOutputProps = null;
+            sarShowImage1 = false;
+            sarShowImage2 = false;
+            lastCphdFilename = null;
+            sarRunning = false;
+            sarProcStartTime = null;
+            sarStatus = "";
+            sarSelectedInput = null;
+            sarInputFileList = [];
+            localStorage.removeItem(SAR_STATE_KEY);
+        }
+
+        function applyTextState() {
+            var setText = function (id, val) { var el = document.getElementById(id); if (el && val != null) el.textContent = val; };
+            if (sarInputProps) {
+                setText("cphd_file_size", sarInputProps.cphd_file_size);
+                setText("total_pulses", sarInputProps.total_pulses);
+                setText("centre_freq", sarInputProps.centre_freq);
+                setText("img_size", sarInputProps.img_size);
+                setText("resolution", sarInputProps.resolution);
+                setText("area_size", sarInputProps.area_size);
+            }
+            if (sarOutputProps) {
+                setText("outFileSize", sarOutputProps.outFileSize);
+                setText("reductionFactor", sarOutputProps.reductionFactor);
+                setText("sizeCompared", sarOutputProps.sizeCompared);
+                setText("sarProcTime", sarOutputProps.sarProcTime);
+            }
+        }
+
+        function restoreInputDropdown() {
+            var select = document.getElementById("menu_sar_input_data");
+            if (!select) return;
+            var files = sarInputFileList || [];
+            var selected = sarSelectedInput || null;
+            if (!files.length && !selected) return;
+
+            select.innerHTML = '';
+            var placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = sarPlaceholderText();
+            placeholder.disabled = true;
+            select.appendChild(placeholder);
+
+            var list = files.slice();
+            if (selected && list.indexOf(selected) === -1) list.push(selected);
+            list.forEach(function (file) {
+                var option = document.createElement('option');
+                option.value = file;
+                option.textContent = sarDisplayName(file);
+                select.appendChild(option);
+            });
+
+            if (selected) select.value = selected;
+            else placeholder.selected = true;
+            renderUploadsList();
+        }
+
+        function restoreState() {
+            var raw = localStorage.getItem(SAR_STATE_KEY);
+            if (!raw) return;
+            try {
+                var state = JSON.parse(raw);
+                if (state.lastTifFilename) lastTifFilename = state.lastTifFilename;
+                if (state.cphdFilename) lastCphdFilename = state.cphdFilename;
+                if (state.inputProps) sarInputProps = state.inputProps;
+                if (state.outputProps) sarOutputProps = state.outputProps;
+                if (state.selectedInput) sarSelectedInput = state.selectedInput;
+                if (state.inputFileList) sarInputFileList = state.inputFileList;
+                if (typeof state.startTime === 'number') sarProcStartTime = state.startTime;
+                if (state.status != null) sarStatus = state.status;
+
+                restoreInputDropdown();
+                setStatusDom(sarStatus);
+
+                if (state.showImage1) {
+                    sarShowImage1 = true;
+                    fetch(FLASK_BASE + '/images/tif_image.webp')
+                        .then(function (r) { if (!r.ok) throw new Error(); return r.blob(); })
+                        .then(function (blob) {
+                            var img = document.getElementById("processedImage1");
+                            var nd = document.getElementById("noData1");
+                            if (img) { img.src = URL.createObjectURL(blob); img.style.display = "block"; }
+                            if (nd) nd.style.display = "none";
+                        })
+                        .catch(function () {});
+                }
+                if (state.showImage2 && state.cphdFilename) {
+                    sarShowImage2 = true;
+                    fetchColorizedImage(state.cphdFilename);
+                }
+                setTimeout(applyTextState, 200);
+
+                if (state.running) {
+                    sarRunning = true;
+                    updateRunButtonState();
+                    if (!window._sarPollerActive) {
+                        window._sarPollerActive = true;
+                        startSarTimer();
+                        resumeSarPoller(++sarRunSession);
+                    } else if (!window._sarTimerInterval) {
+                        startSarTimer();
+                    }
+                }
+            } catch (e) {
+                console.error("SAR state restore error:", e);
+            }
+        }
+
+        function getFrequencyBand(freqHz) {
+            const bands = [
+                { name: "HF",  min: 3e6,   max: 30e6   },
+                { name: "VHF", min: 30e6,  max: 300e6  },
+                { name: "UHF", min: 300e6, max: 1e9    },
+                { name: "L",   min: 1e9,   max: 2e9    },
+                { name: "S",   min: 2e9,   max: 4e9    },
+                { name: "C",   min: 4e9,   max: 8e9    },
+                { name: "X",   min: 8e9,   max: 12e9   },
+                { name: "Ku",  min: 12e9,  max: 18e9   },
+                { name: "K",   min: 18e9,  max: 27e9   },
+                { name: "Ka",  min: 27e9,  max: 40e9   },
+                { name: "V",   min: 40e9,  max: 75e9   },
+                { name: "W",   min: 75e9,  max: 110e9  },
+                { name: "mm",  min: 110e9, max: 300e9  },
+            ];
+            const match = bands.find(b => freqHz >= b.min && freqHz < b.max);
+            return match ? match.name : null;
+        }
+
+        // ================= Input picker =================
+        function sarIsRunning() { return typeof sarRunning !== "undefined" && sarRunning; }
+
+        function sarGuardInteraction(event) {
+            if (sarIsRunning()) {
+                if (event) event.preventDefault();
+                return false;
+            }
+            return true;
+        }
+
+        function sarMenuIsOpen() {
+            var select = document.getElementById("menu_sar_input_data");
+            return !!select && document.activeElement === select;
+        }
+
+        function sarApplyFileList(files) {
+            var select = document.getElementById("menu_sar_input_data");
+            if (!select) return;
+            files = files || [];
+
+            if (files.length === 0) {
+                select.innerHTML = '<option value="" disabled selected>Upload your data</option>';
+                sarInputFileList = [];
+                renderUploadsList();
+                saveState();
+                return;
+            }
+
+            var current = Array.prototype.map.call(select.options, function (o) { return o.value; })
+                               .filter(function (v) { return v !== ""; });
+            var changed = current.length !== files.length ||
+                          files.some(function (f, i) { return f !== current[i]; });
+
+            if (changed) {
+                var keep = select.value;
+                select.innerHTML = '';
+                var placeholder = document.createElement('option');
+                placeholder.value = '';
+                placeholder.textContent = sarPlaceholderText();
+                placeholder.disabled = true;
+                select.appendChild(placeholder);
+                files.forEach(function (file) {
+                    var option = document.createElement('option');
+                    option.value = file;
+                    option.textContent = sarDisplayName(file);
+                    select.appendChild(option);
+                });
+                if (keep && files.indexOf(keep) !== -1) select.value = keep;
+                else placeholder.selected = true;
+            }
+
+            sarInputFileList = files;
+            sarSelectedInput = select.value || sarSelectedInput;
+            renderUploadsList();
+            saveState();
+        }
+
+        function refresh_sar_input_list() {
+            if (sarIsRunning()) return;
+            if (sarMenuRefreshInFlight) return;
+            if (Date.now() - sarLastRefreshTs < 1500) return;
+            sarLastRefreshTs = Date.now();
+            sarMenuRefreshInFlight = true;
+            setStatusDom("");
+
+            fetch(`${FLASK_BASE}/send_message`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: "4" })
+            })
+            .then(function () { return new Promise(function (res) { setTimeout(res, 500); }); })
+            .then(function () { return fetch(`${FLASK_BASE}/get_cphd_files`); })
+            .then(function (response) { return response.json(); })
+            .then(function (data) {
+                var files = data.files || [];
+                var select = document.getElementById("menu_sar_input_data");
+                var hasOptions = !!select && Array.prototype.some.call(select.options, function (o) { return o.value !== ""; });
+                if (!sarMenuIsOpen() || !hasOptions) {
+                    sarApplyFileList(files);
+                } else {
+                    sarPendingFileList = files;
+                }
+            })
+            .catch(function (error) {
+                console.error('Error fetching CPHD files:', error);
+                setStatusDom("Error fetching file list.");
+            })
+            .finally(function () { sarMenuRefreshInFlight = false; });
+        }
+
+        function sarFlushPendingFileList() {
+            if (sarPendingFileList !== null) {
+                var files = sarPendingFileList;
+                sarPendingFileList = null;
+                sarApplyFileList(files);
+            }
+        }
+
+        function fetch_properties_sar_input_data() {
+            var selectedFile = document.getElementById("menu_sar_input_data").value;
+            if (!selectedFile) return;
+
+            fetch(FLASK_BASE + '/get_cphd_file_properties')
+                .then(function (response) { return response.json(); })
+                .then(function (data) {
+                    var props = { cphd_file_size: 'N/A', total_pulses: 'N/A', centre_freq: 'N/A', img_size: 'N/A', resolution: 'N/A', area_size: 'N/A' };
+                    if (data.files.filename === selectedFile) {
+                        props.cphd_file_size = data.files.size;
+                        if (data.files.metadata) {
+                            var m = data.files.metadata;
+                            props.total_pulses = m.numVectors != null ? m.numVectors.toLocaleString() : 'N/A';
+                            if (m.fxC != null) {
+                                var band = getFrequencyBand(m.fxC);
+                                props.centre_freq = (m.fxC / 1e9).toFixed(1) + ' GHz' + (band ? ' (' + band + ' band)' : '');
+                            }
+                            props.img_size = (m.numLines != null && m.numSamples != null) ? m.numLines + ' x ' + m.numSamples : 'N/A';
+                            props.resolution = m.lineSpacing != null ? m.lineSpacing.toFixed(2) + ' meters' : 'N/A';
+                            if (m.numLines != null && m.lineSpacing != null && m.numSamples != null && m.sampleSpacing != null) {
+                                props.area_size = (m.numLines * m.lineSpacing * m.numSamples * m.sampleSpacing / 1e6).toFixed(2) + ' km²';
+                            }
+                        }
+                    }
+                    sarSetText("cphd_file_size", props.cphd_file_size);
+                    sarSetText("total_pulses", props.total_pulses);
+                    sarSetText("centre_freq", props.centre_freq);
+                    sarSetText("img_size", props.img_size);
+                    sarSetText("resolution", props.resolution);
+                    sarSetText("area_size", props.area_size);
+                    sarInputProps = props;
+                    saveState();
+                })
+                .catch(function (error) { console.error("Error fetching file size:", error); });
+        }
+
+        async function sendLoad() {
+            const select = document.getElementById("menu_sar_input_data");
+            const selectedOption = select.value;
+
+            if (!selectedOption) {
+                setStatusDom("Please select a file first.");
+                return;
+            }
+
+            if (sarRunning) {
+                showTransientStatus("SAR process is already running.", 3000);
+                if (sarSelectedInput) select.value = sarSelectedInput;
+                updateRunButtonState();
+                return;
+            }
+
+            clearResultState();
+            sarSelectedInput = selectedOption;
+            saveState();
+
+            setStatusDom("");
+            var p1 = document.getElementById("processedImage1");
+            if (p1) { p1.src = ""; p1.style.display = "none"; }
+            var nd1 = document.getElementById("noData1");
+            if (nd1) nd1.style.display = "flex";
+            clearColorizedImage();
+            sarSetText("outFileSize", "N/A");
+            sarSetText("reductionFactor", "N/A");
+            sarSetText("sizeCompared", "N/A");
+            sarSetText("sarProcTime", "N/A");
+
+            try {
+                await fetch(`${FLASK_BASE}/send_message`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ message: `SIZE:${selectedOption}` })
+                });
+
+                const startTime = Date.now();
+                const timeout = 30 * 1000;
+                while (Date.now() - startTime < timeout) {
+                    const response = await fetch(`${FLASK_BASE}/get_cphd_file_properties`);
+                    const data = await response.json();
+                    if (data.files && data.files.filename === selectedOption) {
+                        fetch_properties_sar_input_data();
+                        return;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+                setStatusDom("Timeout waiting for file properties.");
+            } catch (error) {
+                console.error("Error:", error);
+                setStatusDom("Error sending command.");
+            }
+        }
+
+        // ================= Upload / delete =================
+        function setUploadMsg(text, isError) {
+            var el = document.getElementById("uploadMsg");
+            if (!el) return;
+            el.textContent = text || "";
+            el.className = "upload-msg" + (text ? (isError ? " error" : " ok") : "");
+        }
+        function showUploadProgress(pct) {
+            var wrap = document.getElementById("uploadProgressWrap");
+            var bar = document.getElementById("uploadProgressBar");
+            if (wrap) wrap.style.display = "block";
+            if (bar) bar.style.width = Math.max(0, Math.min(100, pct)).toFixed(1) + "%";
+        }
+        function hideUploadProgress() {
+            var wrap = document.getElementById("uploadProgressWrap");
+            var bar = document.getElementById("uploadProgressBar");
+            if (wrap) wrap.style.display = "none";
+            if (bar) bar.style.width = "0%";
+        }
+        function disableUploadBtn(disabled) {
+            var b = document.getElementById("uploadBtn");
+            if (b) b.disabled = !!disabled;
+        }
+
+        function refreshStorage() {
+            fetch(FLASK_BASE + '/storage_info')
+                .then(function (r) { return r.json(); })
+                .then(function (info) {
+                    var el = document.getElementById("storageHint");
+                    if (el && info && info.free != null) el.textContent = fmtBytes(info.usable != null ? info.usable : info.free) + " free";
+                })
+                .catch(function () {});
+        }
+
+        function openUploadPicker() {
+            if (sarIsRunning()) { showTransientStatus("SAR process is already running.", 3000); return; }
+            var input = document.getElementById("cphdFileInput");
+            if (input) input.click();
+        }
+
+        function handleUploadFile(event) {
+            var input = event.target;
+            var file = input.files && input.files[0];
+            if (!file) return;
+
+            if (sarIsRunning()) { showTransientStatus("SAR process is already running.", 3000); input.value = ""; return; }
+            if (!/\.cphd$/i.test(file.name)) { setUploadMsg("Only .cphd files are allowed.", true); input.value = ""; return; }
+
+            // Space check before sending — the server re-checks too.
+            fetch(FLASK_BASE + '/storage_info')
+                .then(function (r) { return r.json(); })
+                .then(function (info) {
+                    var free = (info && info.free) || 0;
+                    var margin = (info && info.margin) || 0;
+                    if (free && file.size + margin > free) {
+                        setUploadMsg("Not enough space: need " + fmtBytes(file.size) +
+                                     ", only " + fmtBytes(Math.max(0, free - margin)) + " available.", true);
+                        input.value = "";
+                        return;
+                    }
+                    startUpload(file);
+                })
+                .catch(function () { startUpload(file); }); // if the check fails, let the server decide
+        }
+
+        function startUpload(file) {
+            var xhr = new XMLHttpRequest();
+            xhr.open("POST", FLASK_BASE + "/upload_cphd?filename=" + encodeURIComponent(file.name));
+            disableUploadBtn(true);
+            showUploadProgress(0);
+            setUploadMsg("Uploading " + file.name + " …", false);
+
+            xhr.upload.onprogress = function (e) {
+                if (e.lengthComputable) showUploadProgress(e.loaded / e.total * 100);
+            };
+            xhr.onload = function () {
+                disableUploadBtn(false);
+                hideUploadProgress();
+                var resp = {};
+                try { resp = JSON.parse(xhr.responseText); } catch (e) {}
+                if (xhr.status === 200 && resp.status === "success") {
+                    setUploadMsg("Uploaded " + (resp.display || file.name), false);
+                    afterUploadSelect(resp.filename);
+                    refreshStorage();
+                } else {
+                    var msg = (resp && resp.error) || ("upload failed (" + xhr.status + ")");
+                    if (xhr.status === 507) msg = "not enough space to store this file";
+                    setUploadMsg("Upload failed: " + msg, true);
+                }
+            };
+            xhr.onerror = function () {
+                disableUploadBtn(false);
+                hideUploadProgress();
+                setUploadMsg("Upload failed (network error).", true);
+            };
+            xhr.send(file);
+            // Allow re-selecting the same filename later.
+            var input = document.getElementById("cphdFileInput");
+            if (input) input.value = "";
+        }
+
+        // After a successful upload, refresh the picker, select the new file, and
+        // load its properties so it's immediately ready to Run.
+        function afterUploadSelect(rel) {
+            fetch(FLASK_BASE + '/get_cphd_files')
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    var files = data.files || [];
+                    sarApplyFileList(files);
+                    var select = document.getElementById("menu_sar_input_data");
+                    if (select && rel && files.indexOf(rel) !== -1) {
+                        select.value = rel;
+                        sendLoad();
+                    }
+                })
+                .catch(function () {});
+        }
+
+        function renderUploadsList() {
+            var wrap = document.getElementById("uploadsList");
+            if (!wrap) return;
+            var uploads = (sarInputFileList || []).filter(function (f) { return f.indexOf(UPLOAD_PREFIX) === 0; });
+            if (!uploads.length) { wrap.innerHTML = ""; return; }
+            var html = '<div class="uploads-title">Your uploads</div>';
+            uploads.forEach(function (rel) {
+                var disp = sarDisplayName(rel);
+                var safe = rel.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+                html += '<div class="upload-item">' +
+                            '<span class="upload-item-name" title="' + disp + '">' + disp + '</span>' +
+                            '<button class="upload-del" title="Delete this upload" onclick="deleteUpload(\'' + safe + '\')">&times;</button>' +
+                        '</div>';
+            });
+            wrap.innerHTML = html;
+        }
+
+        function deleteUpload(rel) {
+            if (sarIsRunning()) { showTransientStatus("SAR process is already running.", 3000); return; }
+            if (!confirm('Delete "' + sarDisplayName(rel) + '" from the server? This cannot be undone.')) return;
+
+            var select = document.getElementById("menu_sar_input_data");
+            var wasSelected = select && select.value === rel;
+
+            fetch(FLASK_BASE + '/delete_upload', {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ filename: rel })
+            })
+            .then(function (r) { return r.json(); })
+            .then(function (resp) {
+                if (resp.status !== "success") { setUploadMsg("Delete failed: " + (resp.error || ""), true); return; }
+                setUploadMsg("Deleted " + sarDisplayName(rel), false);
+                if (wasSelected) clearSelectionAndProps();
+                return fetch(FLASK_BASE + '/get_cphd_files')
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) { sarApplyFileList(data.files || []); refreshStorage(); });
+            })
+            .catch(function () { setUploadMsg("Delete failed (network error).", true); });
+        }
+
+        function clearSelectionAndProps() {
+            sarSelectedInput = null;
+            var select = document.getElementById("menu_sar_input_data");
+            if (select) select.selectedIndex = 0;
+            ["cphd_file_size", "total_pulses", "centre_freq", "img_size", "resolution", "area_size"]
+                .forEach(function (id) { sarSetText(id, "N/A"); });
+            sarInputProps = null;
+            saveState();
+        }
+
+        // ================= Image handling =================
+        function fetchProcessedFile(cphdFilename) {
+            fetch(`${FLASK_BASE}/images/tif_image.webp`)
+                .then(response => {
+                    if (!response.ok) throw new Error("Failed to fetch image.");
+                    return response.blob();
+                })
+                .then(imageBlob => {
+                    sarShowImage1 = true;
+                    saveState();
+                    const imageUrl = URL.createObjectURL(imageBlob);
+                    var img = document.getElementById("processedImage1");
+                    var nd = document.getElementById("noData1");
+                    if (img) { img.src = imageUrl; img.style.display = "block"; }
+                    if (nd) nd.style.display = "none";
+                    setTimeout(() => fetchColorizedImage(cphdFilename), 3000);
+                })
+                .catch(() => {
+                    var img = document.getElementById("processedImage1");
+                    var nd = document.getElementById("noData1");
+                    if (img) img.style.display = "none";
+                    if (nd) nd.style.display = "flex";
+                });
+        }
+
+        function fetchColorizedImage(cphdFilename) {
+            if (!cphdFilename) return;
+            const timeout = 30 * 1000;
+            const interval = 2000;
+            const start = Date.now();
+            function poll() {
+                fetch(`${FLASK_BASE}/sar_colored_image?filename=${encodeURIComponent(cphdFilename)}`)
+                    .then(response => {
+                        if (!response.ok) throw new Error("not ready");
+                        return response.blob();
+                    })
+                    .then(blob => {
+                        sarShowImage2 = true;
+                        saveState();
+                        var img = document.getElementById("processedImage2");
+                        var nd = document.getElementById("noData2");
+                        if (img) { img.src = URL.createObjectURL(blob); img.style.display = "block"; }
+                        if (nd) nd.style.display = "none";
+                    })
+                    .catch(() => {
+                        if (Date.now() - start < timeout) setTimeout(poll, interval);
+                    });
+            }
+            poll();
+        }
+
+        function clearColorizedImage() {
+            var img = document.getElementById("processedImage2");
+            if (img) { img.src = ""; img.style.display = "none"; }
+            var nd = document.getElementById("noData2");
+            if (nd) nd.style.display = "flex";
+        }
+
+        // ================= Run / Reset =================
+        function updateRunButtonState() {
+            var resetBtn = document.getElementById("sarResetButton");
+            if (resetBtn) resetBtn.textContent = sarRunning ? "Stop" : "Reset";
+            var btn = document.getElementById("sarRunButton");
+            if (!btn) return;
+            if (sarRunning) btn.classList.add("running");
+            else btn.classList.remove("running");
+        }
+
+        async function sendRun() {
+            if (sarRunning) {
+                showTransientStatus("SAR process is already running.", 3000);
+                return;
+            }
+
+            const selectedOption = (document.getElementById("menu_sar_input_data") || {}).value || sarSelectedInput;
+            if (!selectedOption) {
+                setStatus("Please select a file first.");
+                return;
+            }
+
+            const runSession = ++sarRunSession;
+            lastTifFilename = null;
+            lastCphdFilename = selectedOption;
+            sarSelectedInput = selectedOption;
+            sarOutputProps = null;
+            sarShowImage1 = false;
+            sarShowImage2 = false;
+
+            try {
+                await fetch(`${FLASK_BASE}/send_message`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ message: `RUN:${selectedOption}` })
+                });
+
+                var p1 = document.getElementById("processedImage1");
+                if (p1) { p1.src = ""; p1.style.display = "none"; }
+                var nd1 = document.getElementById("noData1");
+                if (nd1) nd1.style.display = "flex";
+                clearColorizedImage();
+                sarSetText("outFileSize", "N/A");
+                sarSetText("reductionFactor", "N/A");
+                sarSetText("sizeCompared", "N/A");
+
+                sarRunning = true;
+                sarProcStartTime = Date.now();
+                sarSetText("sarProcTime", "0.00s");
+                saveState();
+                updateRunButtonState();
+                startSarTimer();
+
+                await runSarPoller(selectedOption, runSession);
+            } catch (error) {
+                console.error("Error:", error);
+                setStatus("Error sending command.");
+            }
+        }
+
+        async function runSarPoller(cphdFilename, runSession) {
+            window._sarPollerActive = true;
+            try {
+                const startTime = Date.now();
+                const timeout = 900 * 1000;
+                let fileUpdated = false;
+
+                while (!fileUpdated && sarRunSession === runSession && (Date.now() - startTime < timeout)) {
+                    const response = await fetch(`${FLASK_BASE}/get_tif_file_properties`);
+                    const data = await response.json();
+                    if (sarRunSession !== runSession) return;
+
+                    if (data.files.tif_filename && data.files.tif_filename !== lastTifFilename) {
+                        setStatus("");
+                        stopSarTimer();
+                        const finalElapsed = (Date.now() - sarProcStartTime) / 1000;
+                        sarSetText("sarProcTime", finalElapsed.toFixed(2) + "s");
+
+                        var outSize = data.files.size;
+                        var outReduction = "x" + data.files.reduction_scale + " or " + data.files.reduction_factor + "%";
+                        var outSizeCompared = data.files.size_compared + "%";
+                        var outProcTime = finalElapsed.toFixed(2) + "s";
+                        sarSetText("outFileSize", outSize);
+                        sarSetText("reductionFactor", outReduction);
+                        sarSetText("sizeCompared", outSizeCompared);
+
+                        if (data.files.tif_resolution != null) {
+                            var res = data.files.tif_resolution.toFixed(2) + " meters";
+                            sarSetText("resolution", res);
+                            if (sarInputProps) sarInputProps.resolution = res;
+                        }
+
+                        sarOutputProps = { outFileSize: outSize, reductionFactor: outReduction, sizeCompared: outSizeCompared, sarProcTime: outProcTime };
+                        sarRunning = false;
+                        lastTifFilename = data.files.tif_filename;
+                        setStatus("CPHD file processed");
+                        saveState();
+                        updateRunButtonState();
+
+                        fetchProcessedFile(cphdFilename);
+                        fileUpdated = true;
+                    } else {
+                        setStatus("Processing CPHD file");
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                }
+
+                if (sarRunSession !== runSession) {
+                    return;
+                } else if (!fileUpdated) {
+                    stopSarTimer();
+                    sarRunning = false;
+                    saveState();
+                    updateRunButtonState();
+                }
+            } catch (error) {
+                console.error("Error:", error);
+                setStatus("Error sending command.");
+            } finally {
+                window._sarPollerActive = false;
+            }
+        }
+
+        async function resumeSarPoller(runSession) {
+            if (sarRunSession !== runSession) { window._sarPollerActive = false; return; }
+            runSarPoller(lastCphdFilename || sarSelectedInput, runSession);
+        }
+
+        function resetMenu() {
+            sarRunSession++;
+            clearAllState();
+            updateRunButtonState();
+            lastTifFilename = "lastFile";
+
+            fetch(`${FLASK_BASE}/send_message`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: "STOPSAR" })
+            })
+            .catch(error => { console.error("Error sending STOPSAR:", error); })
+            .then(() => fetch(`${FLASK_BASE}/send_message`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: "3" })
+            }))
+            .then(response => response.json())
+            .catch(error => {
+                console.error("Error:", error);
+                setStatusDom("Error sending command.");
+            });
+
+            var sel = document.getElementById("menu_sar_input_data");
+            if (sel) sel.innerHTML = '<option value="" disabled selected>' + sarPlaceholderText() + '</option>';
+            renderUploadsList();
+            setUploadMsg("", false);
+            sarSetText("status", "");
+            sarSetText("total_pulses", "N/A");
+            sarSetText("cphd_file_size", "N/A");
+            sarSetText("img_size", "N/A");
+            sarSetText("resolution", "N/A");
+            sarSetText("area_size", "N/A");
+            sarSetText("centre_freq", "N/A");
+            var p1 = document.getElementById("processedImage1");
+            if (p1) { p1.src = ""; p1.style.display = "none"; }
+            var nd1 = document.getElementById("noData1");
+            if (nd1) nd1.style.display = "flex";
+            clearColorizedImage();
+            sarSetText("outFileSize", "N/A");
+            sarSetText("reductionFactor", "N/A");
+            sarSetText("sizeCompared", "N/A");
+            sarSetText("sarProcTime", "N/A");
+
+            // Repopulate the picker + uploads list right away (Reset cleared the
+            // in-memory list server-side; the demo/uploaded files still exist on disk).
+            sarLastRefreshTs = 0;
+            setTimeout(function () { refresh_sar_input_list(); refreshStorage(); }, 300);
+        }
+
+        // ---- boot ----
+        updateRunButtonState();
+        restoreState();
+        refresh_sar_input_list(); // populate the picker + uploads list on load
+        refreshStorage();
+    </script>
+</body>
+</html>
