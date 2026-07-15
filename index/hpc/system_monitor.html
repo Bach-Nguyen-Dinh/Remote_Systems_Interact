@@ -145,32 +145,31 @@
         .legend i { width: 18px; height: 3px; border-radius: 2px; display: inline-block; }
 
         /* ---- per-core section ---- */
-        .section-head {
-            margin: 20px 0 8px;
-            font-size: 13px;
-            color: var(--text-weak);
-            border-bottom: 1px solid var(--border);
-            padding-bottom: 6px;
-        }
+        /* 4 columns is the preferred layout. As the viewport (or the Grafana
+           iframe) narrows it steps down to 2 then 1 column so the usage graph
+           and frequency gauge never shrink below a readable size. */
         .cores {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            grid-template-columns: repeat(4, 1fr);
             gap: 8px;
+            margin-top: 8px;
         }
+        @media (max-width: 1160px) { .cores { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 640px)  { .cores { grid-template-columns: 1fr; } }
         .core-card {
             background: var(--panel-bg);
             border: 1px solid var(--border);
             border-radius: 3px;
             padding: 8px 10px;
             display: flex;
-            gap: 8px;
+            gap: 10px;
             min-width: 0;
-            height: 118px;
+            height: 130px;
         }
         .core-left { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
         .core-title { font-size: 12px; color: var(--text-weak); margin-bottom: 2px; }
         .core-chart { flex: 1; min-height: 0; position: relative; }
-        .core-right { flex: 0 0 92px; display: flex; flex-direction: column; align-items: center; }
+        .core-right { flex: 0 0 108px; display: flex; flex-direction: column; align-items: center; }
         .core-right .lbl { font-size: 11px; color: var(--text-faint); margin-bottom: 2px; }
         .core-right .gauge-wrap { flex: 1; width: 100%; display: flex; align-items: center; justify-content: center; min-height: 0; }
 
@@ -293,7 +292,6 @@
     </div>
 
     <!-- ===================== per-core section ===================== -->
-    <div class="section-head">Per-core usage &amp; frequency</div>
     <div class="cores" id="cores"><div class="loading">Connecting to /system_metrics …</div></div>
 
     <script>
@@ -330,6 +328,12 @@
             if (b >= 1048576) return (b / 1048576).toFixed(1) + " MiB/s";
             if (b >= 1024) return (b / 1024).toFixed(0) + " KiB/s";
             return Math.round(b) + " B/s";
+        }
+        function pad2(n) { return (n < 10 ? "0" : "") + n; }
+        // epoch-ms -> HH:MM:SS in the *viewer's* local timezone
+        function fmtClock(ms) {
+            var t = new Date(ms);
+            return pad2(t.getHours()) + ":" + pad2(t.getMinutes()) + ":" + pad2(t.getSeconds());
         }
         function setText(id, v) { var el = document.getElementById(id); if (el) el.textContent = v; }
         function clamp01(x) { return x < 0 ? 0 : (x > 1 ? 1 : x); }
@@ -428,7 +432,7 @@
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             ctx.clearRect(0, 0, cssW, cssH);
 
-            var padL = opts.yLabels ? 34 : 4, padR = 4, padT = 6, padB = 4;
+            var padL = opts.yLabels ? 34 : 4, padR = 4, padT = 6, padB = opts.xLabels ? 16 : 4;
             var plotW = Math.max(1, cssW - padL - padR), plotH = Math.max(1, cssH - padT - padB);
 
             var yMin = opts.yMin != null ? opts.yMin : 0;
@@ -483,6 +487,29 @@
                 ctx.lineJoin = "round";
                 ctx.stroke();
             });
+
+            // ---- x-axis time labels (viewer's local clock, HH:MM:SS) ----
+            if (opts.xLabels && opts.times && opts.times.length) {
+                var tv = opts.times.slice(Math.max(0, opts.times.length - WINDOW));
+                var tm = tv.length;
+                var xAtIdx = function (j) { return padL + plotW * ((WINDOW - tm + j) / (WINDOW - 1)); };
+                // spacing derived from the pixels the data actually spans, so
+                // labels stay >=90px apart (only one shows during warm-up).
+                var availPx = xAtIdx(tm - 1) - xAtIdx(0);
+                var nTicks = Math.max(1, Math.min(4, Math.floor(availPx / 90) + 1));
+                var fmtX = opts.xTickFmt || fmtClock;
+                ctx.fillStyle = "rgba(204,204,220,0.40)";
+                ctx.font = "10px Inter, Arial, sans-serif";
+                ctx.textBaseline = "alphabetic";
+                var yLab = cssH - 4;
+                for (var xi = 0; xi < nTicks; xi++) {
+                    var frac = nTicks === 1 ? 1 : xi / (nTicks - 1);
+                    var idx = Math.round(frac * (tm - 1));
+                    ctx.textAlign = (xi === 0 && nTicks > 1) ? "left"
+                                  : (xi === nTicks - 1 ? "right" : "center");
+                    ctx.fillText(fmtX(tv[idx]), xAtIdx(idx), yLab);
+                }
+            }
         }
         function niceMax(v) {
             if (v <= 0) return 1;
@@ -499,6 +526,7 @@
 
         // ---------- rolling buffers ----------
         var buffers = {};
+        var timeBuf = [];                 // one epoch-ms stamp per refresh, aligned to every series
         function push(key, v) {
             var b = buffers[key] || (buffers[key] = []);
             b.push((v == null || isNaN(v)) ? 0 : v);
@@ -544,6 +572,10 @@
 
         // ---------- main update ----------
         function update(d) {
+            // shared timeline stamp for all charts (sample time, shown local)
+            timeBuf.push(d.timestamp ? d.timestamp * 1000 : Date.now());
+            if (timeBuf.length > WINDOW) timeBuf.shift();
+
             // headline powers
             setText("v_total_power", d.total_power == null ? "—" : Math.round(d.total_power));
             setText("v_cpu_power", n2(d.cpu_power));
@@ -580,7 +612,8 @@
             drawSeries(document.getElementById("net_chart"),
                 [{ data: buffers.net_down, color: C.green, fill: false },
                  { data: buffers.net_up, color: C.yellow, fill: false }],
-                { yMin: 0, yLabels: true, tickFmt: fmtRate, ticks: buildNetTicks() });
+                { yMin: 0, yLabels: true, tickFmt: fmtRate, ticks: buildNetTicks(),
+                  xLabels: true, times: timeBuf });
 
             // per-core
             var usage = d.per_core_usage || {}, freq = d.per_core_freq || {};
@@ -591,7 +624,7 @@
                 drawSeries(coreCanvases[i],
                     [{ data: buffers["core_" + i], color: C.green, fill: true }],
                     { yMin: 0, yMax: 100, yLabels: true, ticks: [0, 25, 50, 75, 100],
-                      tickFmt: function (v) { return v + "%"; } });
+                      tickFmt: function (v) { return v + "%"; }, xLabels: true, times: timeBuf });
                 var fMhz = freq["core_" + i + "_frequency"];
                 coreFreqGauges[i](fMhz == null ? null : fMhz / 1000);
             });
@@ -652,11 +685,12 @@
                 if (buffers.net_down) drawSeries(document.getElementById("net_chart"),
                     [{ data: buffers.net_down, color: C.green, fill: false },
                      { data: buffers.net_up, color: C.yellow, fill: false }],
-                    { yMin: 0, yLabels: true, tickFmt: fmtRate, ticks: buildNetTicks() });
+                    { yMin: 0, yLabels: true, tickFmt: fmtRate, ticks: buildNetTicks(),
+                  xLabels: true, times: timeBuf });
                 Object.keys(coreCanvases).forEach(function (i) {
                     if (buffers["core_" + i]) drawSeries(coreCanvases[i],
                         [{ data: buffers["core_" + i], color: C.green, fill: true }],
-                        { yMin: 0, yMax: 100, yLabels: true, ticks: [0, 25, 50, 75, 100], tickFmt: function (v) { return v + "%"; } });
+                        { yMin: 0, yMax: 100, yLabels: true, ticks: [0, 25, 50, 75, 100], tickFmt: function (v) { return v + "%"; }, xLabels: true, times: timeBuf });
                 });
             });
         });
