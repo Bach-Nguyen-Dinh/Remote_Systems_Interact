@@ -120,6 +120,7 @@
             text-overflow: ellipsis;
         }
         .stat .value .unit { color: var(--text-weak); font-weight: 400; margin-left: 4px; }
+        .stat .value .uline { display: block; }
         .stat.big .value { font-size: 30px; }
         .stat.hero { align-items: flex-start; }
         .stat.hero .value { font-size: 64px; font-weight: 300; }
@@ -314,14 +315,20 @@
             return g.toFixed(2);
         }
         function fmtUptime(s) {
-            if (s == null || isNaN(s)) return "N/A";
+            if (s == null || isNaN(s)) return ["N/A"];
             s = Math.floor(s);
             var d = Math.floor(s / 86400); s %= 86400;
             var h = Math.floor(s / 3600); s %= 3600;
-            var m = Math.floor(s / 60);
+            var m = Math.floor(s / 60); var sec = s % 60;
             var plural = function (n, w) { return n + " " + w + (n === 1 ? "" : "s"); };
-            if (d > 0) return plural(d, "day") + ", " + plural(h, "hour");
-            return plural(h, "hour") + ", " + plural(m, "minute");
+            if (d > 0) return [plural(d, "day"), plural(h, "hour")];
+            if (h > 0) return [plural(h, "hour"), plural(m, "minute")];
+            return [plural(m, "minute"), plural(sec, "second")];
+        }
+        function setUptime(parts) {
+            var el = document.getElementById("v_uptime");
+            if (!el) return;
+            el.innerHTML = parts.map(function (p) { return '<span class="uline">' + p + '</span>'; }).join("");
         }
         function fmtRate(b) {
             if (b == null || isNaN(b)) b = 0;
@@ -581,7 +588,7 @@
             setText("v_cpu_power", n2(d.cpu_power));
             setText("v_ai_power", n2(d.ai_card_power));
             setText("v_fan_power", n2(d.fan_power));
-            setText("v_uptime", fmtUptime(d.uptime_seconds));
+            setUptime(fmtUptime(d.uptime_seconds));
 
             // headline stats
             setText("v_cores", d.num_threads != null ? d.num_threads
