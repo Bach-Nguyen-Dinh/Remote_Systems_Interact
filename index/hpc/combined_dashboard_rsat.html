@@ -20,7 +20,7 @@
            frames it hosts.
            ------------------------------------------------------------------ */
         :root {
-            --bg:        #111217;
+            --bg:        #020406;
             --border:    #28292f;
             --text:      rgba(204, 204, 220, 0.90);
             --text-weak: rgba(204, 204, 220, 0.65);
@@ -65,9 +65,60 @@
             display: block;
             background: var(--bg);
         }
+
+        /* ---- RSAT branding header ----------------------------------------
+           A fixed banner matching the reference: RSAT logo (left), mission
+           banner (centre, grows to fill), and a right column stacking the
+           Insight One logo over the "Powered by AICRAFT" mark. Each element is
+           a same-origin <iframe> onto its standalone panel in index/branding/,
+           served via /branding/<file>, so the logo assets stay single-source.
+           ------------------------------------------------------------------ */
+        .brand-header {
+            display: flex;
+            align-items: stretch;
+            gap: 12px;
+            height: 160px;
+            padding: 6px 4px 10px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 8px;
+        }
+        .brand-header .bframe { border: none; display: block; background: transparent; }
+        /* Mission frame hugs the height-scaled image (ratio 1270/148);
+           rsat takes whatever width is left after mission + right column. */
+        .brand-rsat    { min-width: 0; aspect-ratio: 285 / 153; }
+        .brand-mission { flex: 0 0 auto; height: 100%; aspect-ratio: 1270 / 148; }
+        .brand-right   {
+            flex: 0 0 300px; 
+            display: flex; 
+            flex-direction: column; 
+            /* gap: 20px;  */
+        }
+        .brand-right .bframe { width: 100%; min-height: 0; }
+        .brand-insight { flex: 1 1 30%; min-height: 0; }
+        .brand-aicraft { flex: 0 1 20%; min-height: 0; }
+
+        @media (max-width: 760px) {
+            .brand-header { height: auto; flex-wrap: wrap; }
+            .brand-right { flex-basis: 140px; }
+            .brand-mission { flex-basis: 100%; order: 3; height: 70px; }
+        }
     </style>
 </head>
 <body>
+
+    <!-- ===================== RSAT branding header ===================== -->
+    <div class="brand-header">
+        <iframe class="bframe brand-rsat"    src="/branding/rsat_logo_panel.html"
+                title="RSAT" scrolling="no"></iframe>
+        <iframe class="bframe brand-mission" src="/branding/rsat_mission_panel.html"
+                title="Trusted satellite systems for high data missions" scrolling="no"></iframe>
+        <div class="brand-right">
+            <iframe class="bframe brand-insight"  src="/branding/insight_one_logo_panel.html"
+                    title="Insight One" scrolling="no"></iframe>
+            <iframe class="bframe brand-aicraft" src="/branding/ai_craft_logo_panel_in_row.html"
+                    title="Powered by AICRAFT" scrolling="no"></iframe>
+        </div>
+    </div>
 
     <!-- ===================== SAR application ===================== -->
     <div class="section-row" id="sec-sar">
