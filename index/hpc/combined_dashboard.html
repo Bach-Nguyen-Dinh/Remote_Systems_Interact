@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HPC Dashboard</title>
+    <style>
+        /* ------------------------------------------------------------------
+           Combined HPC frontend, served by combined_hpc.py at '/'. It is only
+           a thin shell: two collapsible sections, each hosting one of the
+           existing standalone pages in a same-origin <iframe>:
+             * SAR application        -> /sar_app        (sar_process_upload.html)
+             * Live system utilisation-> /system_monitor (system_monitor.html)
+           Keeping them as iframes means each page stays standalone and is edited
+           independently; nothing here touches their CSS/JS. Because both frames
+           are same-origin, the monitor frame is auto-sized to its content so the
+           whole dashboard scrolls as one page (no nested scrollbar). The SAR page
+           is a fixed-height (fill-the-box) design, so its frame keeps a set height.
+           The Grafana dark theme is reproduced here so the shell matches the
+           frames it hosts.
+           ------------------------------------------------------------------ */
+        :root {
+            --bg:        #111217;
+            --border:    #28292f;
+            --text:      rgba(204, 204, 220, 0.90);
+            --text-weak: rgba(204, 204, 220, 0.65);
+        }
+
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            font-size: 13px;
+            -webkit-font-smoothing: antialiased;
+            padding: 8px 10px 24px;
+        }
+
+        /* ---- collapsible section (Grafana row-header style) ---- */
+        .section-row { margin-bottom: 6px; }
+        .section-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none;
+            padding: 6px 4px;
+            color: var(--text-weak);
+            font-size: 15px;
+            font-weight: 400;
+        }
+        .section-header:hover { color: var(--text); }
+        .section-header .chev {
+            display: inline-block;
+            font-size: 11px;
+            transition: transform 0.15s ease;
+        }
+        .section-row.collapsed .chev { transform: rotate(-90deg); }
+        .section-row.collapsed .section-body { display: none; }
+
+        .frame {
+            width: 100%;
+            border: none;
+            display: block;
+            background: var(--bg);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ===================== SAR application ===================== -->
+    <div class="section-row" id="sec-sar">
+        <div class="section-header" onclick="toggleSection('sec-sar')">
+            <span class="chev">&#9662;</span><span>SAR application</span>
+        </div>
+        <div class="section-body">
+            <iframe class="frame" id="frame-sar" src="/sar_app"
+                    title="SAR application" style="height: 720px;"></iframe>
+        </div>
+    </div>
+
+    <!-- ===================== Live system utilisation ===================== -->
+    <div class="section-row" id="sec-mon">
+        <div class="section-header" onclick="toggleSection('sec-mon')">
+            <span class="chev">&#9662;</span><span>Live system utilisation</span>
+        </div>
+        <div class="section-body">
+            <iframe class="frame" id="frame-mon" src="/system_monitor"
+                    title="Live system utilisation" style="height: 600px;"></iframe>
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        "use strict";
+
+        var monFrame = document.getElementById("frame-mon");
+
+        // Same-origin, so the parent may read the frame's document to size it.
+        function monDoc() {
+            try { return monFrame.contentWindow.document; } catch (e) { return null; }
+        }
+        function contentHeight(d) {
+            if (!d) return 0;
+            return Math.max(
+                d.body ? d.body.scrollHeight : 0,
+                d.documentElement ? d.documentElement.scrollHeight : 0
+            );
+        }
+
+        // Grow-only: the monitor builds its per-core grid a second or so after
+        // load (first /system_metrics response), so the frame must be able to
+        // grow into its content without flicker.
+        function growMon() {
+            var h = contentHeight(monDoc());
+            if (h && h > monFrame.offsetHeight) monFrame.style.height = h + "px";
+        }
+        // Full remeasure (allows shrinking too) — used on load and on resize,
+        // where the responsive core grid can get shorter.
+        function remeasureMon() {
+            var d = monDoc();
+            if (!d) return;
+            monFrame.style.height = "0px";
+            monFrame.style.height = (contentHeight(d) || 600) + "px";
+        }
+
+        monFrame.addEventListener("load", function () {
+            remeasureMon();
+            setTimeout(remeasureMon, 500);   // catch the async core grid
+            setTimeout(remeasureMon, 1500);
+        });
+        setInterval(growMon, 1000);
+
+        var resizeTimer = null;
+        window.addEventListener("resize", function () {
+            if (resizeTimer) clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(remeasureMon, 200);
+        });
+
+        window.toggleSection = function (id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.classList.toggle("collapsed");
+            // Re-fit the monitor when it is revealed (it can't be measured while
+            // display:none), on the next frame so layout has settled.
+            if (id === "sec-mon" && !el.classList.contains("collapsed")) {
+                setTimeout(remeasureMon, 50);
+            }
+        };
+    })();
+    </script>
+</body>
+</html>
