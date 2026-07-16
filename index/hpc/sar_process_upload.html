@@ -322,10 +322,9 @@
         // the nginx proxy (https://<domain>/sar_app).
         var FLASK_BASE = window.location.origin;
 
-        var SAR_STATE_KEY = 'sarPanelState_v1';
         var UPLOAD_PREFIX = 'user_data/'; // relative-name prefix marking user uploads
 
-        // Runtime state (persisted so an iframe/page reload resumes a run).
+        // Runtime state (in-memory only; a full page reload starts fresh via resetMenu()).
         var lastTifFilename = "lastFile";
         var lastCphdFilename = null;
         var sarInputProps = null;
@@ -362,7 +361,7 @@
 
         function sarSetText(id, val) { var el = document.getElementById(id); if (el) el.textContent = val; }
         function setStatusDom(text) { var el = document.getElementById("status"); if (el) el.textContent = text; }
-        function setStatus(text) { sarStatus = text; if (!window._sarTransientActive) setStatusDom(text); saveState(); }
+        function setStatus(text) { sarStatus = text; if (!window._sarTransientActive) setStatusDom(text); }
 
         function showTransientStatus(text, ms) {
             window._sarTransientActive = true;
@@ -387,22 +386,6 @@
             if (window._sarTimerInterval) { clearInterval(window._sarTimerInterval); window._sarTimerInterval = null; }
         }
 
-        function saveState() {
-            localStorage.setItem(SAR_STATE_KEY, JSON.stringify({
-                lastTifFilename: lastTifFilename,
-                cphdFilename: lastCphdFilename,
-                inputProps: sarInputProps,
-                outputProps: sarOutputProps,
-                showImage1: sarShowImage1,
-                showImage2: sarShowImage2,
-                running: sarRunning,
-                startTime: sarProcStartTime,
-                status: sarStatus,
-                selectedInput: sarSelectedInput,
-                inputFileList: sarInputFileList,
-            }));
-        }
-
         function clearResultState() {
             sarInputProps = null;
             sarOutputProps = null;
@@ -410,7 +393,6 @@
             sarShowImage2 = false;
             lastCphdFilename = null;
             sarRunning = false;
-            saveState();
             updateRunButtonState();
         }
 
@@ -426,104 +408,6 @@
             sarStatus = "";
             sarSelectedInput = null;
             sarInputFileList = [];
-            localStorage.removeItem(SAR_STATE_KEY);
-        }
-
-        function applyTextState() {
-            var setText = function (id, val) { var el = document.getElementById(id); if (el && val != null) el.textContent = val; };
-            if (sarInputProps) {
-                setText("cphd_file_size", sarInputProps.cphd_file_size);
-                setText("total_pulses", sarInputProps.total_pulses);
-                setText("centre_freq", sarInputProps.centre_freq);
-                setText("img_size", sarInputProps.img_size);
-                setText("resolution", sarInputProps.resolution);
-                setText("area_size", sarInputProps.area_size);
-            }
-            if (sarOutputProps) {
-                setText("outFileSize", sarOutputProps.outFileSize);
-                setText("reductionFactor", sarOutputProps.reductionFactor);
-                setText("sizeCompared", sarOutputProps.sizeCompared);
-                setText("sarProcTime", sarOutputProps.sarProcTime);
-            }
-        }
-
-        function restoreInputDropdown() {
-            var select = document.getElementById("menu_sar_input_data");
-            if (!select) return;
-            var files = sarInputFileList || [];
-            var selected = sarSelectedInput || null;
-            if (!files.length && !selected) return;
-
-            select.innerHTML = '';
-            var placeholder = document.createElement('option');
-            placeholder.value = '';
-            placeholder.textContent = sarPlaceholderText();
-            placeholder.disabled = true;
-            select.appendChild(placeholder);
-
-            var list = files.slice();
-            if (selected && list.indexOf(selected) === -1) list.push(selected);
-            list.forEach(function (file) {
-                var option = document.createElement('option');
-                option.value = file;
-                option.textContent = sarDisplayName(file);
-                select.appendChild(option);
-            });
-
-            if (selected) select.value = selected;
-            else placeholder.selected = true;
-            renderUploadsList();
-        }
-
-        function restoreState() {
-            var raw = localStorage.getItem(SAR_STATE_KEY);
-            if (!raw) return;
-            try {
-                var state = JSON.parse(raw);
-                if (state.lastTifFilename) lastTifFilename = state.lastTifFilename;
-                if (state.cphdFilename) lastCphdFilename = state.cphdFilename;
-                if (state.inputProps) sarInputProps = state.inputProps;
-                if (state.outputProps) sarOutputProps = state.outputProps;
-                if (state.selectedInput) sarSelectedInput = state.selectedInput;
-                if (state.inputFileList) sarInputFileList = state.inputFileList;
-                if (typeof state.startTime === 'number') sarProcStartTime = state.startTime;
-                if (state.status != null) sarStatus = state.status;
-
-                restoreInputDropdown();
-                setStatusDom(sarStatus);
-
-                if (state.showImage1) {
-                    sarShowImage1 = true;
-                    fetch(FLASK_BASE + '/images/tif_image.webp')
-                        .then(function (r) { if (!r.ok) throw new Error(); return r.blob(); })
-                        .then(function (blob) {
-                            var img = document.getElementById("processedImage1");
-                            var nd = document.getElementById("noData1");
-                            if (img) { img.src = URL.createObjectURL(blob); img.style.display = "block"; }
-                            if (nd) nd.style.display = "none";
-                        })
-                        .catch(function () {});
-                }
-                if (state.showImage2 && state.cphdFilename) {
-                    sarShowImage2 = true;
-                    fetchColorizedImage(state.cphdFilename);
-                }
-                setTimeout(applyTextState, 200);
-
-                if (state.running) {
-                    sarRunning = true;
-                    updateRunButtonState();
-                    if (!window._sarPollerActive) {
-                        window._sarPollerActive = true;
-                        startSarTimer();
-                        resumeSarPoller(++sarRunSession);
-                    } else if (!window._sarTimerInterval) {
-                        startSarTimer();
-                    }
-                }
-            } catch (e) {
-                console.error("SAR state restore error:", e);
-            }
         }
 
         function getFrequencyBand(freqHz) {
@@ -571,7 +455,6 @@
                 select.innerHTML = '<option value="" disabled selected>Upload your data</option>';
                 sarInputFileList = [];
                 renderUploadsList();
-                saveState();
                 return;
             }
 
@@ -587,6 +470,10 @@
                 placeholder.value = '';
                 placeholder.textContent = sarPlaceholderText();
                 placeholder.disabled = true;
+                // Prompt stays as the closed-menu label, but hidden from the open
+                // dropdown list so it isn't a greyed line and the first real file
+                // remains selectable (picking it fires onchange/sendLoad).
+                placeholder.hidden = true;
                 select.appendChild(placeholder);
                 files.forEach(function (file) {
                     var option = document.createElement('option');
@@ -601,7 +488,6 @@
             sarInputFileList = files;
             sarSelectedInput = select.value || sarSelectedInput;
             renderUploadsList();
-            saveState();
         }
 
         function refresh_sar_input_list() {
@@ -676,7 +562,6 @@
                     sarSetText("resolution", props.resolution);
                     sarSetText("area_size", props.area_size);
                     sarInputProps = props;
-                    saveState();
                 })
                 .catch(function (error) { console.error("Error fetching file size:", error); });
         }
@@ -699,7 +584,6 @@
 
             clearResultState();
             sarSelectedInput = selectedOption;
-            saveState();
 
             setStatusDom("");
             var p1 = document.getElementById("processedImage1");
@@ -903,7 +787,6 @@
             ["cphd_file_size", "total_pulses", "centre_freq", "img_size", "resolution", "area_size"]
                 .forEach(function (id) { sarSetText(id, "N/A"); });
             sarInputProps = null;
-            saveState();
         }
 
         // ================= Image handling =================
@@ -915,7 +798,6 @@
                 })
                 .then(imageBlob => {
                     sarShowImage1 = true;
-                    saveState();
                     const imageUrl = URL.createObjectURL(imageBlob);
                     var img = document.getElementById("processedImage1");
                     var nd = document.getElementById("noData1");
@@ -944,7 +826,6 @@
                     })
                     .then(blob => {
                         sarShowImage2 = true;
-                        saveState();
                         var img = document.getElementById("processedImage2");
                         var nd = document.getElementById("noData2");
                         if (img) { img.src = URL.createObjectURL(blob); img.style.display = "block"; }
@@ -1013,7 +894,6 @@
                 sarRunning = true;
                 sarProcStartTime = Date.now();
                 sarSetText("sarProcTime", "0.00s");
-                saveState();
                 updateRunButtonState();
                 startSarTimer();
 
@@ -1060,7 +940,6 @@
                         sarRunning = false;
                         lastTifFilename = data.files.tif_filename;
                         setStatus("CPHD file processed");
-                        saveState();
                         updateRunButtonState();
 
                         fetchProcessedFile(cphdFilename);
@@ -1076,7 +955,6 @@
                 } else if (!fileUpdated) {
                     stopSarTimer();
                     sarRunning = false;
-                    saveState();
                     updateRunButtonState();
                 }
             } catch (error) {
@@ -1085,11 +963,6 @@
             } finally {
                 window._sarPollerActive = false;
             }
-        }
-
-        async function resumeSarPoller(runSession) {
-            if (sarRunSession !== runSession) { window._sarPollerActive = false; return; }
-            runSarPoller(lastCphdFilename || sarSelectedInput, runSession);
         }
 
         function resetMenu() {
@@ -1143,10 +1016,12 @@
         }
 
         // ---- boot ----
+        // On every page load / refresh (and the very first open), start fresh:
+        // behave exactly as if the user had clicked the Reset button. resetMenu()
+        // also repopulates the input picker + uploads list, so no extra calls are
+        // needed here.
         updateRunButtonState();
-        restoreState();
-        refresh_sar_input_list(); // populate the picker + uploads list on load
-        refreshStorage();
+        resetMenu();
     </script>
 </body>
 </html>
