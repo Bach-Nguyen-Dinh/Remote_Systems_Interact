@@ -88,11 +88,13 @@ CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 # "_upload" line and uncomment the "_combined" line (then restart).
 # SAR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "sar_process_combined.html")   # old index (no upload)
 SAR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "sar_process_upload.html")        # new index (upload + delete)
+SAR_FRONTEND_RSAT = os.path.join(CURR_DIR, "index", "hpc", "sar_process_combined.html")
 MONITOR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "system_monitor.html")         # live system-utilisation page
 # Combined shell served at '/': two collapsible sections, each an <iframe> onto
 # one of the pages above (SAR_FRONTEND via /sar_app, MONITOR_FRONTEND via
 # /system_monitor). Replaces the old Grafana frontend that iframed them separately.
 COMBINED_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "combined_dashboard.html")
+COMBINED_FRONTEND_RSAT = os.path.join(CURR_DIR, "index", "hpc", "combined_dashboard_rsat.html")
 SAVE_DIR = os.path.join(CURR_DIR, "pictures")
 SAR_LOGS_DIR = os.path.join(CURR_DIR, "sar_logs")           # served SAR log plots (webp)
 SAVE_PATH_TIF = os.path.join(SAVE_DIR, "tif_image.webp")
@@ -785,11 +787,19 @@ def combined_frontend():
     from '/sar_app' and '/system_monitor'."""
     return send_file(COMBINED_FRONTEND)
 
+@app.route('/rsat')
+def combined_frontend_rsat():
+    return send_file(COMBINED_FRONTEND_RSAT)
+
 @app.route('/sar_app')
 def sar_frontend():
     """Serve the standalone SAR-process page (upload + delete). Hosted in the
     combined dashboard via a same-origin <iframe>, and still reachable directly."""
     return send_file(SAR_FRONTEND)
+
+@app.route('/sar_app_rsat')
+def sar_frontend_rsat():
+    return send_file(SAR_FRONTEND_RSAT)
 
 @app.route('/monitor')
 @app.route('/system_monitor')
