@@ -589,6 +589,8 @@
                     sarSetText("resolution", props.resolution);
                     sarSetText("area_size", props.area_size);
                     sarInputProps = props;
+                    // Input properties are now on screen — drop the loading text.
+                    setStatusDom("");
                     saveState();
                 })
                 .catch(function (error) { console.error("Error fetching file size:", error); });
@@ -615,7 +617,7 @@
             sarSelectedInput = selectedOption;
             saveState();
 
-            setStatusDom("");
+            setStatusDom("Loading input data ...");
             var p1 = document.getElementById("processedImage1");
             if (p1) { p1.src = ""; p1.style.display = "none"; }
             var nd1 = document.getElementById("noData1");
@@ -634,7 +636,7 @@
                 });
 
                 const startTime = Date.now();
-                const timeout = 30 * 1000;
+                const timeout = 60 * 1000;
                 while (Date.now() - startTime < timeout) {
                     const response = await fetch(`${FLASK_BASE}/get_cphd_file_properties`);
                     const data = await response.json();
@@ -644,7 +646,7 @@
                     }
                     await new Promise(resolve => setTimeout(resolve, 500));
                 }
-                setStatusDom("Timeout waiting for file properties.");
+                setStatusDom("Time out. Reset and try again.");
             } catch (error) {
                 console.error("Error:", error);
                 setStatusDom("Error sending command.");
