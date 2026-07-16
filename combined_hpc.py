@@ -26,9 +26,11 @@ import time
 import json
 import os
 import glob
+import shutil
 import signal
 from flask import Flask, request, jsonify, send_from_directory, send_file  # type: ignore
 from flask_cors import CORS  # type: ignore
+from werkzeug.utils import secure_filename  # type: ignore
 
 # ----------------------------------------------------------------------------
 # Configuration
@@ -47,6 +49,19 @@ METRICS_INTERVAL = 0.3       # seconds between metric samples (was the target se
 # SAR / target-side paths (unchanged from target_hpc_ubuntu.py)
 RESIZED_IMAGE_PATH = "/home/sarthak/demo-resrc/optimized_image.webp"
 DEMO_PATH = "/home/public/sar/sar-server/data/cphd"
+# User-uploaded CPHD files land in this subfolder of DEMO_PATH. It is scanned like
+# any other CPHD (scan_cphd_files walks DEMO_PATH), and cphd_aic.py resolves the
+# relative name "user_data/<file>.cphd" against its own CPHD_DIR, so no change to
+# cphd_aic.py is needed. Keeping uploads under one subfolder means user data can be
+# wiped independently of the bundled demo files. NOTE: DEMO_PATH is root-owned, so
+# this folder must be pre-created and made writable by the process user, e.g.:
+#   sudo mkdir -p /home/public/sar/sar-server/data/cphd/user_data
+#   sudo chown $(whoami) /home/public/sar/sar-server/data/cphd/user_data
+USER_DATA_DIRNAME = "user_data"
+USER_DATA_PATH = os.path.join(DEMO_PATH, USER_DATA_DIRNAME)
+# Refuse an upload that would leave the filesystem with less than this much free
+# space, so a large CPHD can't fill the disk out from under SAR processing.
+UPLOAD_FREE_SPACE_MARGIN = 2 * 1024 * 1024 * 1024  # 2 GB headroom
 OUT_TIF_PATH = "/home/sarthak/workspace/SAR_codebase/output_immediate"
 SAR_DIR = "/home/sarthak/workspace/SAR_codebase"
 SAR_PROG = os.path.join(SAR_DIR, "cphd_aic.py")
@@ -69,6 +84,15 @@ FM_INTERFACE_ID = "fm1-mac3"
 
 # Host-side served directories / files (unchanged from host_no_chunking.py)
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
+# Which SAR frontend to serve. To go back to the older no-upload index, comment the
+# "_upload" line and uncomment the "_combined" line (then restart).
+# SAR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "sar_process_combined.html")   # old index (no upload)
+SAR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "sar_process_upload.html")        # new index (upload + delete)
+MONITOR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "system_monitor.html")         # live system-utilisation page
+# Combined shell served at '/': two collapsible sections, each an <iframe> onto
+# one of the pages above (SAR_FRONTEND via /sar_app, MONITOR_FRONTEND via
+# /system_monitor). Replaces the old Grafana frontend that iframed them separately.
+COMBINED_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "combined_dashboard.html")
 SAVE_DIR = os.path.join(CURR_DIR, "pictures")
 SAR_LOGS_DIR = os.path.join(CURR_DIR, "sar_logs")           # served SAR log plots (webp)
 SAVE_PATH_TIF = os.path.join(SAVE_DIR, "tif_image.webp")
@@ -98,6 +122,13 @@ ai_card_power_cache = None
 ai_card_temp_cache = None
 sar_process = None             # Popen handle of the running SAR program
 sar_stop_requested = False
+
+# Latest system snapshot, refreshed in-place by metrics_loop so the monitoring
+# frontend can pull every live value in a single /system_metrics request instead
+# of querying InfluxDB / Grafana. Guarded by a lock because metrics_loop (writer)
+# and Flask request threads (readers) touch it concurrently.
+latest_metrics = {}
+latest_metrics_lock = threading.Lock()
 
 app = Flask(__name__)
 CORS(app)
@@ -307,7 +338,13 @@ def scan_cphd_files():
     for root, dirs, files in os.walk(DEMO_PATH):
         for file in files:
             if file.endswith(".cphd"):
-                cphd_files[file] = os.path.join(root, file)
+                full = os.path.join(root, file)
+                # Key by path relative to DEMO_PATH: a bare basename for the bundled
+                # top-level demo files (unchanged), and "user_data/<file>.cphd" for
+                # uploads. This relative name is exactly what cphd_aic.py wants for
+                # its --file argument, and lets the frontend tell uploads apart.
+                rel = os.path.relpath(full, DEMO_PATH)
+                cphd_files[rel] = full
     cphd_file_list = list(cphd_files.keys())
     print(f"Found .cphd files: {cphd_file_list}")
 
@@ -713,13 +750,24 @@ def build_influx_point(system_info):
     }
 
 def metrics_loop():
-    """Collect metrics and write them straight to InfluxDB (no socket round-trip)."""
+    """Collect metrics and write them straight to InfluxDB (no socket round-trip).
+
+    The same sample is cached in `latest_metrics` (with the derived total_power)
+    so /system_metrics can serve the whole monitoring dashboard from memory — the
+    frontend never triggers its own psutil sampling, keeping each refresh cheap."""
+    global latest_metrics
     client = InfluxDBClient(INFLUXDB_HOST, INFLUXDB_PORT, INFLUXDB_USER, INFLUXDB_PASSWORD, INFLUXDB_DB)
     print("Metrics loop started, writing to InfluxDB")
     while True:
         try:
             info = get_system_info()
-            client.write_points([build_influx_point(info)])
+            point = build_influx_point(info)
+            client.write_points([point])
+            snapshot = dict(info)
+            snapshot["total_power"] = point["fields"]["total_power"]
+            snapshot["timestamp"] = time.time()
+            with latest_metrics_lock:
+                latest_metrics = snapshot
         except Exception as e:
             print(f"Metrics loop error: {e}")
         time.sleep(METRICS_INTERVAL)
@@ -727,6 +775,138 @@ def metrics_loop():
 # ----------------------------------------------------------------------------
 # Flask API (from host)
 # ----------------------------------------------------------------------------
+@app.route('/')
+def combined_frontend():
+    """Serve the combined dashboard shell (replaces the old Grafana frontend).
+
+    It is a thin page that iframes the two standalone frontends below, so a
+    single visit to http://<target>:5000/ shows the SAR application on top and
+    the live system-utilisation monitor beneath it. The frames load same-origin
+    from '/sar_app' and '/system_monitor'."""
+    return send_file(COMBINED_FRONTEND)
+
+@app.route('/sar_app')
+def sar_frontend():
+    """Serve the standalone SAR-process page (upload + delete). Hosted in the
+    combined dashboard via a same-origin <iframe>, and still reachable directly."""
+    return send_file(SAR_FRONTEND)
+
+@app.route('/monitor')
+@app.route('/system_monitor')
+def monitor_frontend():
+    """Serve the live system-utilisation page (embeddable in Grafana via iframe,
+    same as the SAR page). It refreshes itself from /system_metrics."""
+    return send_file(MONITOR_FRONTEND)
+
+@app.route('/system_metrics', methods=['GET'])
+def system_metrics():
+    """Return the whole live snapshot the monitoring dashboard needs in one call.
+
+    Served straight from the in-memory cache filled by metrics_loop, so a 1 Hz
+    (or faster) refresh from any number of viewers costs nothing beyond a dict
+    copy — there is no per-request psutil sampling or InfluxDB query."""
+    with latest_metrics_lock:
+        return jsonify(latest_metrics)
+
+@app.route('/storage_info', methods=['GET'])
+def storage_info():
+    """Report free/total disk space on the filesystem that holds the CPHD store,
+    so the frontend can refuse an upload that won't fit before sending it."""
+    try:
+        usage = shutil.disk_usage(DEMO_PATH)
+        return jsonify({
+            "free": usage.free,
+            "total": usage.total,
+            "used": usage.used,
+            "margin": UPLOAD_FREE_SPACE_MARGIN,
+            "usable": max(0, usage.free - UPLOAD_FREE_SPACE_MARGIN),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/upload_cphd', methods=['POST'])
+def upload_cphd():
+    """Stream an uploaded .cphd file into DEMO_PATH/user_data.
+
+    The body is the raw file bytes (not multipart), so nginx/Flask can stream it
+    straight to disk in chunks instead of buffering multi-GB files in memory or a
+    temp file. The target filename comes from the ?filename= query parameter.
+    """
+    raw_name = request.args.get('filename', '')
+    name = secure_filename(raw_name)
+    if not name:
+        return jsonify({"status": "error", "error": "missing filename"}), 400
+    if not name.lower().endswith('.cphd'):
+        return jsonify({"status": "error", "error": "only .cphd files are allowed"}), 400
+
+    # Pre-flight space check against the declared upload size.
+    declared = request.content_length or 0
+    try:
+        free = shutil.disk_usage(DEMO_PATH).free
+    except Exception as e:
+        return jsonify({"status": "error", "error": f"cannot stat storage: {e}"}), 500
+    if declared and declared + UPLOAD_FREE_SPACE_MARGIN > free:
+        return jsonify({
+            "status": "error", "error": "not enough space",
+            "free": free, "needed": declared, "margin": UPLOAD_FREE_SPACE_MARGIN,
+        }), 507  # Insufficient Storage
+
+    try:
+        os.makedirs(USER_DATA_PATH, exist_ok=True)
+    except Exception as e:
+        return jsonify({"status": "error",
+                        "error": f"upload folder not writable: {e}"}), 500
+
+    dest = os.path.join(USER_DATA_PATH, name)
+    written = 0
+    try:
+        with open(dest, 'wb') as out:
+            while True:
+                chunk = request.stream.read(8 * 1024 * 1024)  # 8 MB chunks
+                if not chunk:
+                    break
+                written += len(chunk)
+                # Guard against the disk filling mid-stream (e.g. no Content-Length).
+                if shutil.disk_usage(DEMO_PATH).free < UPLOAD_FREE_SPACE_MARGIN:
+                    raise IOError("ran out of space during upload")
+                out.write(chunk)
+    except Exception as e:
+        if os.path.exists(dest):
+            os.remove(dest)  # don't leave a truncated file in the picker
+        return jsonify({"status": "error", "error": str(e)}), 507
+
+    scan_cphd_files()  # make the new file appear in the picker
+    rel = os.path.relpath(dest, DEMO_PATH)
+    print(f"Uploaded CPHD '{rel}' ({written} bytes)")
+    return jsonify({"status": "success", "filename": rel,
+                    "display": name, "size": written})
+
+@app.route('/delete_upload', methods=['POST'])
+def delete_upload():
+    """Delete a single user-uploaded CPHD. Only files under user_data/ may be
+    removed — the bundled demo files and anything outside the folder are refused."""
+    data = request.get_json(silent=True) or {}
+    rel = data.get('filename', '')
+    prefix = USER_DATA_DIRNAME + '/'
+    if not rel.startswith(prefix):
+        return jsonify({"status": "error", "error": "only uploaded files can be deleted"}), 403
+
+    # Resolve and confirm the path stays inside USER_DATA_PATH (no traversal).
+    full = os.path.normpath(os.path.join(DEMO_PATH, rel))
+    base = os.path.abspath(USER_DATA_PATH)
+    if os.path.commonpath([base, os.path.abspath(full)]) != base:
+        return jsonify({"status": "error", "error": "invalid path"}), 403
+
+    if os.path.isfile(full):
+        try:
+            os.remove(full)
+            print(f"Deleted uploaded CPHD '{rel}'")
+        except Exception as e:
+            return jsonify({"status": "error", "error": str(e)}), 500
+
+    scan_cphd_files()
+    return jsonify({"status": "success", "filename": rel})
+
 @app.route('/send_message', methods=['POST'])
 def send_message():
     data = request.get_json()
@@ -789,7 +969,9 @@ def serve_sar_colored_image():
     cphd_filename = request.args.get('filename', '')
     if not cphd_filename:
         return "No filename provided", 400
-    base_name = cphd_filename
+    # Colored images are stored flat by basename; strip any "user_data/" prefix
+    # that an uploaded file's relative name carries.
+    base_name = os.path.basename(cphd_filename)
     if base_name.lower().endswith('.cphd'):
         base_name = base_name[:-5]
     colored_image_name = f"{base_name}_colered_img.webp"
