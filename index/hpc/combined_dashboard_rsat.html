@@ -85,16 +85,16 @@
         .brand-header .bframe { border: none; display: block; background: transparent; }
         /* Mission frame hugs the height-scaled image (ratio 1270/148);
            rsat takes whatever width is left after mission + right column. */
-        .brand-rsat    { min-width: 0; aspect-ratio: 285 / 153; }
-        .brand-mission { flex: 0 0 auto; height: 100%; aspect-ratio: 1270 / 148; }
+        .brand-rsat    { flex: 0 0 20%; min-width: 0; }
+        .brand-mission { flex: 1 1 auto; }
         .brand-right   {
-            flex: 0 0 300px; 
+            flex: 0 0 20%; 
             display: flex; 
             flex-direction: column; 
             /* gap: 20px;  */
         }
         .brand-right .bframe { width: 100%; min-height: 0; }
-        .brand-insight { flex: 1 1 30%; min-height: 0; }
+        .brand-insight { flex: 1 1 30%; min-height: 0; padding-left: 16px;}
         .brand-aicraft { flex: 0 1 20%; min-height: 0; }
 
         @media (max-width: 760px) {
