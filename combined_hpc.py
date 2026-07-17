@@ -95,6 +95,7 @@ MONITOR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "system_monitor.html")
 # /system_monitor). Replaces the old Grafana frontend that iframed them separately.
 COMBINED_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "combined_dashboard.html")
 COMBINED_FRONTEND_RSAT = os.path.join(CURR_DIR, "index", "hpc", "combined_dashboard_rsat.html")
+BRANDING_DIR = os.path.join(CURR_DIR, "index", "branding")  # logo / mission-banner panels iframed by the RSAT header
 SAVE_DIR = os.path.join(CURR_DIR, "pictures")
 SAR_LOGS_DIR = os.path.join(CURR_DIR, "sar_logs")           # served SAR log plots (webp)
 SAVE_PATH_TIF = os.path.join(SAVE_DIR, "tif_image.webp")
@@ -800,6 +801,13 @@ def sar_frontend():
 @app.route('/sar_app_rsat')
 def sar_frontend_rsat():
     return send_file(SAR_FRONTEND_RSAT)
+
+@app.route('/branding/<path:filename>')
+def branding_panel(filename):
+    """Serve a standalone branding panel (RSAT logo, mission banner, Insight One
+    logo, 'Powered by AICRAFT') from index/branding/. The RSAT dashboard header
+    iframes these same-origin so the logo assets stay single-source files."""
+    return send_from_directory(BRANDING_DIR, filename)
 
 @app.route('/monitor')
 @app.route('/system_monitor')
