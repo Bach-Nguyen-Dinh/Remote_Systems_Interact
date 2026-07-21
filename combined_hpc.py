@@ -86,15 +86,17 @@ FM_INTERFACE_ID = "fm1-mac3"
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 # Which SAR frontend to serve. To go back to the older no-upload index, comment the
 # "_upload" line and uncomment the "_combined" line (then restart).
-# SAR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "sar_process_combined.html")   # old index (no upload)
-SAR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "sar_process_upload.html")        # new index (upload + delete)
+SAR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "sar_process_combined.html")   # old index (no upload)
+# SAR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "sar_process_upload.html")        # new index (upload + delete)
 SAR_FRONTEND_RSAT = os.path.join(CURR_DIR, "index", "hpc", "sar_process_combined.html")
+CCTV_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "cctv_process.html")
 MONITOR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "system_monitor.html")         # live system-utilisation page
 # Combined shell served at '/': two collapsible sections, each an <iframe> onto
 # one of the pages above (SAR_FRONTEND via /sar_app, MONITOR_FRONTEND via
 # /system_monitor). Replaces the old Grafana frontend that iframed them separately.
 COMBINED_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "combined_dashboard.html")
 COMBINED_FRONTEND_RSAT = os.path.join(CURR_DIR, "index", "hpc", "combined_dashboard_rsat.html")
+COMBINED_FRONTEND_TESTING = os.path.join(CURR_DIR, "index", "hpc", "combined_dashboard_testing.html")
 BRANDING_DIR = os.path.join(CURR_DIR, "index", "branding")  # logo / mission-banner panels iframed by the RSAT header
 SAVE_DIR = os.path.join(CURR_DIR, "pictures")
 SAR_LOGS_DIR = os.path.join(CURR_DIR, "sar_logs")           # served SAR log plots (webp)
@@ -125,6 +127,7 @@ ai_card_power_cache = None
 ai_card_temp_cache = None
 sar_process = None             # Popen handle of the running SAR program
 sar_stop_requested = False
+sar_error = None               # set to a user-facing message when a run fails (e.g. card unresponsive)
 
 # Latest system snapshot, refreshed in-place by metrics_loop so the monitoring
 # frontend can pull every live value in a single /system_metrics request instead
@@ -230,6 +233,19 @@ def stop_sar_process(message):
     except ProcessLookupError:
         print("SAR process already exited")
 
+def report_sar_failure(return_code):
+    """Record that a SAR run ended without producing new output.
+
+    This is the "card not responsive" case: cphd_aic.py detects the SAR/AI card
+    server is down (it prints "Server is not running. Cannot test other functions.")
+    and exits without generating a tiff, while the profiler wrapper still runs its
+    metrics/plotting workflow to completion. The message is surfaced to the frontend
+    via /get_tif_file_properties so it can stop its elapsed timer and prompt the
+    operator to restart the server manually."""
+    global sar_error
+    sar_error = "SAR card not responsive — please restart the server manually."
+    print(f"SAR run failed (no new output, exit code {return_code}): {sar_error}")
+
 def handle_image_sending(filename, on_image_sent=None):
     """Run the SAR program, detect the output tiff, and publish it locally."""
     global sar_proc_time, sar_process, sar_stop_requested, sar_run_pid
@@ -274,6 +290,7 @@ def handle_image_sending(filename, on_image_sent=None):
                     pending_tif, pending_size = new_tif, size
         time.sleep(1)
 
+    return_code = process.returncode
     sar_process = None
     sar_run_pid = None                        # was the SAR_CTRL "finished" status
 
@@ -284,13 +301,18 @@ def handle_image_sending(filename, on_image_sent=None):
     print("done")
 
     if sent_tif_path is None:
+        # The poll loop didn't confirm a fresh tiff before the SAR program exited.
+        # Look once more, but ONLY for a tiff that appeared or changed during THIS
+        # run (find_new_output_tif honours known_tifs) — never fall back to a stale
+        # tiff from a previous run. If the SAR program terminated without producing
+        # new output (card server down, see cphd_aic.py's "Server is not running"),
+        # that's a failed run, not a success with an old image.
         sar_proc_time = round(time.perf_counter() - start_time, 1)
         print(f"SAR processing time: {sar_proc_time:.1f}s")
-        tif_files = glob.glob(os.path.join(OUT_TIF_PATH, "*.tiff"))
-        if not tif_files:
-            print("No .tiff files found in output directory.")
+        sent_tif_path = find_new_output_tif(known_tifs)
+        if sent_tif_path is None:
+            report_sar_failure(return_code)
             return None
-        sent_tif_path = max(tif_files, key=os.path.getmtime)
         publish_tif_image(sent_tif_path)
         if on_image_sent:
             on_image_sent(sent_tif_path)
@@ -492,12 +514,13 @@ def run_iperf3_server():
 
 def delete_all_files():
     """'3' handler: clear pictures/ and reset all cached SAR/CPHD state + progress."""
-    global cphd_file_list, cphd_file_properties, tif_file_properties, current_run_cphd, progress_update
+    global cphd_file_list, cphd_file_properties, tif_file_properties, current_run_cphd, progress_update, sar_error
     cphd_file_list = []
     cphd_file_properties = {}
     tif_file_properties = {}
     current_run_cphd = None
     progress_update = 0.0
+    sar_error = None
     try:
         for file_name in os.listdir(SAVE_DIR):
             os.remove(os.path.join(SAVE_DIR, file_name))
@@ -510,7 +533,7 @@ def delete_all_files():
 # ----------------------------------------------------------------------------
 def handle_command(message):
     """Execute a control command in-process. Returns a Flask JSON response tuple."""
-    global current_run_cphd, tif_file_properties
+    global current_run_cphd, tif_file_properties, sar_error
 
     if message == "3":
         delete_all_files()
@@ -532,6 +555,7 @@ def handle_command(message):
         filename = message[4:]
         current_run_cphd = filename
         tif_file_properties = {}
+        sar_error = None                      # clear any prior failure before a new run
         filePath = cphd_files.get(filename)
         if filePath and os.path.exists(filePath):
             print("file exists, start processing")
@@ -792,6 +816,10 @@ def combined_frontend():
 def combined_frontend_rsat():
     return send_file(COMBINED_FRONTEND_RSAT)
 
+@app.route('/test')
+def combined_frontend_testing():
+    return send_file(COMBINED_FRONTEND_TESTING)
+
 @app.route('/sar_app')
 def sar_frontend():
     """Serve the standalone SAR-process page (upload + delete). Hosted in the
@@ -801,6 +829,10 @@ def sar_frontend():
 @app.route('/sar_app_rsat')
 def sar_frontend_rsat():
     return send_file(SAR_FRONTEND_RSAT)
+
+@app.route('/cctv_app')
+def cctv_frontend():
+    return send_file(CCTV_FRONTEND)
 
 @app.route('/branding/<path:filename>')
 def branding_panel(filename):
@@ -942,7 +974,7 @@ def get_cphd_file_properties():
 
 @app.route('/get_tif_file_properties', methods=['GET'])
 def get_tif_file_properties():
-    return jsonify({"files": tif_file_properties, "cphd_filename": current_run_cphd})
+    return jsonify({"files": tif_file_properties, "cphd_filename": current_run_cphd, "error": sar_error})
 
 @app.route('/images/<filename>')
 def serve_image(filename):
