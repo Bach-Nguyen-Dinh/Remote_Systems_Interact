@@ -13,7 +13,7 @@
            theme is reproduced here because the iframe does not inherit it.
            ------------------------------------------------------------------ */
         :root {
-            --bg:            #111217;
+            --bg:            #020406;
             --panel-bg:      #181b1f;
             --border:        #28292f;
             --input-border:  #2c3235;
@@ -28,6 +28,8 @@
             --orange:        #ff9830;
             --red:           #f2495c;
         }
+
+        .panel.panel-transparent { background: transparent; border: none; }
 
         * { box-sizing: border-box; }
         html, body { margin: 0; padding: 0; height: 100%; }
@@ -134,12 +136,12 @@
         }
 
         /* ---- mid row: totals + usage bars, spread edge-to-edge ---- */
-        .srow-bottom > .panel { flex: 1 1 170px; height: 46px; padding: 5px 10px; }
+        .srow-bottom > .panel { flex: 1 1 170px; height: 50px; padding: 5px 10px; }
         .srow-bottom .stat.big .value { font-size: 20px; }
         .srow-bottom .bar-row { margin: 3px 0 0; }
 
         /* ---- net row: Wireless Network chart, full width ---- */
-        .panel-net { height: 150px; }
+        /* .panel-net { height: 150px; } */
 
         .panel {
             background: var(--panel-bg);
@@ -171,7 +173,7 @@
             text-overflow: ellipsis;
         }
         .stat .value .unit { color: var(--text-weak); font-weight: 400; margin-left: 4px; }
-        .stat .value .uline { display: block; }
+        .stat .value .uline { display: inline; }
         .stat.big .value { font-size: 30px; }
         .stat.hero { align-items: flex-start; }
         .stat.hero .value { font-size: 64px; font-weight: 300; }
@@ -230,7 +232,6 @@
 </head>
 <body>
     <div class="topbar">
-        <h1>Live system utilisation</h1>
         <div class="controls">
             <span class="status-dot" id="statusDot" title="live"></span>
             <span class="last-update" id="lastUpdate">—</span>
@@ -257,7 +258,7 @@
                 <div class="panel-title">Total Power</div>
                 <div class="value"><span id="v_total_power">—</span><span class="unit">W</span></div>
             </div>
-            <div class="panel stat p-uptime">
+            <div class="panel stat p-uptime panel-transparent">
                 <div class="panel-title">Uptime</div>
                 <div class="value" id="v_uptime">—</div>
             </div>
@@ -276,29 +277,29 @@
         </div>
 
         <!-- Overall CPU usage + temperature -->
-        <div class="panel gauge" data-gauge="cpu_usage">
+        <div class="panel gauge panel-transparent" data-gauge="cpu_usage">
             <div class="panel-title">Overall CPU Usage</div>
             <div class="gauge-wrap"></div>
         </div>
-        <div class="panel gauge" data-gauge="cpu_temp">
+        <div class="panel gauge panel-transparent" data-gauge="cpu_temp">
             <div class="panel-title">CPU Temperature</div>
             <div class="gauge-wrap"></div>
         </div>
 
         <!-- AI temperatures -->
-        <div class="panel gauge" data-gauge="ai_ext">
+        <div class="panel gauge panel-transparent" data-gauge="ai_ext">
             <div class="panel-title">AI External Temperature</div>
             <div class="gauge-wrap"></div>
         </div>
-        <div class="panel gauge" data-gauge="ai_int1">
+        <div class="panel gauge panel-transparent" data-gauge="ai_int1">
             <div class="panel-title">AI Internal Temperature 1</div>
             <div class="gauge-wrap"></div>
         </div>
-        <div class="panel gauge" data-gauge="ai_int2">
+        <div class="panel gauge panel-transparent" data-gauge="ai_int2">
             <div class="panel-title">AI Internal Temperature 2</div>
             <div class="gauge-wrap"></div>
         </div>
-        <div class="panel gauge" data-gauge="ai_int3">
+        <div class="panel gauge panel-transparent" data-gauge="ai_int3">
             <div class="panel-title">AI Internal Temperature 3</div>
             <div class="gauge-wrap"></div>
         </div>
@@ -324,10 +325,10 @@
             <div class="value"><span id="v_total_disk">—</span><span class="unit">GiB</span></div>
         </div>
         <div class="panel">
-            <div class="panel-title">Disk Usage</div>
+            <div class="panel-title">Memory Usage</div>
             <div class="bar-row">
-                <div class="bar-track"><div class="bar-fill" id="bar_disk"></div></div>
-                <span class="bar-val" id="v_disk">—</span>
+                <div class="bar-track"><div class="bar-fill" id="bar_mem"></div></div>
+                <span class="bar-val" id="v_mem">—</span>
             </div>
         </div>
         <div class="panel">
@@ -338,15 +339,16 @@
             </div>
         </div>
         <div class="panel">
-            <div class="panel-title">Memory Usage</div>
+            <div class="panel-title">Disk Usage</div>
             <div class="bar-row">
-                <div class="bar-track"><div class="bar-fill" id="bar_mem"></div></div>
-                <span class="bar-val" id="v_mem">—</span>
+                <div class="bar-track"><div class="bar-fill" id="bar_disk"></div></div>
+                <span class="bar-val" id="v_disk">—</span>
             </div>
         </div>
       </div><!-- /srow-bottom -->
 
       <!-- ---- net row: wireless chart, full width ---- -->
+      <!-- Wireless Network panel disabled for now
       <div class="panel panel-net">
           <div class="panel-title">Wireless Network</div>
           <div class="chart-wrap"><canvas id="net_chart"></canvas></div>
@@ -355,6 +357,7 @@
               <span><i style="background:var(--yellow)"></i>Up <b id="net_up">0 B/s</b></span>
           </div>
       </div>
+      -->
 
     </div>
 
@@ -433,12 +436,15 @@
             if (opacity != null) p.setAttribute("opacity", opacity);
             return p;
         }
-        // cfg: { min, max, thresholds:[{v,color}...ascending], fmt }
+        // cfg: { min, max, thresholds:[{v,color}...ascending], fmt, track }
+        // track: base-ring colour behind the value arc; "none" leaves it transparent
+        // so the unfilled part reads as the card background (Grafana's gauge look).
         function makeGauge(wrap, cfg) {
             var svg = document.createElementNS(SVGNS, "svg");
             svg.setAttribute("viewBox", "0 0 120 118");
             svg.setAttribute("class", "gauge-svg");
-            svg.appendChild(mkPath(arcPath(G_START, G_START + G_SWEEP), "#2c3036", null));
+            var track = cfg.track == null ? "#2c3036" : cfg.track;
+            if (track !== "none") svg.appendChild(mkPath(arcPath(G_START, G_START + G_SWEEP), track, null));
             var th = cfg.thresholds;
             for (var k = 0; k < th.length; k++) {
                 var v0 = th[k].v, v1 = (k + 1 < th.length) ? th[k + 1].v : cfg.max;
@@ -462,8 +468,12 @@
                     return;
                 }
                 var f = clamp01((value - cfg.min) / (cfg.max - cfg.min));
+                // Compare against the value as displayed (rounded to 2 decimals) so the
+                // colour always matches the shown number — otherwise a raw 3.998 reads
+                // "4.00 GHz" yet stays orange, while 4.001 shows the same text in red.
+                var cmp = Math.round(value * 100) / 100;
                 var col = th[0].color;
-                for (var i = 0; i < th.length; i++) if (value >= th[i].v) col = th[i].color;
+                for (var i = 0; i < th.length; i++) if (cmp >= th[i].v) col = th[i].color;
                 val.setAttribute("stroke", col);
                 val.setAttribute("d", f <= 0.001 ? "" : arcPath(G_START, G_START + f * G_SWEEP));
                 txt.setAttribute("fill", col);
@@ -610,7 +620,7 @@
         var coreBuilt = false;
         var coreFreqGauges = {};
         var coreCanvases = {};
-        var freqCfg = { min: 0.8, max: 4.2,
+        var freqCfg = { min: 0.8, max: 4.2, track: "none",
             thresholds: [{ v: 0.8, color: C.green }, { v: 3.0, color: C.orange }, { v: 4.0, color: C.red }],
             fmt: function (v) { return v.toFixed(2) + " GHz"; } };
 
@@ -677,7 +687,8 @@
             updateBar("bar_swap", "v_swap", d.swap_usage);
             updateBar("bar_mem", "v_mem", d.memory_usage);
 
-            // wireless network time-series
+            // wireless network time-series (disabled for now)
+            /*
             var wifi = (d.network && d.network.wlp3s0) || {};
             var down = wifi.download_speed || 0, up = wifi.upload_speed || 0;
             push("net_down", down); push("net_up", up);
@@ -687,6 +698,7 @@
                  { data: buffers.net_up, color: C.yellow, fill: false }],
                 { yMin: 0, yLabels: true, tickFmt: fmtRate, ticks: buildNetTicks(),
                   xLabels: true, times: timeBuf });
+            */
 
             // per-core
             var usage = d.per_core_usage || {}, freq = d.per_core_freq || {};
@@ -703,7 +715,8 @@
             });
         }
 
-        // network y-axis: derive nice ticks from current buffer maxima
+        // network y-axis: derive nice ticks from current buffer maxima (disabled for now)
+        /*
         function buildNetTicks() {
             var mx = 0;
             ["net_down", "net_up"].forEach(function (k) {
@@ -712,6 +725,7 @@
             var top = niceMax(mx);
             return [0, top / 2, top];
         }
+        */
 
         // ---------- polling ----------
         var timer = null, intervalMs = 1000, inFlight = false;
@@ -755,11 +769,13 @@
         window.addEventListener("resize", function () {
             if (resizeRAF) cancelAnimationFrame(resizeRAF);
             resizeRAF = requestAnimationFrame(function () {
+                /* wireless net chart disabled for now
                 if (buffers.net_down) drawSeries(document.getElementById("net_chart"),
                     [{ data: buffers.net_down, color: C.green, fill: false },
                      { data: buffers.net_up, color: C.yellow, fill: false }],
                     { yMin: 0, yLabels: true, tickFmt: fmtRate, ticks: buildNetTicks(),
                   xLabels: true, times: timeBuf });
+                */
                 Object.keys(coreCanvases).forEach(function (i) {
                     if (buffers["core_" + i]) drawSeries(coreCanvases[i],
                         [{ data: buffers["core_" + i], color: C.green, fill: true }],
