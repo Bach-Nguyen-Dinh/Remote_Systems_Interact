@@ -199,35 +199,41 @@
         .legend i { width: 18px; height: 3px; border-radius: 2px; display: inline-block; }
 
         /* ---- per-core section ---- */
-        /* 4 columns is the preferred layout. As the viewport (or the Grafana
-           iframe) narrows it steps down to 2 then 1 column so the usage graph
-           and frequency gauge never shrink below a readable size. */
+        /* Each core is two independent panels side by side, Grafana style: a
+           bordered "Core N Usage" graph plus a borderless "Core N Frequency"
+           gauge. Four pairs per row, stepping down to two then one as the
+           viewport (or the Grafana iframe) narrows. */
         .cores {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(4, minmax(0, 1fr) 118px);
             gap: 8px;
             margin-top: 8px;
         }
-        @media (max-width: 1160px) { .cores { grid-template-columns: repeat(2, 1fr); } }
-        @media (max-width: 640px)  { .cores { grid-template-columns: 1fr; } }
-        .core-card {
+        @media (max-width: 1500px) { .cores { grid-template-columns: repeat(2, minmax(0, 1fr) 118px); } }
+        @media (max-width: 760px)  { .cores { grid-template-columns: minmax(0, 1fr) 118px; } }
+        .core-panel {
             background: var(--panel-bg);
             border: 1px solid var(--border);
             border-radius: 3px;
             padding: 8px 10px;
             display: flex;
-            gap: 10px;
+            flex-direction: column;
             min-width: 0;
-            height: 130px;
+            height: 152px;
         }
-        .core-left { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
-        .core-title { font-size: 12px; color: var(--text-weak); margin-bottom: 2px; }
+        .core-panel.freq { background: transparent; border: none; padding: 8px 0 8px 2px; }
+        .core-title {
+            font-size: 12px;
+            color: var(--text-weak);
+            margin-bottom: 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
         .core-chart { flex: 1; min-height: 0; position: relative; }
-        .core-right { flex: 0 0 108px; display: flex; flex-direction: column; align-items: center; }
-        .core-right .lbl { font-size: 11px; color: var(--text-faint); margin-bottom: 2px; }
-        .core-right .gauge-wrap { flex: 1; width: 100%; display: flex; align-items: center; justify-content: center; min-height: 0; }
+        .core-panel.freq .gauge-wrap { flex: 1; width: 100%; display: flex; align-items: center; justify-content: center; min-height: 0; }
 
-        .loading { color: var(--text-faint); padding: 40px 0; text-align: center; }
+        .loading { color: var(--text-faint); padding: 40px 0; text-align: center; grid-column: 1 / -1; }
     </style>
 </head>
 <body>
@@ -634,19 +640,28 @@
             var host = document.getElementById("cores");
             host.innerHTML = "";
             idxs.forEach(function (i) {
-                var card = document.createElement("div");
-                card.className = "core-card";
-                var left = document.createElement("div"); left.className = "core-left";
-                var title = document.createElement("div"); title.className = "core-title"; title.textContent = "Core " + (i + 1);
+                // usage panel
+                var up = document.createElement("div");
+                up.className = "core-panel usage";
+                var utitle = document.createElement("div");
+                utitle.className = "core-title";
+                utitle.textContent = "Core " + (i + 1) + " Usage";
                 var chart = document.createElement("div"); chart.className = "core-chart";
                 var cv = document.createElement("canvas");
-                chart.appendChild(cv); left.appendChild(title); left.appendChild(chart);
-                var right = document.createElement("div"); right.className = "core-right";
-                var lbl = document.createElement("div"); lbl.className = "lbl"; lbl.textContent = "Freq";
+                chart.appendChild(cv); up.appendChild(utitle); up.appendChild(chart);
+                host.appendChild(up);
+
+                // frequency panel (transparent, gauge only)
+                var fp = document.createElement("div");
+                fp.className = "core-panel freq";
+                var ftitle = document.createElement("div");
+                ftitle.className = "core-title";
+                ftitle.textContent = "Core " + (i + 1) + " Frequency";
+                ftitle.title = ftitle.textContent;
                 var gw = document.createElement("div"); gw.className = "gauge-wrap";
-                right.appendChild(lbl); right.appendChild(gw);
-                card.appendChild(left); card.appendChild(right);
-                host.appendChild(card);
+                fp.appendChild(ftitle); fp.appendChild(gw);
+                host.appendChild(fp);
+
                 coreCanvases[i] = cv;
                 coreFreqGauges[i] = makeGauge(gw, freqCfg);
             });
