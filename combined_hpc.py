@@ -28,6 +28,7 @@ import os
 import glob
 import shutil
 import signal
+import requests
 from flask import Flask, request, jsonify, send_from_directory, send_file  # type: ignore
 from flask_cors import CORS  # type: ignore
 from werkzeug.utils import secure_filename  # type: ignore
@@ -81,6 +82,16 @@ LW_ETH_ADT_INTERFACE_ID = "enp4s0f0"
 UP_ETH_ADT_INTERFACE_ID = "enp4s0f1"
 WIRELESS_INTERFACE_ID = "wlp3s0"
 FM_INTERFACE_ID = "fm1-mac3"
+
+# VLM box (AICraft Gemma3/SigLIP pipeline, demo1/backend/main.py) -- reachable
+# over the same Ethernet link as the RDB/adapter test peers above. Change
+# VLM_HOST here if that box's address on the link ever changes; nothing else
+# in this file needs to change.
+VLM_HOST = "192.168.0.11"
+VLM_PORT = 8001
+VLM_BASE_URL = f"http://{VLM_HOST}:{VLM_PORT}"
+VLM_UPLOAD_TIMEOUT = 30      # seconds -- generous for a large SAR tiff over Ethernet
+VLM_RESET_TIMEOUT = 5
 
 # Host-side served directories / files (unchanged from host_no_chunking.py)
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -178,6 +189,38 @@ def publish_tif_image(tif_path):
     optimize_tif(tif_path, SAVE_PATH_TIF, format="webp", max_size=(800, 800), quality=80)
     if os.path.exists(SAVE_PATH_TIF):
         print(f"Published SAR image to {SAVE_PATH_TIF}")
+
+def push_tif_to_vlm(tif_path):
+    """Push the finished, full-resolution SAR tiff to the VLM box's Chat-with-SAR
+    tab (POST /sar/upload -- see demo1/backend/main.py). Best-effort: the VLM box
+    being unreachable/down must never break local SAR processing, so failures are
+    logged and swallowed rather than raised."""
+    try:
+        with open(tif_path, "rb") as f:
+            resp = requests.post(
+                f"{VLM_BASE_URL}/sar/upload",
+                files={"image": (os.path.basename(tif_path), f, "image/tiff")},
+                timeout=VLM_UPLOAD_TIMEOUT,
+            )
+        if resp.ok:
+            print(f"Pushed SAR tiff to VLM box: {os.path.basename(tif_path)}")
+        else:
+            print(f"VLM box rejected SAR tiff push: {resp.status_code} {resp.text}")
+    except requests.exceptions.RequestException as e:
+        print(f"Could not reach VLM box to push SAR tiff: {e}")
+
+def notify_vlm_reset():
+    """Tell the VLM box that Reset was pressed here, so it drops the current SAR
+    image and ends any SAR chat session (POST /sar/reset). Best-effort, same as
+    push_tif_to_vlm -- must not block or fail the local reset."""
+    try:
+        resp = requests.post(f"{VLM_BASE_URL}/sar/reset", timeout=VLM_RESET_TIMEOUT)
+        if resp.ok:
+            print("Notified VLM box of reset")
+        else:
+            print(f"VLM box rejected reset notification: {resp.status_code} {resp.text}")
+    except requests.exceptions.RequestException as e:
+        print(f"Could not reach VLM box to notify reset: {e}")
 
 def collect_sar_logs():
     """Merged send_sar_logs()+host sar-log receiver: optimize the latest SAR log folder's
@@ -345,8 +388,11 @@ def compute_tif_properties(tif_path, filePath):
     print(f"TIF properties: {tif_file_properties}")
 
 def process_cphd_file(filePath, filename):
-    tif_path = handle_image_sending(filename,
-                                    on_image_sent=lambda p: compute_tif_properties(p, filePath))
+    def on_image_sent(p):
+        compute_tif_properties(p, filePath)
+        push_tif_to_vlm(p)
+
+    tif_path = handle_image_sending(filename, on_image_sent=on_image_sent)
     if tif_path is None:
         print("No SAR output to report")
 
@@ -513,7 +559,12 @@ def run_iperf3_server():
         print("iperf3 command not found. Please ensure iperf3 is installed.")
 
 def delete_all_files():
-    """'3' handler: clear pictures/ and reset all cached SAR/CPHD state + progress."""
+    """'3' handler: clear pictures/ and reset all cached SAR/CPHD state + progress.
+
+    The frontend's Reset button (resetMenu() in sar_process_upload.html) always
+    sends this after STOPSAR, so it's the single place that reliably fires once
+    per Reset click -- the natural hook to also tell the VLM box to drop its
+    SAR image and end any SAR chat session."""
     global cphd_file_list, cphd_file_properties, tif_file_properties, current_run_cphd, progress_update, sar_error
     cphd_file_list = []
     cphd_file_properties = {}
@@ -521,6 +572,7 @@ def delete_all_files():
     current_run_cphd = None
     progress_update = 0.0
     sar_error = None
+    threading.Thread(target=notify_vlm_reset, daemon=True).start()
     try:
         for file_name in os.listdir(SAVE_DIR):
             os.remove(os.path.join(SAVE_DIR, file_name))
