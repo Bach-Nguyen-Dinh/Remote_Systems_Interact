@@ -611,6 +611,11 @@ def handle_command(message):
         filePath = cphd_files.get(filename)
         if filePath and os.path.exists(filePath):
             print("file exists, start processing")
+            # An operator can pick a different CPHD and hit Run directly without
+            # pressing Reset first -- drop the VLM box's now-stale SAR image /
+            # chat session the same way Reset does, so it never lingers past the
+            # point a new run has actually started.
+            threading.Thread(target=notify_vlm_reset, daemon=True).start()
             threading.Thread(target=process_cphd_file, args=(filePath, filename), daemon=True).start()
             return jsonify({"status": "success", "message": f"processing {filename}"})
         return jsonify({"status": "error", "error": f"CPHD not found: {filename}"}), 404
@@ -715,10 +720,13 @@ def get_system_info():
     swap_usage = psutil.swap_memory().percent
     total_swap = psutil.swap_memory().total
 
-    root_disk_usage = psutil.disk_usage('/').percent
-    root_total_disk = psutil.disk_usage('/').total
-    total_disk_usage = root_disk_usage
-    total_disk_size = root_total_disk
+    # root_disk_usage = psutil.disk_usage('/').percent
+    # root_total_disk = psutil.disk_usage('/').total
+    home = psutil.disk_usage('/home')
+    total_disk_usage = home.percent      # df-style: used / (used + avail)
+    total_disk_size = home.total
+    # total_disk_used = home.used
+
 
     num_threads = psutil.cpu_count(logical=True)
     num_cores = psutil.cpu_count(logical=False)
