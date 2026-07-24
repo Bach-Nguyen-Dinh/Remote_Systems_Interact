@@ -88,9 +88,9 @@
         .status-container {
             font-size: 13px;
             min-height: 18px;
-            margin: 6px 0;
+            margin: 12px 0;
             font-weight: bold;
-            color: var(--text-weak);
+            color: var(--red-hover);
         }
         .status-container p { margin: 0; }
 
@@ -137,6 +137,17 @@
         }
         .buttonRed-sar { background-color: var(--red); }
         .buttonRed-sar:hover { background-color: var(--red-hover); }
+        /* Disabled state: input data not loaded yet, or the RUN command is still
+           in flight — grayed out and unclickable. */
+        .buttonBlue-sar.disabled,
+        .buttonBlue-sar.disabled:hover,
+        .buttonRed-sar.disabled,
+        .buttonRed-sar.disabled:hover {
+            background-color: #6b7a8f;
+            opacity: 0.6;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
 
         /* ---- Right: the two SAR image windows ---- */
         .images-row {
@@ -187,17 +198,20 @@
             <!-- Input -->
             <div class="section">
                 <h2>Input</h2>
+                <!-- Hover/focus no longer rebuild the list; it is fetched once on
+                     page load and again on Reset (both go through resetMenu()):
+                         onmouseenter="refresh_sar_input_list()"
+                         onfocus="refresh_sar_input_list()"
+                -->
                 <select id="menu_sar_input_data" class="select-sar"
                         onmousedown="return sarGuardInteraction(event)"
                         onkeydown="return sarGuardInteraction(event)"
-                        onmouseenter="refresh_sar_input_list()"
-                        onfocus="refresh_sar_input_list()"
                         onchange="sendLoad()"
                         onblur="sarFlushPendingFileList()">
                     <option value="" disabled selected>Click to choose input data</option>
                 </select>
                 <div class="status-container"><p id="status">&nbsp;</p></div>
-                <div class="status-info">
+                <div class="status-info" style="margin-top: 30px;">
                     <p><strong>CPHD file size:</strong> <span id="cphd_file_size">N/A</span></p>
                     <p><strong>Pulses:</strong> <span id="total_pulses">N/A</span></p>
                     <p><strong>Frequency:</strong> <span id="centre_freq">N/A</span></p>
@@ -253,6 +267,7 @@
         var sarProcStartTime = null; // start time for SAR processing (ms epoch)
         var sarRunSession = 0;       // bumped on each run/reset to abort a stale poller
         var sarRunning = false;      // true while a SAR process is in progress
+        var sarRunPending = false;   // true from the Run click until the run starts
         var sarStatus = "";          // last status message
         var sarSelectedInput = null; // currently selected CPHD file
         var sarInputFileList = [];   // options currently in the input dropdown
@@ -260,7 +275,9 @@
         // Input-picker refresh guards.
         var sarMenuRefreshInFlight = false; // guards against overlapping refreshes
         var sarPendingFileList = null;      // list that arrived while the menu was open
-        var sarLastRefreshTs = 0;           // throttle timestamp for hover-driven refresh
+        // Throttle for the old hover-driven refresh; unused now that the list is
+        // fetched only on load/Reset:
+        // var sarLastRefreshTs = 0;
 
         // ---- small DOM helpers ----
         function sarSetText(id, val) { var el = document.getElementById(id); if (el) el.textContent = val; }
@@ -311,6 +328,7 @@
             sarShowImage2 = false;
             lastCphdFilename = null;
             sarRunning = false;
+            sarRunPending = false;
             sarProcStartTime = null;
             sarStatus = "";
             sarSelectedInput = null;
@@ -338,7 +356,13 @@
         }
 
         // ================= Input picker =================
-        function sarIsRunning() { return typeof sarRunning !== "undefined" && sarRunning; }
+        // Pending counts as running here: from the Run click onwards the input
+        // selection is already committed to the run, so changing it must not
+        // take effect.
+        function sarIsRunning() {
+            return (typeof sarRunning !== "undefined" && sarRunning) ||
+                   (typeof sarRunPending !== "undefined" && sarRunPending);
+        }
 
         function sarGuardInteraction(event) {
             if (sarIsRunning()) {
@@ -400,15 +424,17 @@
             sarSelectedInput = select.value || sarSelectedInput;
         }
 
-        // Refresh the CPHD list on hover/focus, BEFORE the menu opens, so the
-        // click sees an already-current, stable option list.
+        // Fetch the CPHD list. Called on page load and on Reset only, so the
+        // option list stays stable for the whole life of a selection.
         function refresh_sar_input_list() {
             if (sarIsRunning()) return;
             if (sarMenuRefreshInFlight) return;
-            if (Date.now() - sarLastRefreshTs < 1500) return;
-            sarLastRefreshTs = Date.now();
+            // Hover-spam throttle, disabled with the hover trigger: it would
+            // swallow a Reset clicked within 1.5s of the load-time fetch.
+            // if (Date.now() - sarLastRefreshTs < 1500) return;
+            // sarLastRefreshTs = Date.now();
             sarMenuRefreshInFlight = true;
-            setStatusDom("");
+            setStatus("");
 
             fetch(`${FLASK_BASE}/send_message`, {
                 method: "POST",
@@ -430,7 +456,7 @@
             })
             .catch(function (error) {
                 console.error('Error fetching CPHD files:', error);
-                setStatusDom("Error fetching file list.");
+                setStatus("Error fetching file list.");
             })
             .finally(function () { sarMenuRefreshInFlight = false; });
         }
@@ -474,8 +500,9 @@
                     sarSetText("resolution", props.resolution);
                     sarSetText("area_size", props.area_size);
                     sarInputProps = props;
-                    // Input properties are now on screen — drop the loading text.
-                    setStatusDom("");
+                    // Input properties are now on screen — enable Run and drop the loading text.
+                    updateRunButtonState();
+                    setStatus("");
                 })
                 .catch(function (error) { console.error("Error fetching file size:", error); });
         }
@@ -485,7 +512,7 @@
             const selectedOption = select.value;
 
             if (!selectedOption) {
-                setStatusDom("Please select a file first.");
+                setStatus("Please select a file first.");
                 return;
             }
 
@@ -500,11 +527,14 @@
             clearResultState();
             sarSelectedInput = selectedOption;
 
-            setStatusDom("Loading input data ...");
-            var p1 = document.getElementById("processedImage1");
-            if (p1) { p1.src = ""; p1.style.display = "none"; }
-            var nd1 = document.getElementById("noData1");
-            if (nd1) nd1.style.display = "flex";
+            setStatus("Loading input data ...");
+            sarSetText("total_pulses", "N/A");
+            sarSetText("cphd_file_size", "N/A");
+            sarSetText("img_size", "N/A");
+            sarSetText("resolution", "N/A");
+            sarSetText("area_size", "N/A");
+            sarSetText("centre_freq", "N/A");
+            clearProcessedImage();
             clearColorizedImage();
             sarSetText("outFileSize", "N/A");
             sarSetText("reductionFactor", "N/A");
@@ -529,10 +559,10 @@
                     }
                     await new Promise(resolve => setTimeout(resolve, 500));
                 }
-                setStatusDom("Time out. Reset and try again.");
+                setStatus("Time out. Reset and try again.");
             } catch (error) {
                 console.error("Error:", error);
-                setStatusDom("Error sending command.");
+                setStatus("Error sending command.");
             }
         }
 
@@ -548,11 +578,21 @@
                     const imageUrl = URL.createObjectURL(imageBlob);
                     var img = document.getElementById("processedImage1");
                     var nd = document.getElementById("noData1");
-                    if (img) { img.src = imageUrl; img.style.display = "block"; }
+                    if (img) {
+                        // Clear "Getting output image ..." only once the image has
+                        // actually decoded and painted, not merely on src assignment.
+                        img.onload = function () { setStatus(""); };
+                        img.onerror = function () { setStatus(""); };
+                        img.src = imageUrl;
+                        img.style.display = "block";
+                    } else {
+                        setStatus("");
+                    }
                     if (nd) nd.style.display = "none";
                     setTimeout(() => fetchColorizedImage(cphdFilename), 3000);
                 })
                 .catch(() => {
+                    setStatus("");
                     var img = document.getElementById("processedImage1");
                     var nd = document.getElementById("noData1");
                     if (img) img.style.display = "none";
@@ -585,6 +625,21 @@
             poll();
         }
 
+        // Tear down the processed image. The handlers must go before the src:
+        // they clear the status line, and dropping the src fires one last
+        // load/error event that would wipe the status of whatever is starting now.
+        function clearProcessedImage() {
+            var img = document.getElementById("processedImage1");
+            if (img) {
+                img.onload = null;
+                img.onerror = null;
+                img.removeAttribute("src");
+                img.style.display = "none";
+            }
+            var nd = document.getElementById("noData1");
+            if (nd) nd.style.display = "flex";
+        }
+
         function clearColorizedImage() {
             var img = document.getElementById("processedImage2");
             if (img) { img.src = ""; img.style.display = "none"; }
@@ -595,17 +650,37 @@
         // ================= Run / Reset =================
         function updateRunButtonState() {
             var resetBtn = document.getElementById("sarResetButton");
-            if (resetBtn) resetBtn.textContent = sarRunning ? "Stop" : "Reset";
+            if (resetBtn) {
+                resetBtn.textContent = sarRunning ? "Stop" : "Reset";
+                // Neither button does anything useful until the RUN command has
+                // landed, so gray both out for that gap rather than leave them
+                // looking live while nothing happens.
+                if (sarRunPending) resetBtn.classList.add("disabled");
+                else resetBtn.classList.remove("disabled");
+            }
 
             var btn = document.getElementById("sarRunButton");
             if (!btn) return;
             if (sarRunning) btn.classList.add("running");
             else btn.classList.remove("running");
+
+            // Run is only clickable once input data properties are loaded.
+            // While waiting for them (sarInputProps === null) and not already
+            // running, gray the button out and block clicks.
+            var inputReady = sarInputProps !== null;
+            if (sarRunPending || (!sarRunning && !inputReady)) btn.classList.add("disabled");
+            else btn.classList.remove("disabled");
         }
 
         async function sendRun() {
             if (sarRunning) {
                 showTransientStatus("SAR process is already running.", 3000);
+                return;
+            }
+
+            // Input data must be loaded before a run can start.
+            if (sarInputProps === null) {
+                showTransientStatus("Load input data first.", 3000);
                 return;
             }
 
@@ -616,6 +691,13 @@
             }
 
             const runSession = ++sarRunSession;
+
+            // Gray both buttons out now, on the click itself: the RUN command
+            // can take a moment to land, and until it does a second click would
+            // just queue up commands the backend never asked for.
+            sarRunPending = true;
+            updateRunButtonState();
+
             lastTifFilename = null;
             lastCphdFilename = selectedOption;
             sarSelectedInput = selectedOption;
@@ -632,10 +714,7 @@
                 });
 
                 // Reset images
-                var p1 = document.getElementById("processedImage1");
-                if (p1) { p1.src = ""; p1.style.display = "none"; }
-                var nd1 = document.getElementById("noData1");
-                if (nd1) nd1.style.display = "flex";
+                clearProcessedImage();
                 clearColorizedImage();
                 sarSetText("outFileSize", "N/A");
                 sarSetText("reductionFactor", "N/A");
@@ -645,6 +724,7 @@
                 sarRunning = true;
                 sarProcStartTime = Date.now();
                 sarSetText("sarProcTime", "0.00s");
+                sarRunPending = false;  // Reset becomes "Stop" and is live again
                 updateRunButtonState();
                 startSarTimer();
 
@@ -652,6 +732,15 @@
             } catch (error) {
                 console.error("Error:", error);
                 setStatus("Error sending command.");
+            } finally {
+                // Covers the failed-RUN path, where the run never started and
+                // the buttons would otherwise stay grayed out for good. Only the
+                // current run may clear the flag: a superseded run unwinding late
+                // must not un-gray the buttons on behalf of its replacement.
+                if (sarRunSession === runSession) {
+                    sarRunPending = false;
+                    updateRunButtonState();
+                }
             }
         }
 
@@ -667,8 +756,22 @@
                     const data = await response.json();
                     if (sarRunSession !== runSession) return;
 
+                    // The SAR program terminated without producing new output — the
+                    // card/server is unresponsive. Stop the elapsed timer and show
+                    // the restart prompt instead of waiting out the full timeout.
+                    if (data.error) {
+                        stopSarTimer();
+                        sarRunning = false;
+                        sarSetText("sarProcTime", "N/A");
+                        setStatus(data.error);
+                        updateRunButtonState();
+                        return;
+                    }
+
                     if (data.files.tif_filename && data.files.tif_filename !== lastTifFilename) {
-                        setStatus("");
+                        // The run is done, but the image still has to come over the
+                        // wire — keep the user informed until it is on screen.
+                        setStatus("Getting output image ...");
 
                         stopSarTimer();
                         const finalElapsed = (Date.now() - sarProcStartTime) / 1000;
@@ -691,14 +794,13 @@
                         sarOutputProps = { outFileSize: outSize, reductionFactor: outReduction, sizeCompared: outSizeCompared, sarProcTime: outProcTime };
                         sarRunning = false;
                         lastTifFilename = data.files.tif_filename;
-                        setStatus("");
                         updateRunButtonState();
 
                         fetchProcessedFile(cphdFilename);
 
                         fileUpdated = true;
                     } else {
-                        setStatus("Processing CPHD file");
+                        setStatus("Processing CPHD file ...");
                         await new Promise(resolve => setTimeout(resolve, 1000));
                     }
                 }
@@ -740,8 +842,11 @@
             .then(response => response.json())
             .catch(error => {
                 console.error("Error:", error);
-                setStatusDom("Error sending command.");
-            });
+                setStatus("Error sending command.");
+            })
+            // Rebuild the option list once the reset commands have landed, so
+            // the "4" query doesn't race STOPSAR/"3" on the backend.
+            .then(() => refresh_sar_input_list());
 
             var sel = document.getElementById("menu_sar_input_data");
             if (sel) sel.innerHTML = '<option value="" disabled selected>Click to choose input data</option>';
@@ -752,10 +857,7 @@
             sarSetText("resolution", "N/A");
             sarSetText("area_size", "N/A");
             sarSetText("centre_freq", "N/A");
-            var p1 = document.getElementById("processedImage1");
-            if (p1) { p1.src = ""; p1.style.display = "none"; }
-            var nd1 = document.getElementById("noData1");
-            if (nd1) nd1.style.display = "flex";
+            clearProcessedImage();
             clearColorizedImage();
             sarSetText("outFileSize", "N/A");
             sarSetText("reductionFactor", "N/A");
