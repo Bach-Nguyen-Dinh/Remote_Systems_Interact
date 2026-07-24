@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HPC Dashboard</title>
+    <title>Insight One</title>
     <style>
         /* ------------------------------------------------------------------
            Combined HPC frontend, served by combined_hpc.py at '/'. It is only
@@ -20,7 +20,7 @@
            frames it hosts.
            ------------------------------------------------------------------ */
         :root {
-            --bg:        #111217;
+            --bg:        #020406;
             --border:    #28292f;
             --text:      rgba(204, 204, 220, 0.90);
             --text-weak: rgba(204, 204, 220, 0.65);
@@ -65,20 +65,67 @@
             display: block;
             background: var(--bg);
         }
+
+        /* ---- AICRAFT branding header ----------------------------------------
+           ------------------------------------------------------------------ */
+        .brand-header {
+            display: flex;
+            align-items: stretch;
+            /* gap: 12px; */
+            height: 80px;
+            /* padding: 6px 4px 10px; */
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 8px;
+        }
+        .brand-header .bframe { width: 100%; border: none; display: block; background: transparent; }
+        .brand-insight { flex: 0 0 217px; min-height: 0; }
+        .brand-divider { flex: 0 0 1px; background: var(--border); align-self: center; height: 40px; }
+        .brand-aicraft { flex: 0 0 150px; min-height: 0; }
     </style>
 </head>
 <body>
 
+    <!-- ===================== AICRAFT branding header ===================== -->
+    <div class="brand-header">
+        <iframe class="bframe brand-insight"  src="/branding/insight_one_logo_panel.html"
+                title="Insight One" scrolling="no"></iframe>
+        <div class="brand-divider"></div>
+        <iframe class="bframe brand-aicraft" src="/branding/ai_craft_logo_panel.html"
+                title="Powered by AICRAFT" scrolling="no"></iframe>
+    </div>
+
     <!-- ===================== SAR application ===================== -->
     <div class="section-row" id="sec-sar">
         <div class="section-header" onclick="toggleSection('sec-sar')">
-            <span class="chev">&#9662;</span><span>SAR application</span>
+            <span class="chev">&#9662;</span><span>Synthetic aperture radar</span>
         </div>
         <div class="section-body">
             <iframe class="frame" id="frame-sar" src="/sar_app"
-                    title="SAR application" style="height: 720px;"></iframe>
+                    title="Synthetic aperture radar" style="height: 720px;"></iframe>
         </div>
     </div>
+
+    <!-- ===================== VLM application ===================== -->
+    <div class="section-row" id="sec-vlm">
+        <div class="section-header" onclick="toggleSection('sec-vlm')">
+            <span class="chev">&#9662;</span><span>Vision language model</span>
+        </div>
+        <div class="section-body">
+            <iframe class="frame" id="frame-vlm" src="/vlm/"
+                    title="Vision language model" style="height: 800px;"></iframe>
+        </div>
+    </div>
+
+    <!-- ===================== CCTV application ===================== -->
+    <!-- <div class="section-row" id="sec-cctv">
+        <div class="section-header" onclick="toggleSection('sec-cctv')">
+            <span class="chev">&#9662;</span><span>CCTV analysis</span>
+        </div>
+        <div class="section-body">
+            <iframe class="frame" id="frame-cctv" src="/cctv_app"
+                    title="CCTV analysis" style="height: 720px;"></iframe>
+        </div>
+    </div> -->
 
     <!-- ===================== Live system utilisation ===================== -->
     <div class="section-row" id="sec-mon">
