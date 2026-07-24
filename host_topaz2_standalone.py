@@ -12,13 +12,13 @@ from flask_cors import CORS  # type: ignore
 
 # Configuration
 HOST_IP = '0.0.0.0'
-SYSINFO_PORT = 12345  # Port for system metrics
-DATA_PORT = 55555
+SYSINFO_PORT = 12346  # Port for system metrics
+DATA_PORT = 55556
 IMAGE_PORT = 8080
 FLASK_PORT = 5001
 
-TARGET_IP = "10.42.1.7"  # Target system IP
-TARGET_PORT = 54321       # Target system port
+TARGET_IP = "10.42.0.7"  # Target system IP
+TARGET_PORT = 54322      # Target system port
 
 INFLUXDB_HOST = "localhost"
 INFLUXDB_PORT = 8086
