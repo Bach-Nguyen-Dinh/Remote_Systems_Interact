@@ -12,6 +12,9 @@
 !grafana_ui_backup/
 !grafana_ui_backup/*
 !*.html
+!index/
+!index/*
+!set_up_proxy_server.md
 
 # topaz_imu specific ignores
 topaz_imu/.claude
