@@ -1,7 +1,7 @@
 # Setting Up the Nginx Reverse-Proxy + SSL on This Machine
 
 This manual describes the nginx reverse-proxy + HTTPS setup **for this box as it is
-now** — a single machine (`andromeda`, LAN `192.168.0.22`) that runs *everything*:
+now** — a single machine (`andromeda`, LAN `192.168.0.18`) that runs *everything*:
 nginx, InfluxDB, and the combined HPC program. It reproduces the setup by hand so it
 can be rebuilt or moved. Every step says *what it does* and *what changing it means*.
 
@@ -26,7 +26,7 @@ One box. nginx is the "front door"; **everything** it proxies to is a single app
                           │
         DNS: nexon.aicraft.com.au ──► 49.176.249.9   (home router / public IP)
                           │
-             router port-forward 80, 443 ─► 192.168.0.22   (THIS box)
+             router port-forward 80, 443 ─► 192.168.0.18   (THIS box)
                           │
                           ▼  https (443), http (80 → redirect to 443)
         ┌───────────────────────────────────────────────┐
@@ -76,12 +76,12 @@ One box. nginx is the "front door"; **everything** it proxies to is a single app
 ## 1. Prerequisites
 
 - **This box**: Ubuntu 20.04+ with nginx from the Ubuntu repo (1.18+). Hostname
-  `andromeda`, LAN IP `192.168.0.22`.
+  `andromeda`, LAN IP `192.168.0.18`.
 - **A domain** pointing at your public IP. The current value is
   `nexon.aicraft.com.au`. If you use a different domain, substitute it everywhere it
   appears below.
 - **Router port-forwarding**: forward external **TCP 80 and 443** to
-  **`192.168.0.22`** (this box). Without this, clients on the internet and Let's
+  **`192.168.0.18`** (this box). Without this, clients on the internet and Let's
   Encrypt cannot reach nginx. (You do *not* need to forward 5000/8086 — those stay on
   localhost behind nginx, which is the security benefit.)
 - **Ports 80 and 443 open** in any host firewall (`ufw allow 80,443/tcp`).
@@ -401,7 +401,7 @@ sudo certbot renew --dry-run              # must succeed
 
 1. ☐ `apt update && apt upgrade`
 2. ☐ DNS `nexon.aicraft.com.au` → your public IP (`dig` to confirm)
-3. ☐ Router: forward TCP **80** and **443** → **192.168.0.22**; open host firewall
+3. ☐ Router: forward TCP **80** and **443** → **192.168.0.18**; open host firewall
 4. ☐ Install & start **InfluxDB** ([`native_install_grafana_influxdb.md`](native_install_grafana_influxdb.md) — Grafana half optional/unused)
 5. ☐ Start **combined_hpc.py** (`:5000`); create `user_data/` with correct ownership (Step 3b)
 6. ☐ `apt install nginx`
@@ -444,10 +444,10 @@ its own nginx block (big body, no buffering); the rest need nothing special.
 | Item | Value |
 |------|-------|
 | Hostname | `andromeda` |
-| LAN IP | `192.168.0.22` (also `10.42.0.101` on a second interface) |
+| LAN IP | `192.168.0.18` (also `10.42.0.101` on a second interface) |
 | Public IP | `49.176.249.9` (home router) |
 | Domain | `nexon.aicraft.com.au` |
-| Router forwards | TCP 80, 443 → `192.168.0.22` |
+| Router forwards | TCP 80, 443 → `192.168.0.18` |
 | nginx | `1.18+`, active site `sites-available/nexon-ssl.conf` (symlinked in `sites-enabled/`) |
 | Cert | `/etc/letsencrypt/live/nexon.aicraft.com.au/` |
 | combined_hpc.py | `0.0.0.0:5000` (frontend + API + collector) |
@@ -461,3 +461,177 @@ The stock Ubuntu `nginx.conf` is used unmodified; the only lines that matter are
 defaults `user www-data;`, `include /etc/nginx/sites-enabled/*;`, and `gzip on;`. You
 should not need to edit it. Optional hardening: set `ssl_protocols TLSv1.2 TLSv1.3;`
 and uncomment `server_tokens off;` in the `http {}` block.
+
+---
+
+# Future Features
+
+> This section is **not part of the current live setup**. It documents planned
+> enhancements to the proxy. The setup above (Steps 0–11) is what runs today; nothing
+> below is applied yet. Each subsection is self-contained and can be adopted
+> independently.
+
+## FF-1. Per-user landing pages with a hard admin / rsat boundary
+
+**Goal.** Two accounts behind the same login, each locked to its own area:
+
+- `admin` logs in → lands on the admin dashboard at `/`, and **cannot** open `/rsat`.
+- `rsat` logs in → lands on the RSAT dashboard at `/rsat`, and **cannot** open `/`.
+
+The wrong user is bounced to their own home page, so neither ever sees the other's
+interface.
+
+### Why not two separate `.htpasswd` files (one per location)?
+
+The obvious approach — a `.htpasswd_admin` gate on `/` and a separate `.htpasswd_rsat`
+gate on `/rsat` — **breaks the RSAT dashboard**, because of how browsers scope
+Basic-Auth credentials:
+
+- Two `auth_basic` files create two separate **login realms**.
+- A browser only auto-sends a realm's credentials to paths **inside** the area it
+  logged into.
+- The RSAT page loads from `/rsat`, but its JavaScript fetches `/system_metrics`,
+  `/storage_info`, `/images/…`, `/send_message`, … — all at paths **outside** `/rsat`.
+- So the browser won't send the rsat credentials to those endpoints → each data XHR
+  returns **401** → the dashboard's live data silently fails to load.
+
+**The fix:** keep **one** login file containing **both** users (so credentials are
+cached for the whole origin and every data call carries them), then enforce the hard
+per-page boundary by **username** via nginx's `$remote_user`. Same result, no broken
+XHRs.
+
+### FF-1a. nginx config
+
+Replace the `location` blocks in the **443** server of
+`/etc/nginx/sites-available/nexon-ssl.conf` with:
+
+```nginx
+server {
+    server_name nexon.aicraft.com.au;
+
+    # ---- ONE login gate; the file holds BOTH admin and rsat ----
+    auth_basic "RSAT — login required";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
+    # ================= ADMIN-ONLY pages =================
+    location = / {
+        if ($remote_user != "admin") { return 302 /rsat; }   # bounce rsat to its own home
+        proxy_pass http://127.0.0.1:5000;
+        include /etc/nginx/rsat_proxy.conf;
+    }
+    location = /sar_app {
+        if ($remote_user != "admin") { return 302 /rsat; }
+        proxy_pass http://127.0.0.1:5000;
+        include /etc/nginx/rsat_proxy.conf;
+    }
+
+    # ================= RSAT-ONLY pages =================
+    location = /rsat {
+        if ($remote_user != "rsat") { return 302 /; }         # bounce admin to its own home
+        proxy_pass http://127.0.0.1:5000;
+        include /etc/nginx/rsat_proxy.conf;
+    }
+    location = /sar_app_rsat {
+        if ($remote_user != "rsat") { return 302 /; }
+        proxy_pass http://127.0.0.1:5000;
+        include /etc/nginx/rsat_proxy.conf;
+    }
+
+    # ================= shared big upload =================
+    location = /upload_cphd {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_set_header Host $host;
+        client_max_body_size 0;
+        proxy_request_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # ========= everything else: shared API/data/assets (both users) =========
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        include /etc/nginx/rsat_proxy.conf;
+    }
+
+    listen 443 ssl;
+    ssl_certificate     /etc/letsencrypt/live/nexon.aicraft.com.au/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/nexon.aicraft.com.au/privkey.pem;
+}
+
+server {
+    listen 80;
+    server_name nexon.aicraft.com.au;
+    return 301 https://$host$request_uri;
+}
+```
+
+> `if (…) { return …; }` is the one form of `if` that is officially safe inside a
+> `location` — it short-circuits, and when the condition is false nginx falls through
+> to `proxy_pass`. The **302 to the user's own home** (instead of a bare 403) means an
+> admin who types `/rsat` just lands back on `/`, and vice-versa. Swap
+> `return 302 …;` for `return 403;` to hard-deny instead.
+
+### FF-1b. Shared proxy-header snippet (write once)
+
+Create `/etc/nginx/rsat_proxy.conf` so the header block isn't repeated in every
+location:
+
+```nginx
+proxy_http_version 1.1;
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection "upgrade";
+```
+
+### FF-1c. Create the single login file (both users)
+
+```bash
+sudo htpasswd -c /etc/nginx/.htpasswd admin     # prompts for admin's password
+sudo htpasswd    /etc/nginx/.htpasswd rsat       # note: NO -c, or you wipe the file
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### FF-1d. Verify the boundary
+
+```bash
+# admin lands on the admin dashboard
+curl -Ik -u admin:PW  https://nexon.aicraft.com.au/            # 200
+
+# rsat asking for / is bounced to /rsat
+curl -Ik -u rsat:PW   https://nexon.aicraft.com.au/            # 302 → /rsat
+
+# rsat lands on its own dashboard
+curl -Ik -u rsat:PW   https://nexon.aicraft.com.au/rsat        # 200
+
+# admin asking for /rsat is bounced to /
+curl -Ik -u admin:PW  https://nexon.aicraft.com.au/rsat        # 302 → /
+
+# shared data works for BOTH (required for the pages to function)
+curl -sk -u rsat:PW   https://nexon.aicraft.com.au/system_metrics   # JSON
+curl -sk -u admin:PW  https://nexon.aicraft.com.au/system_metrics   # JSON
+```
+
+### FF-1e. Which routes are gated where
+
+| Bucket | Routes | Who |
+|--------|--------|-----|
+| Admin-only | `/`, `/sar_app` | `admin` |
+| RSAT-only | `/rsat`, `/sar_app_rsat` | `rsat` |
+| Shared (both) | `/monitor`, `/system_metrics`, `/storage_info`, `/upload_cphd`, `/images/…`, `/send_message`, `/branding/…`, all other APIs/assets | both |
+
+To gate another page (e.g. make `/monitor` admin-only), add a
+`location = /monitor { if ($remote_user != "admin") { return 302 /rsat; } … }` block
+like the others. **Keep the shared data endpoints open to both** — that's what makes
+each dashboard actually load.
+
+### FF-1f. Limitation — page-level, not data-level
+
+The wall is on the **pages/URLs**, not the underlying data: `rsat` can still
+`curl /system_metrics` and see the same metrics `admin` does, because both dashboards
+need that endpoint. If the **data itself** must be partitioned per user, that has to
+happen inside [`combined_hpc.py`](combined_hpc.py) — add
+`proxy_set_header X-Remote-User $remote_user;` to `rsat_proxy.conf` and have the app
+authorize on that header.
