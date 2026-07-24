@@ -83,16 +83,14 @@
         .refresh-select:focus { outline: none; border-color: var(--blue); }
 
         /* ---- panels / grid ---- */
-        /* The summary is three stacked bands:
-             1. top row  — powers + gauges on a grid (mirrors the per-core
-                section): col1 = powers + uptime, then the six gauges. On wide
-                screens all six gauges sit in one tall row beside the powers
-                block; it steps down to 2-up gauge pairs then a single column
-                as the viewport narrows (breakpoints 1280px / 640px).
-             2. mid row  — cores/memory/swap/disk + the usage bars, edge-to-edge.
-             3. net row  — the Wireless Network chart, full width. */
+        /* The summary is two stacked bands, both on grids that step down at the
+           same breakpoints (1280px / 640px):
+             1. top row    — col1 = powers + uptime, then the six gauges. On wide
+                screens all six gauges sit in one tall row beside the powers block.
+             2. bottom row — cores/memory/swap/disk as a 2x2 block, the Memory
+                Usage time-series, the three usage bars stacked, and a throughput
+                chart per ethernet adapter, all level with each other. */
         .summary { display: flex; flex-direction: column; gap: 8px; }
-        .srow { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; }
 
         /* ---- top row: powers + gauges ---- */
         .grow-top {
@@ -114,10 +112,10 @@
         .col-powers .panel { padding: 8px 12px; }
         .col-powers .p-total  { grid-column: 1; grid-row: 1 / 3; }
         .col-powers .p-uptime { grid-column: 1; grid-row: 3; }
-        .col-powers .stat.hero .value { font-size: 48px; }
-        .col-powers .stat.hero .value .unit { font-size: 24px; }
-        .col-powers .stat.mid .value  { font-size: 20px; }
-        .col-powers .p-uptime .value  { font-size: 18px; }
+        .col-powers .stat.hero .value { font-size: clamp(20px, 34cqw, 48px); }
+        .col-powers .stat.hero .value .unit { font-size: clamp(11px, 17cqw, 24px); }
+        .col-powers .stat.mid .value  { font-size: clamp(12px, 16cqw, 20px); }
+        .col-powers .p-uptime .value  { font-size: clamp(11px, 13cqw, 18px); }
         .col-powers .p-uptime .uline  { display: inline; }
         .col-powers .p-uptime .uline + .uline::before { content: ", "; }
 
@@ -135,13 +133,46 @@
             .col-powers { grid-column: 1; grid-row: 1; min-height: 0; }
         }
 
-        /* ---- mid row: totals + usage bars, spread edge-to-edge ---- */
-        .srow-bottom > .panel { flex: 1 1 170px; height: 50px; padding: 5px 10px; }
-        .srow-bottom .stat.big .value { font-size: 20px; }
-        .srow-bottom .bar-row { margin: 3px 0 0; }
+        /* ---- bottom row: totals 2x2 + memory chart + usage bars + ethernet ----
+           Mirrors the top row's stepping: single column when narrow, two
+           columns at 640px, and the full four-column band at 1280px where the
+           charts sit level with the totals and the bars. */
+        .grow-bottom {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 8px;
+        }
+        .grow-bottom .panel-chart { min-height: 190px; }
 
-        /* ---- net row: Wireless Network chart, full width ---- */
-        /* .panel-net { height: 150px; } */
+        /* Cores / Total Memory / Total Swap / Total Disk in a 2x2 block. */
+        .col-totals {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 8px;
+            min-height: 200px;
+        }
+        .col-totals .panel { padding: 8px 12px; }
+
+        /* Memory / Swap / Disk usage bars stacked in one column. */
+        .col-bars {
+            display: grid;
+            grid-template-rows: repeat(3, 1fr);
+            gap: 8px;
+            min-height: 200px;
+        }
+
+        @media (min-width: 640px) {                 /* medium: 2 columns */
+            .grow-bottom { grid-template-columns: 1fr 1fr; }
+        }
+        @media (min-width: 1280px) {                /* wide: the full band */
+            .grow-bottom {
+                grid-template-columns: 1.4fr 1.7fr 1fr 2fr 2fr;
+                grid-auto-rows: 220px;
+            }
+            .grow-bottom .panel-chart { min-height: 0; }
+            .col-totals, .col-bars { min-height: 0; }
+        }
 
         .panel {
             background: var(--panel-bg);
@@ -152,9 +183,16 @@
             overflow: hidden;
             display: flex;
             flex-direction: column;
+            /* Each panel is its own query container so the text inside can be
+               sized in cqw (1cqw = 1% of THIS panel's width). Fonts below use
+               clamp(min, Ncqw, preferred): preferred when there's room, shrink
+               with the panel when there isn't, never below the readable floor.
+               Panel width takes priority over the preferred size, so the whole
+               value stays visible without clipping or scrolling. */
+            container-type: inline-size;
         }
         .panel-title {
-            font-size: 12px;
+            font-size: clamp(9px, 12cqw, 12px);
             color: var(--text-weak);
             margin-bottom: 4px;
             white-space: nowrap;
@@ -174,10 +212,10 @@
         }
         .stat .value .unit { color: var(--text-weak); font-weight: 400; margin-left: 4px; }
         .stat .value .uline { display: inline; }
-        .stat.big .value { font-size: 30px; }
+        .stat.big .value { font-size: clamp(15px, 22cqw, 30px); }
         .stat.hero { align-items: flex-start; }
-        .stat.hero .value { font-size: 64px; font-weight: 300; }
-        .stat.mid .value { font-size: 22px; }
+        .stat.hero .value { font-size: clamp(24px, 40cqw, 64px); font-weight: 300; }
+        .stat.mid .value { font-size: clamp(13px, 18cqw, 22px); }
 
         /* ---- arc gauges ---- */
         .gauge { align-items: center; }
@@ -220,10 +258,12 @@
             flex-direction: column;
             min-width: 0;
             height: 152px;
+            container-type: inline-size;
         }
-        .core-panel.freq { background: transparent; border: none; padding: 8px 0 8px 2px; }
+        .core-panel.freq { background: transparent; border: none; padding: 8px 0 8px 0; }
+        .core-panel.freq .core-title { text-align: center; }
         .core-title {
-            font-size: 12px;
+            font-size: clamp(9px, 13cqw, 12px);
             color: var(--text-weak);
             margin-bottom: 2px;
             white-space: nowrap;
@@ -312,58 +352,82 @@
 
       </div><!-- /grow-top -->
 
-      <!-- ---- mid row: totals + usage bars, spread edge-to-edge ---- -->
-      <div class="srow srow-bottom">
-        <div class="panel stat big">
-            <div class="panel-title">Cores</div>
-            <div class="value" id="v_cores">—</div>
-        </div>
-        <div class="panel stat big">
-            <div class="panel-title">Total Memory</div>
-            <div class="value"><span id="v_total_mem">—</span><span class="unit">GiB</span></div>
-        </div>
-        <div class="panel stat big">
-            <div class="panel-title">Total Swap</div>
-            <div class="value"><span id="v_total_swap">—</span><span class="unit">GiB</span></div>
-        </div>
-        <div class="panel stat big">
-            <div class="panel-title">Total Disk</div>
-            <div class="value"><span id="v_total_disk">—</span><span class="unit">GiB</span></div>
-        </div>
-        <div class="panel">
-            <div class="panel-title">Memory Usage</div>
-            <div class="bar-row">
-                <div class="bar-track"><div class="bar-fill" id="bar_mem"></div></div>
-                <span class="bar-val" id="v_mem">—</span>
-            </div>
-        </div>
-        <div class="panel">
-            <div class="panel-title">Swap Usage</div>
-            <div class="bar-row">
-                <div class="bar-track"><div class="bar-fill" id="bar_swap"></div></div>
-                <span class="bar-val" id="v_swap">—</span>
-            </div>
-        </div>
-        <div class="panel">
-            <div class="panel-title">Disk Usage</div>
-            <div class="bar-row">
-                <div class="bar-track"><div class="bar-fill" id="bar_disk"></div></div>
-                <span class="bar-val" id="v_disk">—</span>
-            </div>
-        </div>
-      </div><!-- /srow-bottom -->
+      <!-- ---- bottom row: totals + memory chart + usage bars + ethernet ---- -->
+      <div class="grow-bottom">
 
-      <!-- ---- net row: wireless chart, full width ---- -->
-      <!-- Wireless Network panel disabled for now
-      <div class="panel panel-net">
-          <div class="panel-title">Wireless Network</div>
-          <div class="chart-wrap"><canvas id="net_chart"></canvas></div>
-          <div class="legend">
-              <span><i style="background:var(--green)"></i>Down <b id="net_down">0 B/s</b></span>
-              <span><i style="background:var(--yellow)"></i>Up <b id="net_up">0 B/s</b></span>
-          </div>
-      </div>
-      -->
+        <!-- Column 1: the four totals, 2x2 -->
+        <div class="col-totals">
+            <div class="panel stat big">
+                <div class="panel-title">Cores</div>
+                <div class="value" id="v_cores">—</div>
+            </div>
+            <div class="panel stat big">
+                <div class="panel-title">Total Memory</div>
+                <div class="value"><span id="v_total_mem">—</span><span class="unit">GiB</span></div>
+            </div>
+            <div class="panel stat big">
+                <div class="panel-title">Total Swap</div>
+                <div class="value"><span id="v_total_swap">—</span><span class="unit">GiB</span></div>
+            </div>
+            <div class="panel stat big">
+                <div class="panel-title">Total SSD</div>
+                <div class="value"><span id="v_total_disk">—</span><span class="unit">GiB</span></div>
+            </div>
+        </div>
+
+        <!-- Column 2: memory used over time -->
+        <div class="panel panel-chart">
+            <div class="panel-title">Memory Usage</div>
+            <div class="chart-wrap"><canvas id="mem_chart"></canvas></div>
+            <div class="legend">
+                <span><i style="background:var(--green)"></i>Memory Usage <b id="mem_last">—</b></span>
+            </div>
+        </div>
+
+        <!-- Column 3: usage bars, stacked -->
+        <div class="col-bars">
+            <div class="panel">
+                <div class="panel-title">Memory Usage</div>
+                <div class="bar-row">
+                    <div class="bar-track"><div class="bar-fill" id="bar_mem"></div></div>
+                    <span class="bar-val" id="v_mem">—</span>
+                </div>
+            </div>
+            <div class="panel">
+                <div class="panel-title">Swap Usage</div>
+                <div class="bar-row">
+                    <div class="bar-track"><div class="bar-fill" id="bar_swap"></div></div>
+                    <span class="bar-val" id="v_swap">—</span>
+                </div>
+            </div>
+            <div class="panel">
+                <div class="panel-title">SSD Usage</div>
+                <div class="bar-row">
+                    <div class="bar-track"><div class="bar-fill" id="bar_disk"></div></div>
+                    <span class="bar-val" id="v_disk">—</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Columns 4 and 5: the two ethernet adapters -->
+        <div class="panel panel-chart">
+            <div class="panel-title">10GB Port 1</div>
+            <div class="chart-wrap"><canvas id="net_lw_chart"></canvas></div>
+            <div class="legend">
+                <span><i style="background:var(--green)"></i>Download <b id="net_lw_down">0 B/s</b></span>
+                <span><i style="background:var(--yellow)"></i>Upload <b id="net_lw_up">0 B/s</b></span>
+            </div>
+        </div>
+        <div class="panel panel-chart">
+            <div class="panel-title">10GB Port 2</div>
+            <div class="chart-wrap"><canvas id="net_up_chart"></canvas></div>
+            <div class="legend">
+                <span><i style="background:var(--green)"></i>Download <b id="net_up_down">0 B/s</b></span>
+                <span><i style="background:var(--yellow)"></i>Upload <b id="net_up_up">0 B/s</b></span>
+            </div>
+        </div>
+
+      </div><!-- /grow-bottom -->
 
     </div>
 
@@ -389,6 +453,13 @@
             if (g >= 10) return g.toFixed(1);
             return g.toFixed(2);
         }
+        // Grafana-style byte axis/legend label: GB above 1 GiB, MB below (so an
+        // empty axis reads "0.00 MB" rather than "0 B").
+        function fmtBytes(b) {
+            if (b == null || isNaN(b)) return "N/A";
+            var G = 1024 * 1024 * 1024, M = 1024 * 1024;
+            return b >= G ? (b / G).toFixed(2) + " GB" : (b / M).toFixed(2) + " MB";
+        }
         function fmtUptime(s) {
             if (s == null || isNaN(s)) return ["N/A"];
             s = Math.floor(s);
@@ -405,9 +476,11 @@
             if (!el) return;
             el.innerHTML = parts.map(function (p) { return '<span class="uline">' + p + '</span>'; }).join("");
         }
+        // Drops a trailing ".0" so round axis ticks read "20 MiB/s", while a
+        // live legend value still shows its fraction ("1.5 MiB/s").
         function fmtRate(b) {
             if (b == null || isNaN(b)) b = 0;
-            if (b >= 1048576) return (b / 1048576).toFixed(1) + " MiB/s";
+            if (b >= 1048576) return String(+(b / 1048576).toFixed(1)) + " MiB/s";
             if (b >= 1024) return (b / 1024).toFixed(0) + " KiB/s";
             return Math.round(b) + " B/s";
         }
@@ -521,7 +594,8 @@
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             ctx.clearRect(0, 0, cssW, cssH);
 
-            var padL = opts.yLabels ? 34 : 4, padR = 4, padT = 6, padB = opts.xLabels ? 16 : 4;
+            var padL = opts.padL != null ? opts.padL : (opts.yLabels ? 34 : 4);
+            var padR = 4, padT = 6, padB = opts.xLabels ? 16 : 4;
             var plotW = Math.max(1, cssW - padL - padR), plotH = Math.max(1, cssH - padT - padB);
 
             var yMin = opts.yMin != null ? opts.yMin : 0;
@@ -702,18 +776,21 @@
             updateBar("bar_swap", "v_swap", d.swap_usage);
             updateBar("bar_mem", "v_mem", d.memory_usage);
 
-            // wireless network time-series (disabled for now)
-            /*
-            var wifi = (d.network && d.network.wlp3s0) || {};
-            var down = wifi.download_speed || 0, up = wifi.upload_speed || 0;
-            push("net_down", down); push("net_up", up);
-            setText("net_down", fmtRate(down)); setText("net_up", fmtRate(up));
-            drawSeries(document.getElementById("net_chart"),
-                [{ data: buffers.net_down, color: C.green, fill: false },
-                 { data: buffers.net_up, color: C.yellow, fill: false }],
-                { yMin: 0, yLabels: true, tickFmt: fmtRate, ticks: buildNetTicks(),
-                  xLabels: true, times: timeBuf });
-            */
+            // memory-used time-series (percentage of the box's total RAM)
+            var memUsed = (d.memory_usage == null || d.total_memory == null)
+                ? null : d.total_memory * d.memory_usage / 100;
+            push("mem_used", memUsed);
+            setText("mem_last", fmtBytes(memUsed));
+            drawMemChart();
+
+            // ethernet-adapter time-series, one panel per adapter
+            NET_PANELS.forEach(function (p) {
+                var s = (d.network && d.network[p.iface]) || {};
+                var down = s.download_speed || 0, up = s.upload_speed || 0;
+                push(p.id + "_down", down); push(p.id + "_up", up);
+                setText(p.id + "_down", fmtRate(down)); setText(p.id + "_up", fmtRate(up));
+                drawNetChart(p);
+            });
 
             // per-core
             var usage = d.per_core_usage || {}, freq = d.per_core_freq || {};
@@ -730,17 +807,71 @@
             });
         }
 
-        // network y-axis: derive nice ticks from current buffer maxima (disabled for now)
-        /*
-        function buildNetTicks() {
+        // The two ethernet adapters, one chart each. The interface names mirror
+        // LW_/UP_ETH_ADT_INTERFACE_ID in combined_hpc.py — keep them in step.
+        var NET_PANELS = [
+            { id: "net_lw", iface: "enp4s0f0", canvas: "net_lw_chart" },
+            { id: "net_up", iface: "enp4s0f1", canvas: "net_up_chart" }
+        ];
+
+        // An unplugged adapter reports a flat zero, which would otherwise
+        // collapse the axis to a single gridline. Floor the top of the scale so
+        // an idle panel still draws a readable 0 / 32 / 64 / 96 B/s axis.
+        var NET_MIN_TOP = 96;             // B/s
+
+        // Byte rates step in powers of two (…16, 32, 64, 4 MiB, 8 MiB), so the
+        // labels land on round binary values the way Grafana's byte axis does.
+        function niceStepBinary(v) {
+            return v <= 1 ? 1 : Math.pow(2, Math.ceil(Math.log(v) / Math.LN2));
+        }
+
+        // network y-axis: three-ish binary steps sized to the panel's own
+        // maximum, so a quiet adapter keeps a B/s scale while a busy one
+        // rescales to MiB/s independently.
+        function buildNetTicks(id) {
             var mx = 0;
-            ["net_down", "net_up"].forEach(function (k) {
+            [id + "_down", id + "_up"].forEach(function (k) {
                 (buffers[k] || []).forEach(function (v) { if (v > mx) mx = v; });
             });
-            var top = niceMax(mx);
-            return [0, top / 2, top];
+            var step = niceStepBinary(Math.max(mx, NET_MIN_TOP) / 3);
+            var n = Math.max(1, Math.ceil(Math.max(mx, NET_MIN_TOP) / step));
+            var ticks = [];
+            for (var i = 0; i <= n; i++) ticks.push(i * step);
+            return ticks;
         }
-        */
+        function drawNetChart(p) {
+            var cv = document.getElementById(p.canvas);
+            if (!cv || !buffers[p.id + "_down"]) return;
+            var ticks = buildNetTicks(p.id);
+            drawSeries(cv,
+                [{ data: buffers[p.id + "_down"], color: C.green, fill: false },
+                 { data: buffers[p.id + "_up"], color: C.yellow, fill: false }],
+                { yMin: 0, yMax: ticks[ticks.length - 1], yLabels: true, tickFmt: fmtRate,
+                  ticks: ticks, xLabels: true, times: timeBuf, padL: 58 });
+        }
+
+        // memory y-axis: round steps (…10/20/30 GB) rather than the raw maximum,
+        // so the labels stay readable at four gridlines.
+        function buildMemTicks() {
+            var G = 1024 * 1024 * 1024, mx = 0;
+            (buffers.mem_used || []).forEach(function (v) { if (v > mx) mx = v; });
+            var step = niceMax(Math.max(mx, G) / G / 4) * G;
+            var ticks = [];
+            for (var i = 0; i <= 8; i++) {
+                ticks.push(i * step);
+                if (i * step >= mx) break;
+            }
+            return ticks;
+        }
+        function drawMemChart() {
+            var cv = document.getElementById("mem_chart");
+            if (!cv || !buffers.mem_used) return;
+            var ticks = buildMemTicks();
+            drawSeries(cv,
+                [{ data: buffers.mem_used, color: C.green, fill: true }],
+                { yMin: 0, yMax: ticks[ticks.length - 1], yLabels: true, tickFmt: fmtBytes,
+                  ticks: ticks, xLabels: true, times: timeBuf, padL: 62 });
+        }
 
         // ---------- polling ----------
         var timer = null, intervalMs = 1000, inFlight = false;
@@ -784,13 +915,8 @@
         window.addEventListener("resize", function () {
             if (resizeRAF) cancelAnimationFrame(resizeRAF);
             resizeRAF = requestAnimationFrame(function () {
-                /* wireless net chart disabled for now
-                if (buffers.net_down) drawSeries(document.getElementById("net_chart"),
-                    [{ data: buffers.net_down, color: C.green, fill: false },
-                     { data: buffers.net_up, color: C.yellow, fill: false }],
-                    { yMin: 0, yLabels: true, tickFmt: fmtRate, ticks: buildNetTicks(),
-                  xLabels: true, times: timeBuf });
-                */
+                NET_PANELS.forEach(drawNetChart);
+                drawMemChart();
                 Object.keys(coreCanvases).forEach(function (i) {
                     if (buffers["core_" + i]) drawSeries(coreCanvases[i],
                         [{ data: buffers["core_" + i], color: C.green, fill: true }],
