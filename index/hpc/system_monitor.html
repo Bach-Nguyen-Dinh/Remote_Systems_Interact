@@ -700,7 +700,7 @@
         var coreBuilt = false;
         var coreFreqGauges = {};
         var coreCanvases = {};
-        var freqCfg = { min: 0.8, max: 4.2, track: "none",
+        var freqCfg = { min: 0.8, max: 4.2, /* track: "none", */
             thresholds: [{ v: 0.8, color: C.green }, { v: 3.0, color: C.orange }, { v: 4.0, color: C.red }],
             fmt: function (v) { return v.toFixed(2) + " GHz"; } };
 
