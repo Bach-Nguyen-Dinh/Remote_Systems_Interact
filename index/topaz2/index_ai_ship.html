@@ -206,8 +206,10 @@
         let imageDisplayStarted = false;
         const AI_USAGE_THRESHOLD = 5.0;  // Percentage above baseline to start display
 
-        const FLASK_HOST = "localhost";
-        const FLASK_PORT = 5001;
+        // All backend URLs below are RELATIVE (no leading slash, no host:port) so
+        // they resolve against whatever origin/prefix this page was served from --
+        // either http://<box>:5001/ or behind the nginx /topaz/ prefix. See
+        // set_up_proxy_server.md and combined_dashboard.html.
 
         let isRunning_aiSmoke = false;
         let startTime_aiShip = null;
@@ -239,7 +241,7 @@
             
             aiCoreMonitorInterval = setInterval(async () => {
                 try {
-                    const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/ai_ship/ai_core_usage`);
+                    const response = await fetch(`ai_ship/ai_core_usage`);
                     const data = await response.json();
                     
                     const usageIncrease = data.total_ai_usage - data.baseline;
@@ -410,7 +412,7 @@
                 console.log('Starting enhanced image load...');
                 updateStatus_aiShip('Loading image list...', 'running');
                 
-                const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/ai_ship/image_list`);
+                const response = await fetch(`ai_ship/image_list`);
                 if (!response.ok) {
                     throw new Error(`Failed to fetch image list: ${response.status}`);
                 }
@@ -487,7 +489,7 @@
                 // Validate images exist on server before attempting to load
                 async function validateImageExists(filename, type) {
                     try {
-                        const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/ai_ship/validate_image/${type}/${filename}`);
+                        const response = await fetch(`ai_ship/validate_image/${type}/${filename}`);
                         if (response.ok) {
                             const result = await response.json();
                             return result.valid;
@@ -507,7 +509,7 @@
                 for (const filename of data.input_images) {
                     const isValid = await validateImageExists(filename, 'input');
                     if (isValid) {
-                        const src = `http://${FLASK_HOST}:${FLASK_PORT}/ai_ship/images/input/${filename}`;
+                        const src = `ai_ship/images/input/${filename}`;
                         loadPromises.push(loadImageWithRetry(src, filename, 'input'));
                         validatedCount++;
                     } else {
@@ -519,7 +521,7 @@
                 for (const filename of data.output_images) {
                     const isValid = await validateImageExists(filename, 'output');
                     if (isValid) {
-                        const src = `http://${FLASK_HOST}:${FLASK_PORT}/ai_ship/images/output/${filename}`;
+                        const src = `ai_ship/images/output/${filename}`;
                         loadPromises.push(loadImageWithRetry(src, filename, 'output'));
                         validatedCount++;
                     } else {
@@ -617,7 +619,7 @@
             clearImages_aiShip();
             
             try {
-                fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+                fetch(`send_message`, {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json"
@@ -663,7 +665,7 @@
             document.getElementById('processingTime_aiShip').textContent = '-';
             
             // Send clear command to server
-            fetch(`http://${FLASK_HOST}:${FLASK_PORT}/send_message`, {
+            fetch(`send_message`, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json"
@@ -678,7 +680,7 @@
             
         //     pollInterval_aiShip = setInterval(async () => {
         //         try {
-        //             const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/ai_ship/progress`);
+        //             const response = await fetch(`ai_ship/progress`);
         //             const data = await response.json();
                     
         //             if (data.type) {
@@ -695,7 +697,7 @@
             
             pollInterval_aiShip = setInterval(async () => {
                 try {
-                    const response = await fetch(`http://${FLASK_HOST}:${FLASK_PORT}/ai_ship/progress`);
+                    const response = await fetch(`ai_ship/progress`);
                     const data = await response.json();
 
                     console.log(`AI ship progress: ${data.type}`);

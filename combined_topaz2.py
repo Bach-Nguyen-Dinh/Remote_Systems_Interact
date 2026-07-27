@@ -18,6 +18,19 @@ The Flask app then serves the dashboard directly at '/':
   * '/system_monitor'      -> index/topaz2/system_monitor.html      (CPU/AI/mem/net panels)
   * '/system_metrics'      -> JSON snapshot the two pages poll for live values
 
+plus the four "Vision model" workload pages the shell hosts as tabs, each with its
+own small API family (image lists, image bytes, run progress):
+
+  * '/small_obj_app'  -> index_grafana_topaz_small_object.html + '/small_obj_detect/*'
+  * '/auto_nav_app'   -> index_land_nav.html                   + '/auto_nav/*'
+  * '/ai_ship_app'    -> index_ai_ship.html                    + '/ai_ship/*'
+  * '/ai_smoke_app'   -> index_ai_smoke.html                   + '/ai_smoke/*'
+
+Those pages' live progress ("3 of 40 images processed", elapsed time, …) does not
+come over the metrics stream: the target opens a short connection to DATA_PORT and
+posts one JSON object per update, which run_data_server() files into the matching
+latest_*_progress cache (see broadcast_to_clients).
+
 DESIGNED TO SIT BEHIND AN nginx PREFIX (e.g. https://<domain>/topaz/ ->
 http://<this-box>:5001/, the same "streaming" pattern as the VLM box's /vlm/). For
 that to work the served pages use *relative* URLs only (iframe src="orientation",
@@ -32,7 +45,7 @@ import socket
 import threading
 import subprocess
 
-from flask import Flask, request, jsonify, send_file  # type: ignore
+from flask import Flask, request, jsonify, send_file, send_from_directory  # type: ignore
 from flask_cors import CORS  # type: ignore
 
 try:
@@ -46,6 +59,7 @@ except Exception:                        # influxdb client is optional
 HOST_IP = "0.0.0.0"          # Flask + metrics-socket bind address
 FLASK_PORT = 5001
 SYSINFO_PORT = 12346         # target -> host system-metrics stream (JSON per line)
+DATA_PORT = 55556            # target -> host workload updates (one JSON object per connection)
 
 TARGET_IP = "10.42.0.7"      # embedded Topaz target (for /send_message forwarding)
 TARGET_PORT = 54322
@@ -60,9 +74,37 @@ INFLUXDB_PASSWORD = "root"
 FM_INTERFACE_ID = "fm1-mac3"
 
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
-COMBINED_FRONTEND = os.path.join(CURR_DIR, "index", "topaz2", "combined_dashboard.html")
-ORIENTATION_FRONTEND = os.path.join(CURR_DIR, "index", "topaz2", "orientation.html")
-MONITOR_FRONTEND = os.path.join(CURR_DIR, "index", "topaz2", "system_monitor.html")
+INDEX_DIR = os.path.join(CURR_DIR, "index", "topaz2")
+COMBINED_FRONTEND = os.path.join(INDEX_DIR, "combined_dashboard.html")
+ORIENTATION_FRONTEND = os.path.join(INDEX_DIR, "orientation.html")
+MONITOR_FRONTEND = os.path.join(INDEX_DIR, "system_monitor.html")
+
+# Vision-model tab pages (hosted as <iframe>s by the shell's "Vision model" row)
+SMALL_OBJ_FRONTEND = os.path.join(INDEX_DIR, "index_grafana_topaz_small_object.html")
+AUTO_NAV_FRONTEND = os.path.join(INDEX_DIR, "index_land_nav.html")
+AI_SHIP_FRONTEND = os.path.join(INDEX_DIR, "index_ai_ship.html")
+AI_SMOKE_FRONTEND = os.path.join(INDEX_DIR, "index_ai_smoke.html")
+
+# Image sets those pages display. Input/"before" and output/"after" frames are
+# produced on this host (or copied here) — the target only reports progress.
+SMALL_OBJ_INPUT_DIR = os.path.join(CURR_DIR, "small_obj_detect", "data1", "image")
+SMALL_OBJ_OUTPUT_DIR = os.path.join(CURR_DIR, "small_obj_detect", "data1", "predictions")
+
+AI_SMOKE_INPUT_DIR = "/home/matthew/Downloads/SmokeNet-Data/validation/opt_web_img"
+AI_SMOKE_OUTPUT_DIR = "/home/matthew/Downloads/SmokeNet-Data/classification/opt_web_img"
+
+AI_SHIP_INPUT_DIR = "/home/matthew/modified_ai_ship/ship/short_example/opt_web_img"
+AI_SHIP_OUTPUT_DIR = "/home/matthew/modified_ai_ship/ship/output_segment/opt_web_img"
+
+AUTO_NAV_DIRS = {
+    "gps": os.path.join(CURR_DIR, "autonomous_nav", "gps"),
+    "features": os.path.join(CURR_DIR, "autonomous_nav", "features"),
+    "depth": os.path.join(CURR_DIR, "autonomous_nav", "depth"),
+    "lidar": os.path.join(CURR_DIR, "autonomous_nav", "lidar"),
+}
+# The auto-nav page validates with the '<kind>_img' spelling; keep the two apart
+# so /auto_nav/images/<kind>/ URLs stay short.
+AUTO_NAV_VALIDATE_DIRS = {k + "_img": v for k, v in AUTO_NAV_DIRS.items()}
 
 # ----------------------------------------------------------------------------
 # Global live state
@@ -73,6 +115,22 @@ MONITOR_FRONTEND = os.path.join(CURR_DIR, "index", "topaz2", "system_monitor.htm
 # touch it concurrently.
 latest_metrics = {}
 latest_metrics_lock = threading.Lock()
+
+# Last workload update the target pushed to DATA_PORT, one cache per workload
+# (the pages poll their own '<workload>/progress'). Plain dict assignment only —
+# never mutated in place — so readers always see a complete object.
+latest_progress = {
+    "small_obj_detect": {},
+    "auto_nav": {},
+    "ai_ship": {},
+    "ai_smoke": {},
+}
+
+# AI-engine usage, used by the ai_ship/ai_smoke pages to detect "the workload has
+# actually started on the card" (usage risen ~5% above the baseline captured when
+# Run was pressed) and only then begin cycling through the image pairs.
+latest_ai_core_usage = 0.0
+ai_baseline_usage = {"ai_ship": 0.0, "ai_smoke": 0.0}
 
 app = Flask(__name__)
 CORS(app)
@@ -198,7 +256,7 @@ def _connect_influx():
 
 def receive_metrics():
     """Accept the target's metrics stream, cache each snapshot, log to InfluxDB."""
-    global latest_metrics
+    global latest_metrics, latest_ai_core_usage
     client = _connect_influx()
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -231,6 +289,9 @@ def receive_metrics():
                     snapshot = build_snapshot(system_info)
                     with latest_metrics_lock:
                         latest_metrics = snapshot
+                    # Mirrored out of the snapshot so the vision pages' cheap
+                    # 200 ms '/ai_core_usage' poll never has to take the lock.
+                    latest_ai_core_usage = snapshot["total_ai_usage"]
 
                     if client is not None:
                         try:
@@ -243,6 +304,58 @@ def receive_metrics():
         finally:
             client_socket.close()
             print(f"Metrics connection with {client_address} closed")
+
+
+# ----------------------------------------------------------------------------
+# Workload progress receiver (target -> host, one JSON object per connection)
+# ----------------------------------------------------------------------------
+def _progress_key(update):
+    """Which cache does this update belong to? The target tags every workload
+    message with a 'type' prefixed by the workload name ("ai_smoke_start",
+    "small_obj_detect_progress", …). Returns None for anything else — the same
+    port also carries CPHD file lists and file-size replies this dashboard has no
+    use for, and those must not land in a progress cache."""
+    msg_type = str(update.get("type", ""))
+    for key in ("ai_smoke", "ai_ship", "auto_nav", "small_obj_detect"):
+        if msg_type.startswith(key):
+            return key
+    return None
+
+
+def receive_workload_updates():
+    """Accept the target's workload-progress connections and cache each update.
+
+    Unlike the metrics stream this is connection-per-message: the target dials in,
+    writes one JSON object, and hangs up — so read until EOF and parse the whole
+    payload rather than splitting on newlines."""
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.bind((HOST_IP, DATA_PORT))
+    server_socket.listen(5)
+    print(f"Workload-progress server listening on {HOST_IP}:{DATA_PORT}")
+
+    while True:
+        conn, addr = server_socket.accept()
+        try:
+            with conn:
+                conn.settimeout(5)
+                chunks = []
+                while True:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                raw = b"".join(chunks).decode(errors="replace").strip()
+                if not raw:
+                    continue
+                update = json.loads(raw)
+                key = _progress_key(update)
+                if key is not None:
+                    latest_progress[key] = update
+        except json.JSONDecodeError:
+            pass    # image bytes / non-JSON traffic on the same port — not ours
+        except Exception as e:
+            print(f"Workload-progress connection error ({addr}): {e}")
 
 
 def forward_message_to_target(message):
@@ -280,6 +393,30 @@ def monitor_frontend():
     return send_file(MONITOR_FRONTEND)
 
 
+@app.route('/small_obj_app')
+def small_obj_frontend():
+    """Small object detection page (Vision model tab)."""
+    return send_file(SMALL_OBJ_FRONTEND)
+
+
+@app.route('/auto_nav_app')
+def auto_nav_frontend():
+    """Autonomous navigation page (Vision model tab)."""
+    return send_file(AUTO_NAV_FRONTEND)
+
+
+@app.route('/ai_ship_app')
+def ai_ship_frontend():
+    """AI ship detection page (Vision model tab)."""
+    return send_file(AI_SHIP_FRONTEND)
+
+
+@app.route('/ai_smoke_app')
+def ai_smoke_frontend():
+    """AI smoke detection page (Vision model tab)."""
+    return send_file(AI_SMOKE_FRONTEND)
+
+
 @app.route('/system_metrics', methods=['GET'])
 def system_metrics():
     """The whole live snapshot the two dashboard pages need, in one call. Served
@@ -290,10 +427,30 @@ def system_metrics():
 
 @app.route('/send_message', methods=['POST'])
 def send_message():
-    """Forward a control command to the embedded target (kept minimal for now)."""
+    """Forward a control command to the embedded target.
+
+    Two families of command need host-side bookkeeping before (or instead of)
+    being forwarded:
+
+      * "run_<workload>[:<n cores>]" — drop the previous run's progress so the
+        page doesn't briefly show stale numbers, and for the AI-engine workloads
+        snapshot current usage as the baseline their "has it actually started?"
+        check measures against.
+      * "clear_<workload>" — purely host-side; nothing to tell the target."""
     data = request.get_json(silent=True) or {}
     message = data.get("message", "")
     print(f"Command: {message}")
+
+    for workload in latest_progress:
+        if message.startswith(f"run_{workload}"):
+            latest_progress[workload] = {}
+            if workload in ai_baseline_usage:
+                ai_baseline_usage[workload] = latest_ai_core_usage
+            break
+        if message == f"clear_{workload}":
+            latest_progress[workload] = {}
+            return jsonify({"status": "cleared", "workload": workload})
+
     return forward_message_to_target(message)
 
 
@@ -301,6 +458,212 @@ def send_message():
 def recalibrate_imu():
     """Trigger IMU recalibration on the target device."""
     return forward_message_to_target("recalibrate_imu")
+
+
+# ----------------------------------------------------------------------------
+# Vision-model APIs (small object detection / autonomous nav / AI ship / AI smoke)
+# ----------------------------------------------------------------------------
+# All four pages talk the same little dialect — list the .webp frames in a
+# directory, validate one before loading it, serve its bytes, poll progress — so
+# the shape is written once here and each workload just names its directories.
+def list_webp(directory):
+    """Readable, non-empty .webp files in `directory`, in display order.
+
+    Sorted numerically when the names are plain numbers ("7.webp" before
+    "10.webp", which is how the small-object frames are numbered) and
+    alphabetically otherwise."""
+    images = []
+    if not os.path.isdir(directory):
+        print(f"Image directory missing: {directory}")
+        return images
+
+    for filename in sorted(os.listdir(directory)):
+        if not filename.endswith(".webp"):
+            continue
+        filepath = os.path.join(directory, filename)
+        try:
+            if not (os.path.isfile(filepath) and os.access(filepath, os.R_OK)):
+                print(f"Warning: cannot read file {filepath}")
+                continue
+            size = os.path.getsize(filepath)
+            if size <= 0:
+                print(f"Warning: empty file {filepath}")
+                continue
+            images.append({"filename": filename, "size": size})
+        except OSError as e:
+            print(f"Error checking file {filepath}: {e}")
+
+    stems = [img["filename"][:-len(".webp")] for img in images]
+    if all(s.isdigit() for s in stems):
+        images.sort(key=lambda img: int(img["filename"][:-len(".webp")]))
+    return images
+
+
+def pair_image_list(input_dir, output_dir):
+    """The {input,output} listing the smoke/ship/small-object pages fetch once up
+    front, so they can pre-load every frame into the browser cache before a run."""
+    input_images = list_webp(input_dir)
+    output_images = list_webp(output_dir)
+    return jsonify({
+        "input_images": [img["filename"] for img in input_images],
+        "output_images": [img["filename"] for img in output_images],
+        "input_images_info": [dict(img, type="input") for img in input_images],
+        "output_images_info": [dict(img, type="output") for img in output_images],
+        "total_input": len(input_images),
+        "total_output": len(output_images),
+    })
+
+
+def validate_in(directories, image_type, filename):
+    """Confirm one frame exists and is readable before the page points an <img> at
+    it. `directories` maps the page's image-type name to a directory."""
+    directory = directories.get(image_type)
+    if directory is None:
+        return jsonify({"valid": False, "error": "Invalid image type"}), 400
+
+    # send_from_directory does this too, but do it here as well so a crafted
+    # filename can never escape the directory even in this cheap probe.
+    filepath = os.path.normpath(os.path.join(directory, filename))
+    if not filepath.startswith(os.path.abspath(directory) + os.sep):
+        return jsonify({"valid": False, "error": "Invalid filename"}), 400
+
+    if os.path.isfile(filepath) and os.access(filepath, os.R_OK):
+        return jsonify({
+            "valid": True,
+            "filename": filename,
+            "size": os.path.getsize(filepath),
+            "path": filepath,
+        })
+    return jsonify({"valid": False, "error": "File not accessible"}), 404
+
+
+def ai_core_usage_for(workload):
+    """Live AI-engine usage plus the baseline captured when this workload's Run
+    was pressed — the page starts displaying frames once the gap exceeds ~5%."""
+    return jsonify({
+        "total_ai_usage": latest_ai_core_usage,
+        "baseline": ai_baseline_usage.get(workload, 0.0),
+    })
+
+
+# ---- small object detection ----
+@app.route('/small_obj_detect/image_list', methods=['GET'])
+def small_obj_image_list():
+    return pair_image_list(SMALL_OBJ_INPUT_DIR, SMALL_OBJ_OUTPUT_DIR)
+
+
+@app.route('/small_obj_detect/validate_image/<image_type>/<filename>')
+def small_obj_validate_image(image_type, filename):
+    return validate_in({"input": SMALL_OBJ_INPUT_DIR, "output": SMALL_OBJ_OUTPUT_DIR}, image_type, filename)
+
+
+@app.route('/small_obj_detect/images/input/<filename>')
+def small_obj_input_image(filename):
+    return send_from_directory(SMALL_OBJ_INPUT_DIR, filename)
+
+
+@app.route('/small_obj_detect/images/output/<filename>')
+def small_obj_output_image(filename):
+    return send_from_directory(SMALL_OBJ_OUTPUT_DIR, filename)
+
+
+@app.route('/small_obj_detect/progress', methods=['GET'])
+def small_obj_progress():
+    return jsonify(latest_progress["small_obj_detect"])
+
+
+# ---- autonomous navigation ----
+@app.route('/auto_nav/image_list', methods=['GET'])
+def auto_nav_image_list():
+    """Four independent streams (GPS / features / depth / LIDAR) rather than the
+    input+output pair the other three pages use."""
+    listing = {kind: list_webp(d) for kind, d in AUTO_NAV_DIRS.items()}
+    payload = {}
+    for kind, images in listing.items():
+        payload[f"{kind}_images"] = [img["filename"] for img in images]
+        payload[f"{kind}_images_info"] = images
+        payload[f"total_{kind}"] = len(images)
+    return jsonify(payload)
+
+
+@app.route('/auto_nav/validate_image/<image_type>/<filename>')
+def auto_nav_validate_image(image_type, filename):
+    return validate_in(AUTO_NAV_VALIDATE_DIRS, image_type, filename)
+
+
+@app.route('/auto_nav/images/<kind>/<filename>')
+def auto_nav_image(kind, filename):
+    directory = AUTO_NAV_DIRS.get(kind)
+    if directory is None:
+        return jsonify({"error": "Invalid image type"}), 404
+    return send_from_directory(directory, filename)
+
+
+@app.route('/auto_nav/progress', methods=['GET'])
+def auto_nav_progress():
+    return jsonify(latest_progress["auto_nav"])
+
+
+# ---- AI ship ----
+@app.route('/ai_ship/image_list', methods=['GET'])
+def ai_ship_image_list():
+    return pair_image_list(AI_SHIP_INPUT_DIR, AI_SHIP_OUTPUT_DIR)
+
+
+@app.route('/ai_ship/validate_image/<image_type>/<filename>')
+def ai_ship_validate_image(image_type, filename):
+    return validate_in({"input": AI_SHIP_INPUT_DIR, "output": AI_SHIP_OUTPUT_DIR}, image_type, filename)
+
+
+@app.route('/ai_ship/images/input/<filename>')
+def ai_ship_input_image(filename):
+    return send_from_directory(AI_SHIP_INPUT_DIR, filename)
+
+
+@app.route('/ai_ship/images/output/<filename>')
+def ai_ship_output_image(filename):
+    return send_from_directory(AI_SHIP_OUTPUT_DIR, filename)
+
+
+@app.route('/ai_ship/progress', methods=['GET'])
+def ai_ship_progress():
+    return jsonify(latest_progress["ai_ship"])
+
+
+@app.route('/ai_ship/ai_core_usage', methods=['GET'])
+def ai_ship_core_usage():
+    return ai_core_usage_for("ai_ship")
+
+
+# ---- AI smoke ----
+@app.route('/ai_smoke/image_list', methods=['GET'])
+def ai_smoke_image_list():
+    return pair_image_list(AI_SMOKE_INPUT_DIR, AI_SMOKE_OUTPUT_DIR)
+
+
+@app.route('/ai_smoke/validate_image/<image_type>/<filename>')
+def ai_smoke_validate_image(image_type, filename):
+    return validate_in({"input": AI_SMOKE_INPUT_DIR, "output": AI_SMOKE_OUTPUT_DIR}, image_type, filename)
+
+
+@app.route('/ai_smoke/images/input/<filename>')
+def ai_smoke_input_image(filename):
+    return send_from_directory(AI_SMOKE_INPUT_DIR, filename)
+
+
+@app.route('/ai_smoke/images/output/<filename>')
+def ai_smoke_output_image(filename):
+    return send_from_directory(AI_SMOKE_OUTPUT_DIR, filename)
+
+
+@app.route('/ai_smoke/progress', methods=['GET'])
+def ai_smoke_progress():
+    return jsonify(latest_progress["ai_smoke"])
+
+
+@app.route('/ai_smoke/ai_core_usage', methods=['GET'])
+def ai_smoke_core_usage():
+    return ai_core_usage_for("ai_smoke")
 
 
 def run_flask_server():
@@ -313,6 +676,7 @@ def run_flask_server():
 # ----------------------------------------------------------------------------
 if __name__ == "__main__":
     threading.Thread(target=receive_metrics, daemon=True).start()
+    threading.Thread(target=receive_workload_updates, daemon=True).start()
     threading.Thread(target=run_flask_server, daemon=True).start()
     while True:
         time.sleep(1)

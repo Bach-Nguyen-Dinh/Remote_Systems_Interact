@@ -7,13 +7,23 @@
     <style>
         /* ------------------------------------------------------------------
            Combined Topaz frontend, served by combined_topaz2.py at '/'. It is
-           a thin shell: two collapsible sections, each hosting one standalone
-           page in a same-origin <iframe>:
+           a thin shell: three collapsible sections, each hosting standalone
+           page(s) in same-origin <iframe>s:
              * Orientation      -> orientation      (orientation.html)
              * System monitoring-> system_monitor   (system_monitor.html)
+             * Vision model     -> four tabs, one workload page each:
+                 Small object detection -> small_obj_app (index_grafana_topaz_small_object.html)
+                 Autonomous navigation  -> auto_nav_app  (index_land_nav.html)
+                 AI ship                -> ai_ship_app   (index_ai_ship.html)
+                 AI smoke               -> ai_smoke_app  (index_ai_smoke.html)
            Keeping them as iframes means each page stays standalone and is edited
-           independently. Because both frames are same-origin the shell auto-sizes
+           independently. Because all frames are same-origin the shell auto-sizes
            each to its content, so the whole dashboard scrolls as one page.
+
+           The Vision model tabs stay MOUNTED once visited (hidden, not removed):
+           each page runs its own polling/preload state, and tearing that down on
+           every tab switch would abort an in-flight run. Only the first click on
+           a tab loads its frame, so the page starts cheap.
 
            IMPORTANT — every URL here is RELATIVE (no leading slash). This page is
            designed to be reachable both directly (http://<box>:5001/) and behind
@@ -28,6 +38,7 @@
             --border:    #28292f;
             --text:      rgba(204, 204, 220, 0.90);
             --text-weak: rgba(204, 204, 220, 0.65);
+            --blue:      #3696ff;
         }
 
         * { box-sizing: border-box; }
@@ -69,6 +80,30 @@
             display: block;
             background: var(--bg);
         }
+
+        /* ---- tab strip inside the Vision model row ---- */
+        .tabs {
+            display: flex;
+            gap: 4px;
+            border-bottom: 1px solid var(--border);
+            margin: 0 4px 6px;
+        }
+        .tab-btn {
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--text-weak);
+            padding: 10px 16px;
+            font-size: 14px;
+            font-family: inherit;
+            cursor: pointer;
+            transition: color .15s ease, border-color .15s ease;
+        }
+        .tab-btn:hover { color: var(--text); }
+        .tab-btn.active { color: var(--text); border-bottom-color: var(--blue); }
+
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
     </style>
 </head>
 <body>
@@ -95,6 +130,40 @@
         </div>
     </div>
 
+    <!-- ===================== Vision model ===================== -->
+    <div class="section-row" id="sec-vis">
+        <div class="section-header" onclick="toggleSection('sec-vis')">
+            <span class="chev">&#9662;</span><span>Vision model</span>
+        </div>
+        <div class="section-body">
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="sod" onclick="switchVisionTab('sod')">Small object detection</button>
+                <button class="tab-btn" data-tab="nav" onclick="switchVisionTab('nav')">Autonomous navigation</button>
+                <button class="tab-btn" data-tab="ship" onclick="switchVisionTab('ship')">AI ship</button>
+                <button class="tab-btn" data-tab="smoke" onclick="switchVisionTab('smoke')">AI smoke</button>
+            </div>
+
+            <!-- data-src, not src: each frame is loaded the first time its tab is
+                 opened (the default tab loads on page load), then stays mounted. -->
+            <div class="tab-panel active" data-tab="sod">
+                <iframe class="frame" id="frame-sod" data-src="small_obj_app"
+                        title="Small object detection" style="height: 700px;"></iframe>
+            </div>
+            <div class="tab-panel" data-tab="nav">
+                <iframe class="frame" id="frame-nav" data-src="auto_nav_app"
+                        title="Autonomous navigation" style="height: 700px;"></iframe>
+            </div>
+            <div class="tab-panel" data-tab="ship">
+                <iframe class="frame" id="frame-ship" data-src="ai_ship_app"
+                        title="AI ship" style="height: 800px;"></iframe>
+            </div>
+            <div class="tab-panel" data-tab="smoke">
+                <iframe class="frame" id="frame-smoke" data-src="ai_smoke_app"
+                        title="AI smoke" style="height: 800px;"></iframe>
+            </div>
+        </div>
+    </div>
+
     <script>
     (function () {
         "use strict";
@@ -112,9 +181,15 @@
                 d.documentElement ? d.documentElement.scrollHeight : 0
             );
         }
+        // A frame inside a hidden tab panel (or a collapsed row) measures as 0 and
+        // would collapse to its fallback, so leave those alone entirely — each is
+        // remeasured when its tab/row is actually shown.
+        function isVisible(fr) {
+            return fr.offsetParent !== null;
+        }
         function remeasure(fr, fallback) {
             var d = frameDoc(fr);
-            if (!d) return;
+            if (!d || !isVisible(fr)) return;
             fr.style.height = "0px";
             fr.style.height = (contentHeight(d) || fallback) + "px";
         }
@@ -125,7 +200,11 @@
 
         var FRAMES = [
             { el: document.getElementById("frame-ori"), fallback: 420, sec: "sec-ori" },
-            { el: document.getElementById("frame-mon"), fallback: 900, sec: "sec-mon" }
+            { el: document.getElementById("frame-mon"), fallback: 900, sec: "sec-mon" },
+            { el: document.getElementById("frame-sod"), fallback: 700, sec: "sec-vis", tab: "sod" },
+            { el: document.getElementById("frame-nav"), fallback: 700, sec: "sec-vis", tab: "nav" },
+            { el: document.getElementById("frame-ship"), fallback: 800, sec: "sec-vis", tab: "ship" },
+            { el: document.getElementById("frame-smoke"), fallback: 800, sec: "sec-vis", tab: "smoke" }
         ];
 
         FRAMES.forEach(function (f) {
@@ -149,12 +228,43 @@
             var el = document.getElementById(id);
             if (!el) return;
             el.classList.toggle("collapsed");
-            // Re-fit a frame when its section is revealed (can't measure while hidden).
+            // Re-fit this section's frames when it is revealed (can't measure
+            // while hidden). Frames in non-active tabs are skipped by remeasure().
             if (!el.classList.contains("collapsed")) {
-                var f = FRAMES.filter(function (x) { return x.sec === id; })[0];
-                if (f) setTimeout(function () { remeasure(f.el, f.fallback); }, 50);
+                var own = FRAMES.filter(function (x) { return x.sec === id; });
+                setTimeout(function () {
+                    own.forEach(function (f) { loadFrame(f); remeasure(f.el, f.fallback); });
+                }, 50);
             }
         };
+
+        // ---- Vision model tabs ----
+        // Frames carry data-src and are only given a real src the first time their
+        // tab is shown; after that they stay in the DOM so a running workload page
+        // keeps its polling, preloaded images and elapsed timer across switches.
+        function loadFrame(f) {
+            if (!f.el || !f.tab) return;
+            if (!f.el.getAttribute("src") && f.el.closest(".tab-panel").classList.contains("active")) {
+                f.el.src = f.el.getAttribute("data-src");
+            }
+        }
+
+        window.switchVisionTab = function (tab) {
+            document.querySelectorAll("#sec-vis .tab-btn").forEach(function (b) {
+                b.classList.toggle("active", b.dataset.tab === tab);
+            });
+            document.querySelectorAll("#sec-vis .tab-panel").forEach(function (p) {
+                p.classList.toggle("active", p.dataset.tab === tab);
+            });
+
+            var f = FRAMES.filter(function (x) { return x.tab === tab; })[0];
+            if (!f) return;
+            loadFrame(f);
+            // Now that the panel is visible the frame can finally be measured.
+            setTimeout(function () { remeasure(f.el, f.fallback); }, 50);
+        };
+
+        FRAMES.forEach(loadFrame);   // gives the default (visible) vision tab its src
     })();
     </script>
 </body>
