@@ -138,15 +138,33 @@
         </div>
     </div>
 
+    <!-- ===================== Topaz box ===================== -->
+    <div class="section-row" id="sec-topaz">
+        <div class="section-header" onclick="toggleSection('sec-topaz')">
+            <span class="chev">&#9662;</span><span>Edge device</span>
+        </div>
+        <div class="section-body">
+            <iframe class="frame" id="frame-topaz" src="/topaz/"
+                    title="Edge device" style="height: 1900px;"></iframe>
+        </div>
+    </div>
+
     <script>
     (function () {
         "use strict";
 
-        var monFrame = document.getElementById("frame-mon");
+        // Same-origin, auto-sized frames. The monitor builds its per-core grid a
+        // second or so after load (first /system_metrics response); the Topaz
+        // frame is itself a shell whose two inner frames grow after their own
+        // data loads — so both need grow-on-poll plus a full remeasure on
+        // load/resize. Each entry: [element, fallback height, section id].
+        var FRAMES = [
+            [document.getElementById("frame-mon"),   600,  "sec-mon"],
+            [document.getElementById("frame-topaz"), 1900, "sec-topaz"]
+        ];
 
-        // Same-origin, so the parent may read the frame's document to size it.
-        function monDoc() {
-            try { return monFrame.contentWindow.document; } catch (e) { return null; }
+        function docOf(fr) {
+            try { return fr.contentWindow.document; } catch (e) { return null; }
         }
         function contentHeight(d) {
             if (!d) return 0;
@@ -155,44 +173,47 @@
                 d.documentElement ? d.documentElement.scrollHeight : 0
             );
         }
-
-        // Grow-only: the monitor builds its per-core grid a second or so after
-        // load (first /system_metrics response), so the frame must be able to
-        // grow into its content without flicker.
-        function growMon() {
-            var h = contentHeight(monDoc());
-            if (h && h > monFrame.offsetHeight) monFrame.style.height = h + "px";
+        // Grow-only: lets a frame expand into its content without flicker.
+        function grow(fr) {
+            var h = contentHeight(docOf(fr));
+            if (h && h > fr.offsetHeight) fr.style.height = h + "px";
         }
         // Full remeasure (allows shrinking too) — used on load and on resize,
-        // where the responsive core grid can get shorter.
-        function remeasureMon() {
-            var d = monDoc();
+        // where a responsive grid can get shorter.
+        function remeasure(fr, fallback) {
+            var d = docOf(fr);
             if (!d) return;
-            monFrame.style.height = "0px";
-            monFrame.style.height = (contentHeight(d) || 600) + "px";
+            fr.style.height = "0px";
+            fr.style.height = (contentHeight(d) || fallback) + "px";
         }
 
-        monFrame.addEventListener("load", function () {
-            remeasureMon();
-            setTimeout(remeasureMon, 500);   // catch the async core grid
-            setTimeout(remeasureMon, 1500);
+        FRAMES.forEach(function (f) {
+            f[0].addEventListener("load", function () {
+                remeasure(f[0], f[1]);
+                setTimeout(function () { remeasure(f[0], f[1]); }, 500);   // catch async grids
+                setTimeout(function () { remeasure(f[0], f[1]); }, 1500);
+            });
         });
-        setInterval(growMon, 1000);
+        setInterval(function () { FRAMES.forEach(function (f) { grow(f[0]); }); }, 1000);
 
         var resizeTimer = null;
         window.addEventListener("resize", function () {
             if (resizeTimer) clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(remeasureMon, 200);
+            resizeTimer = setTimeout(function () {
+                FRAMES.forEach(function (f) { remeasure(f[0], f[1]); });
+            }, 200);
         });
 
         window.toggleSection = function (id) {
             var el = document.getElementById(id);
             if (!el) return;
             el.classList.toggle("collapsed");
-            // Re-fit the monitor when it is revealed (it can't be measured while
-            // display:none), on the next frame so layout has settled.
-            if (id === "sec-mon" && !el.classList.contains("collapsed")) {
-                setTimeout(remeasureMon, 50);
+            // Re-fit a frame when its section is revealed (it can't be measured
+            // while display:none), on the next frame so layout has settled.
+            if (!el.classList.contains("collapsed")) {
+                FRAMES.forEach(function (f) {
+                    if (f[2] === id) setTimeout(function () { remeasure(f[0], f[1]); }, 50);
+                });
             }
         };
     })();
