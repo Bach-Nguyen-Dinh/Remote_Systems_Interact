@@ -5,38 +5,91 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Smoke Interface</title>
     <style>
+        /* ------------------------------------------------------------------
+           Grafana dark theme, matched to the rest of the Topaz dashboard
+           (combined_dashboard.html / system_monitor.html / orientation.html):
+           same tokens, same 13px Inter stack, same 3px radius. Declared in this
+           page's own <style> rather than inherited from the shell, so the page
+           still looks right opened directly at :5001/ai_ship_app.
+           ------------------------------------------------------------------ */
+        :root {
+            --bg:            #020406;
+            --panel-bg:      #181b1f;
+            --border:        #28292f;
+            --input-border:  #2c3235;
+            --text:          rgba(204, 204, 220, 0.90);
+            --text-weak:     rgba(204, 204, 220, 0.65);
+            --text-faint:    rgba(204, 204, 220, 0.40);
+            --blue:          #2372cc;
+            --blue-hover:    #3696ff;
+            --green:         #73bf69;
+            --red:           #f2495c;
+            --track:         #2c3036;
+        }
+
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+
         .ai-ship-widget-body {
-            font-family: Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            font-size: 13px;
+            -webkit-font-smoothing: antialiased;
+            padding: 10px 12px 16px;
         }
-        
+
+        /* Captions above each image read as panel titles, so they use the same
+           size/weight/colour as system_monitor.html's .panel-title. */
+        .ai-ship-widget-body h3,
+        .ai-ship-widget-body h4 {
+            margin: 0 0 6px;
+            font-size: 12px;
+            font-weight: 400;
+            color: var(--text-weak);
+        }
+        .ai-ship-widget-body p { margin: 6px 0; }
+        .ai-ship-widget-body strong { font-weight: 500; color: var(--text-weak); }
+
         .ai-ship-widget-button-container button {
-            background-color: #007bff;
-            color: white;
+            background-color: var(--blue);
+            color: #fff;
             border: none;
-            padding: 12px 24px;
-            margin: 0 10px;
-            border-radius: 4px;
+            height: 32px;
+            padding: 0 16px;
+            margin: 0 4px;
+            border-radius: 3px;
             cursor: pointer;
-            font-size: 16px;
+            font-family: inherit;
+            font-size: 13px;
+            transition: background-color .15s ease;
         }
-        
-        .ai-ship-widget-button-container button:hover {
-            background-color: #0056b3;
+
+        .ai-ship-widget-button-container button:hover:not(:disabled) {
+            background-color: var(--blue-hover);
         }
-        
+
         .ai-ship-widget-button-container button:disabled {
-            background-color: #6c757d;
+            background-color: #6b7a8f;
+            opacity: 0.55;
             cursor: not-allowed;
         }
-        
+
+        /* Status line: colour-coded by the type updateStatus_aiShip() passes
+           ('running' / 'ready' / 'error'), on the dashboard's own palette. */
         .ai-ship-widget-status-bar {
-            background-color: #171b1f00;
-            padding: 10px;
-            border-radius: 4px;
+            background-color: transparent;
+            padding: 6px 10px;
+            border-radius: 3px;
             margin-bottom: 20px;
             text-align: center;
+            font-size: 12px;
+            color: var(--text-weak);
         }
-        
+        .ai-ship-widget-status-bar.running { color: var(--blue-hover); }
+        .ai-ship-widget-status-bar.ready   { color: var(--green); }
+        .ai-ship-widget-status-bar.error   { color: var(--red); }
+
         .ai-ship-widget-image-display {
             display: flex;
             gap: 20px;
@@ -50,16 +103,11 @@
             text-align: center;
         }
         
-        .ai-ship-widget-image-panel h3 {
-            margin-bottom: 10px;
-            /* color: #333; */
-        }
-        
         .ai-ship-widget-image-container {
-            border: 0.5px solid #2e3136;
+            border: 1px solid var(--border);
             border-radius: 3px;
             /* padding: 10px; */
-            background-color: #181b1f;
+            background-color: var(--panel-bg);
             min-height: 600px;
             display: flex;
             align-items: center;
@@ -76,8 +124,9 @@
         }
         
         .ai-ship-widget-image-placeholder {
-            color: #666;
+            color: var(--text-faint);
             font-style: italic;
+            font-size: 12px;
         }
         .ai-ship-widget-control-panel {
             min-width: 450px;
@@ -104,7 +153,7 @@
         
         .ai-ship-widget-progress-info {
             flex: 1;
-            background-color: #171b1f00;
+            background-color: transparent;
             /* padding: 15px; */
             border-radius: 3px;
             /* margin-top: 20px; */
@@ -113,39 +162,43 @@
         .ai-ship-widget-container {
             /* max-width: 1200px; */
             margin: 0 auto;
-            /* background-color: white; */
-            /* padding: 20px; */
             border-radius: 3px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
-        
-        .ai-ship-widget-progress-info h4 {
-            margin-top: 0;
-            /* color: #495057; */
-        }
-        
+
         .ai-ship-widget-loading {
             display: inline-block;
             width: 20px;
             height: 20px;
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid #3498db;
+            border: 3px solid var(--track);
+            border-top: 3px solid var(--blue-hover);
             border-radius: 50%;
             animation: spin 1s linear infinite;
         }
-        
+
         @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
 
+        /* Same control as system_monitor.html's refresh picker, chevron and all. */
         .ai-ship-widget-select {
-            font-size: 14px;
+            font-family: inherit;
+            font-size: 13px;
             width: 70px;
             height: 30px;
-            border-radius: 2px;
+            padding: 0 22px 0 8px;
+            border-radius: 3px;
+            border: 1px solid var(--input-border);
+            background-color: #0e0f12;
+            color: var(--text);
+            cursor: pointer;
             display: inline-block;
+            appearance: none;
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M2 4l4 4 4-4' fill='none' stroke='%23a0a0ab' stroke-width='1.5'/></svg>");
+            background-repeat: no-repeat;
+            background-position: right 6px center;
         }
+        .ai-ship-widget-select:focus { outline: none; border-color: var(--blue-hover); }
     </style>
 </head>
 <body class="ai-ship-widget-body">

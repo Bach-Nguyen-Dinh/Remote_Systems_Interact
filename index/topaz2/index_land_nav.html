@@ -5,51 +5,93 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Land Navigation Interface</title>
     <style>
+        /* ------------------------------------------------------------------
+           Grafana dark theme, matched to the rest of the Topaz dashboard
+           (combined_dashboard.html / system_monitor.html / orientation.html):
+           same tokens, same 13px Inter stack, same 3px radius. Declared in this
+           page's own <style> rather than inherited from the shell, so the page
+           still looks right opened directly at :5001/auto_nav_app.
+           ------------------------------------------------------------------ */
+        :root {
+            --bg:            #020406;
+            --panel-bg:      #181b1f;
+            --border:        #28292f;
+            --input-border:  #2c3235;
+            --text:          rgba(204, 204, 220, 0.90);
+            --text-weak:     rgba(204, 204, 220, 0.65);
+            --text-faint:    rgba(204, 204, 220, 0.40);
+            --blue:          #2372cc;
+            --blue-hover:    #3696ff;
+            --green:         #73bf69;
+            --red:           #f2495c;
+            --track:         #2c3036;
+        }
+
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+
         .autoNav-widget-body {
-            font-family: Arial, sans-serif;
-            /* margin: 20px; */
-            /* background-color: #f5f5f5; */
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            font-size: 13px;
+            -webkit-font-smoothing: antialiased;
+            padding: 10px 12px 16px;
         }
-        
+
+        /* Captions above each image (GPS / Features / Depth / LIDAR) read as
+           panel titles, so they use the same size/weight/colour as
+           system_monitor.html's .panel-title. */
+        .autoNav-widget-body h3,
+        .autoNav-widget-body h4,
+        .autoNav-widget-body h5 {
+            margin: 0 0 6px;
+            font-size: 12px;
+            font-weight: 400;
+            color: var(--text-weak);
+        }
+        .autoNav-widget-body p { margin: 6px 0; }
+        .autoNav-widget-body strong { font-weight: 500; color: var(--text-weak); }
+
         .autoNav-widget-button-container button {
-            background-color: #007bff;
-            color: white;
+            background-color: var(--blue);
+            color: #fff;
             border: none;
-            padding: 12px 24px;
-            margin: 0 10px;
-            border-radius: 4px;
+            height: 32px;
+            padding: 0 16px;
+            margin: 0 4px;
+            border-radius: 3px;
             cursor: pointer;
-            font-size: 16px;
+            font-family: inherit;
+            font-size: 13px;
+            transition: background-color .15s ease;
         }
-        
-        .autoNav-widget-button-container button:hover {
-            background-color: #0056b3;
+
+        .autoNav-widget-button-container button:hover:not(:disabled) {
+            background-color: var(--blue-hover);
         }
-        
+
         .autoNav-widget-button-container button:disabled {
-            background-color: #6c757d;
+            background-color: #6b7a8f;
+            opacity: 0.55;
             cursor: not-allowed;
         }
-        
+
+        /* Status line: colour-coded by the type updateStatus() passes
+           ('running' / 'ready' / 'error'), on the dashboard's own palette. */
         .autoNav-widget-status-bar {
-            background-color: #171b1f00;
-            padding: 10px;
-            border-radius: 4px;
+            background-color: transparent;
+            padding: 6px 10px;
+            border-radius: 3px;
             margin-bottom: 20px;
             text-align: center;
-            /* font-weight: bold; */
+            font-size: 12px;
+            color: var(--text-weak);
         }
-        
-        /* .autoNav-widget-status-bar.running {
-            background-color: #d4edda;
-            color: #155724;
-        }
-        
-        .autoNav-widget-status-bar.error {
-            background-color: #f8d7da;
-            color: #721c24;
-        } */
-        
+        .autoNav-widget-status-bar.running { color: var(--blue-hover); }
+        .autoNav-widget-status-bar.ready   { color: var(--green); }
+        .autoNav-widget-status-bar.error   { color: var(--red); }
+
         .autoNav-widget-image-display {
             display: flex;
             gap: 20px;
@@ -83,16 +125,11 @@
             text-align: center;
         }
         
-        .autoNav-widget-image-panel h3 {
-            margin-bottom: 10px;
-            /* color: #333; */
-        }
-        
         .autoNav-widget-image-container {
-            border: 0.5px solid #2e3136;
+            border: 1px solid var(--border);
             border-radius: 3px;
             /* padding: 10px; */
-            background-color: #181b1f;
+            background-color: var(--panel-bg);
             min-height: 500px;
             display: flex;
             align-items: center;
@@ -146,8 +183,9 @@
         }
         
         .autoNav-widget-image-placeholder {
-            color: #666;
+            color: var(--text-faint);
             font-style: italic;
+            font-size: 12px;
         }
         .autoNav-widget-control-panel {
             display: flex;
@@ -161,32 +199,24 @@
         
         .autoNav-widget-progress-info {
             flex: 1;
-            background-color: #171b1f00;
+            background-color: transparent;
             /* padding: 15px; */
             border-radius: 3px;
             /* margin-top: 20px; */
         }
-        
+
         .autoNav-widget-container {
             /* max-width: 1200px; */
             margin: 0 auto;
-            /* background-color: white; */
-            /* padding: 20px; */
             border-radius: 3px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
-        
-        .autoNav-widget-progress-info h4 {
-            margin-top: 0;
-            /* color: #495057; */
-        }
-        
+
         .autoNav-widget-loading {
             display: inline-block;
             width: 20px;
             height: 20px;
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid #3498db;
+            border: 3px solid var(--track);
+            border-top: 3px solid var(--blue-hover);
             border-radius: 50%;
             animation: spin 1s linear infinite;
         }
