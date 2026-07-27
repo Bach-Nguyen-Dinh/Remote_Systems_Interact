@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orientation</title>
+    <style>
+        /* ------------------------------------------------------------------
+           IMU orientation monitor, served by combined_topaz2.py and embedded in
+           the combined shell via an <iframe>. Driven by ONE request per refresh
+           (GET system_metrics); each time-series keeps its own rolling history
+           client-side. Grafana dark theme reproduced (the iframe doesn't inherit
+           it). Every fetch/URL is RELATIVE so the page works behind an nginx
+           prefix (…/topaz/orientation) as well as directly (:5001/orientation).
+           ------------------------------------------------------------------ */
+        :root {
+            --bg:         #020406;
+            --panel-bg:   #181b1f;
+            --border:     #28292f;
+            --input-border:#2c3235;
+            --text:       rgba(204, 204, 220, 0.90);
+            --text-weak:  rgba(204, 204, 220, 0.65);
+            --text-faint: rgba(204, 204, 220, 0.40);
+            --blue:       #3696ff;
+            --green:      #73bf69;
+            --yellow:     #fade2a;
+            --red:        #f2495c;
+        }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            font-size: 13px;
+            -webkit-font-smoothing: antialiased;
+            padding: 10px 12px 24px;
+        }
+
+        .topbar {
+            display: flex; align-items: center; gap: 12px;
+            margin-bottom: 12px; flex-wrap: wrap;
+        }
+        .controls { display: flex; align-items: center; gap: 10px; }
+        .status-dot {
+            width: 9px; height: 9px; border-radius: 50%;
+            background: var(--green); box-shadow: 0 0 6px rgba(115, 191, 105, 0.6);
+        }
+        .status-dot.stale { background: var(--red); box-shadow: 0 0 6px rgba(242, 73, 92, 0.6); }
+        .last-update { color: var(--text-faint); font-size: 11px; min-width: 74px; }
+        .calib { color: var(--text-weak); font-size: 12px; }
+        .calib b { color: var(--text); font-weight: 500; }
+        .spacer { flex: 1; }
+        .btn {
+            height: 30px; padding: 0 14px; border-radius: 3px;
+            border: 1px solid var(--input-border); background: #0e0f12;
+            color: var(--text); font-size: 13px; cursor: pointer;
+        }
+        .btn:hover { border-color: var(--blue); color: #fff; }
+        .btn:disabled { opacity: 0.5; cursor: default; }
+
+        /* grids */
+        .row { display: grid; gap: 8px; margin-bottom: 8px; }
+        .row.two { grid-template-columns: 1fr 1fr; }
+        .row.three { grid-template-columns: 1fr 1fr 1fr; }
+        @media (max-width: 900px) {
+            .row.two, .row.three { grid-template-columns: 1fr; }
+        }
+
+        .panel {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            padding: 8px 10px;
+            display: flex; flex-direction: column;
+            min-width: 0; overflow: hidden;
+            height: 250px;
+        }
+        .panel-title {
+            font-size: 12px; color: var(--text-weak);
+            margin-bottom: 4px; white-space: nowrap;
+            overflow: hidden; text-overflow: ellipsis;
+        }
+        .chart-wrap { flex: 1; min-height: 0; position: relative; }
+        canvas { display: block; width: 100%; height: 100%; }
+        .legend { display: flex; gap: 16px; font-size: 11px; color: var(--text-weak); margin-top: 4px; flex-wrap: wrap; }
+        .legend span { display: inline-flex; align-items: center; gap: 5px; }
+        .legend i { width: 18px; height: 3px; border-radius: 2px; display: inline-block; }
+        .legend b { color: var(--text); font-variant-numeric: tabular-nums; }
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <div class="controls">
+            <span class="status-dot" id="statusDot" title="live"></span>
+            <span class="last-update" id="lastUpdate">—</span>
+        </div>
+        <span class="calib">IMU calibration: <b id="calibState">—</b> <span id="calibPct"></span></span>
+        <div class="spacer"></div>
+        <button class="btn" id="recalBtn">Recalibrate IMU</button>
+    </div>
+
+    <div class="row two">
+        <div class="panel">
+            <div class="panel-title">Gyroscope</div>
+            <div class="chart-wrap"><canvas id="gyro_chart"></canvas></div>
+            <div class="legend">
+                <span><i style="background:var(--green)"></i>gyro x <b id="gyro_x">—</b></span>
+                <span><i style="background:var(--yellow)"></i>gyro y <b id="gyro_y">—</b></span>
+                <span><i style="background:var(--blue)"></i>gyro z <b id="gyro_z">—</b></span>
+            </div>
+        </div>
+        <div class="panel">
+            <div class="panel-title">Accelerometer</div>
+            <div class="chart-wrap"><canvas id="accel_chart"></canvas></div>
+            <div class="legend">
+                <span><i style="background:var(--green)"></i>Accel x <b id="accel_x">—</b></span>
+                <span><i style="background:var(--yellow)"></i>Accel y <b id="accel_y">—</b></span>
+                <span><i style="background:var(--blue)"></i>Accel z <b id="accel_z">—</b></span>
+            </div>
+        </div>
+    </div>
+
+    <div class="row three">
+        <div class="panel">
+            <div class="panel-title">Angle x-axis</div>
+            <div class="chart-wrap"><canvas id="ang_x_chart"></canvas></div>
+            <div class="legend"><span><i style="background:var(--green)"></i>Angle <b id="ang_x">—</b></span></div>
+        </div>
+        <div class="panel">
+            <div class="panel-title">Angle y-axis</div>
+            <div class="chart-wrap"><canvas id="ang_y_chart"></canvas></div>
+            <div class="legend"><span><i style="background:var(--yellow)"></i>Angle <b id="ang_y">—</b></span></div>
+        </div>
+        <div class="panel">
+            <div class="panel-title">Angle z-axis</div>
+            <div class="chart-wrap"><canvas id="ang_z_chart"></canvas></div>
+            <div class="legend"><span><i style="background:var(--blue)"></i>Angle <b id="ang_z">—</b></span></div>
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        "use strict";
+        var WINDOW = 150;                 // points kept per time-series (rolling)
+        var C = { green: "#73bf69", yellow: "#fade2a", blue: "#3696ff" };
+
+        function setText(id, v) { var el = document.getElementById(id); if (el) el.textContent = v; }
+        function pad2(n) { return (n < 10 ? "0" : "") + n; }
+        function fmtClock(ms) {
+            var t = new Date(ms);
+            return pad2(t.getHours()) + ":" + pad2(t.getMinutes()) + ":" + pad2(t.getSeconds());
+        }
+        function num(v) { return (v == null || isNaN(v)) ? 0 : Number(v); }
+
+        // ---------- canvas time-series (signed range supported) ----------
+        function hexA(hex, a) {
+            var h = hex.replace("#", "");
+            var r = parseInt(h.substring(0, 2), 16), g = parseInt(h.substring(2, 4), 16), b = parseInt(h.substring(4, 6), 16);
+            return "rgba(" + r + "," + g + "," + b + "," + a + ")";
+        }
+        function niceMax(v) {
+            if (v <= 0) return 1;
+            var exp = Math.pow(10, Math.floor(Math.log10(v)));
+            var f = v / exp;
+            var nice = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10;
+            return nice * exp;
+        }
+        // series: [{ data:[...], color }], opts:{ yMin,yMax,ticks,tickFmt,times }
+        function drawSeries(canvas, series, opts) {
+            opts = opts || {};
+            var dpr = window.devicePixelRatio || 1;
+            var cssW = canvas.clientWidth || 200, cssH = canvas.clientHeight || 80;
+            var pxW = Math.round(cssW * dpr), pxH = Math.round(cssH * dpr);
+            if (canvas.width !== pxW || canvas.height !== pxH) { canvas.width = pxW; canvas.height = pxH; }
+            var ctx = canvas.getContext("2d");
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.clearRect(0, 0, cssW, cssH);
+
+            var padL = 46, padR = 6, padT = 6, padB = 16;
+            var plotW = Math.max(1, cssW - padL - padR), plotH = Math.max(1, cssH - padT - padB);
+
+            var yMin = opts.yMin, yMax = opts.yMax;
+            if (yMax == null || yMin == null) {
+                var mx = 0;
+                series.forEach(function (s) { s.data.forEach(function (v) { if (Math.abs(v) > mx) mx = Math.abs(v); }); });
+                var top = niceMax(mx || 1);
+                yMax = top; yMin = -top;
+            }
+            if (yMax <= yMin) yMax = yMin + 1;
+            var yToPx = function (v) { return padT + plotH * (1 - (v - yMin) / (yMax - yMin)); };
+
+            var ticks = opts.ticks || [yMin, (yMin + yMax) / 2, yMax];
+            ctx.strokeStyle = "rgba(204,204,220,0.09)";
+            ctx.fillStyle = "rgba(204,204,220,0.40)";
+            ctx.lineWidth = 1;
+            ctx.font = "10px Inter, Arial, sans-serif";
+            ctx.textBaseline = "middle";
+            ticks.forEach(function (t) {
+                var y = Math.round(yToPx(t)) + 0.5;
+                ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+                ctx.textAlign = "right";
+                ctx.fillText(opts.tickFmt ? opts.tickFmt(t) : String(t), padL - 5, y);
+            });
+
+            series.forEach(function (s) {
+                var data = s.data, len = data.length;
+                if (!len) return;
+                var start = Math.max(0, len - WINDOW);
+                var vis = data.slice(start), m = vis.length;
+                var xAt = function (j) { return padL + plotW * ((WINDOW - m + j) / (WINDOW - 1)); };
+                ctx.beginPath();
+                for (var j = 0; j < m; j++) {
+                    var x = xAt(j), y = yToPx(vis[j]);
+                    if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                }
+                ctx.strokeStyle = s.color; ctx.lineWidth = 1.5; ctx.lineJoin = "round";
+                ctx.stroke();
+            });
+
+            // x-axis time labels (viewer's local clock)
+            if (opts.times && opts.times.length) {
+                var tv = opts.times.slice(Math.max(0, opts.times.length - WINDOW)), tm = tv.length;
+                var xAtIdx = function (j) { return padL + plotW * ((WINDOW - tm + j) / (WINDOW - 1)); };
+                var availPx = xAtIdx(tm - 1) - xAtIdx(0);
+                var nTicks = Math.max(1, Math.min(4, Math.floor(availPx / 90) + 1));
+                ctx.fillStyle = "rgba(204,204,220,0.40)";
+                ctx.textBaseline = "alphabetic";
+                var yLab = cssH - 4;
+                for (var xi = 0; xi < nTicks; xi++) {
+                    var frac = nTicks === 1 ? 1 : xi / (nTicks - 1);
+                    var idx = Math.round(frac * (tm - 1));
+                    ctx.textAlign = (xi === 0 && nTicks > 1) ? "left" : (xi === nTicks - 1 ? "right" : "center");
+                    ctx.fillText(fmtClock(tv[idx]), xAtIdx(idx), yLab);
+                }
+            }
+        }
+
+        // ---------- rolling buffers ----------
+        var buffers = {};
+        var timeBuf = [];
+        function push(key, v) {
+            var b = buffers[key] || (buffers[key] = []);
+            b.push(num(v));
+            if (b.length > WINDOW) b.shift();
+        }
+
+        var ANGLE_TICKS = [-180, -90, 0, 90, 180];
+        function angFmt(v) { return v.toFixed(0) + " °"; }
+
+        function drawAll() {
+            drawSeries(document.getElementById("gyro_chart"),
+                [{ data: buffers.gyro_x || [], color: C.green },
+                 { data: buffers.gyro_y || [], color: C.yellow },
+                 { data: buffers.gyro_z || [], color: C.blue }],
+                { tickFmt: function (v) { return v.toFixed(2) + " °/s"; }, times: timeBuf });
+            drawSeries(document.getElementById("accel_chart"),
+                [{ data: buffers.accel_x || [], color: C.green },
+                 { data: buffers.accel_y || [], color: C.yellow },
+                 { data: buffers.accel_z || [], color: C.blue }],
+                { tickFmt: function (v) { return v.toFixed(2) + " g"; }, times: timeBuf });
+            drawSeries(document.getElementById("ang_x_chart"), [{ data: buffers.ang_x || [], color: C.green }],
+                { yMin: -180, yMax: 180, ticks: ANGLE_TICKS, tickFmt: angFmt, times: timeBuf });
+            drawSeries(document.getElementById("ang_y_chart"), [{ data: buffers.ang_y || [], color: C.yellow }],
+                { yMin: -180, yMax: 180, ticks: ANGLE_TICKS, tickFmt: angFmt, times: timeBuf });
+            drawSeries(document.getElementById("ang_z_chart"), [{ data: buffers.ang_z || [], color: C.blue }],
+                { yMin: -180, yMax: 180, ticks: ANGLE_TICKS, tickFmt: angFmt, times: timeBuf });
+        }
+
+        function update(d) {
+            timeBuf.push(d.timestamp ? d.timestamp * 1000 : Date.now());
+            if (timeBuf.length > WINDOW) timeBuf.shift();
+
+            var imu = d.imu_data || {};
+            push("gyro_x", imu.gyro_x); push("gyro_y", imu.gyro_y); push("gyro_z", imu.gyro_z);
+            push("accel_x", imu.accel_x); push("accel_y", imu.accel_y); push("accel_z", imu.accel_z);
+            // The target reports fused angles as roll/pitch/yaw -> x/y/z.
+            push("ang_x", imu.roll); push("ang_y", imu.pitch); push("ang_z", imu.yaw);
+
+            setText("gyro_x", num(imu.gyro_x).toFixed(2) + " °/s");
+            setText("gyro_y", num(imu.gyro_y).toFixed(2) + " °/s");
+            setText("gyro_z", num(imu.gyro_z).toFixed(2) + " °/s");
+            setText("accel_x", num(imu.accel_x).toFixed(2) + " g");
+            setText("accel_y", num(imu.accel_y).toFixed(2) + " g");
+            setText("accel_z", num(imu.accel_z).toFixed(2) + " g");
+            setText("ang_x", num(imu.roll).toFixed(2) + " °");
+            setText("ang_y", num(imu.pitch).toFixed(2) + " °");
+            setText("ang_z", num(imu.yaw).toFixed(2) + " °");
+
+            var state = imu.calibration_state || "unknown";
+            setText("calibState", state);
+            var pct = imu.calibration_progress;
+            setText("calibPct", (pct != null && !isNaN(pct) && Number(pct) > 0 && Number(pct) < 100)
+                ? "(" + Number(pct).toFixed(0) + "%)" : "");
+
+            drawAll();
+        }
+
+        // ---------- polling ----------
+        var inFlight = false;
+        function markStatus(ok) {
+            var dot = document.getElementById("statusDot");
+            if (dot) dot.classList.toggle("stale", !ok);
+        }
+        function tick() {
+            if (inFlight) return;
+            inFlight = true;
+            fetch("system_metrics", { cache: "no-store" })
+                .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+                .then(function (d) {
+                    if (!d || !d.imu_data) { markStatus(true); return; }
+                    update(d);
+                    markStatus(true);
+                    var ts = d.timestamp ? new Date(d.timestamp * 1000) : new Date();
+                    setText("lastUpdate", ts.toLocaleTimeString());
+                })
+                .catch(function () { markStatus(false); })
+                .finally(function () { inFlight = false; });
+        }
+
+        // recalibrate
+        var recalBtn = document.getElementById("recalBtn");
+        recalBtn.addEventListener("click", function () {
+            recalBtn.disabled = true;
+            var orig = recalBtn.textContent;
+            recalBtn.textContent = "Recalibrating…";
+            fetch("imu/recalibrate", { method: "POST" })
+                .catch(function () {})
+                .finally(function () {
+                    setTimeout(function () { recalBtn.disabled = false; recalBtn.textContent = orig; }, 2000);
+                });
+        });
+
+        var resizeRAF = null;
+        window.addEventListener("resize", function () {
+            if (resizeRAF) cancelAnimationFrame(resizeRAF);
+            resizeRAF = requestAnimationFrame(drawAll);
+        });
+
+        tick();
+        setInterval(tick, 1000);
+    })();
+    </script>
+</body>
+</html>
