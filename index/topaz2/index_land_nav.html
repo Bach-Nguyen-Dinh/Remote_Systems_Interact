@@ -380,8 +380,9 @@
                 const data = await response.json();
                 console.log('Image list received:', data);
 
-                const totalImages = data.total_gps + data.total_features + data.total_depth + data.total_lidar;
-                updateStatus(`Loading ${totalImages} images...`, 'running');
+                const totalImages = data.gps_images.length + data.features_images.length +
+                                    data.depth_images.length + data.lidar_images.length;
+                updateStatus(`Loading input data...`, 'running');
                 
                 // Enhanced image loading with retry mechanism
                 function loadImageWithRetry(src, filename, imageType, maxRetries = 3, timeout = 15000) {
@@ -780,36 +781,54 @@
                 return;
             }
 
-            // Use minimum length to prevent misalignment when arrays have different sizes
-            const minLength = Math.min(gpsImages.length, featuresImages.length,
-                                       depthImages.length, lidarImages.length);
-            console.log(`Using minimum length of ${minLength} images to ensure alignment`);
+            // The four panels are concurrent sensor streams of the same run but hold
+            // different numbers of frames. Each panel advances at its own natural rate
+            // (one frame per tick) and playback stops as soon as the shortest stream
+            // runs out, so all four panels finish together. The extra tail frames in
+            // the longer streams are not shown.
+            const totalFrames = Math.min(gpsImages.length, featuresImages.length,
+                                         depthImages.length, lidarImages.length);
+            console.log(`Playing ${totalFrames} frames (shortest stream); all panels stop together`);
+
+            function frameAt(filenames, index) {
+                return filenames[index];
+            }
 
             let currentIndex = 0;
 
             function displayNextSet() {
                 if (!isRunning) return;
 
-                // Display images at current index (cycling through minimum length)
-                const gpsFilename = gpsImages[currentIndex % minLength];
-                const featuresFilename = featuresImages[currentIndex % minLength];
-                const depthFilename = depthImages[currentIndex % minLength];
-                const lidarFilename = lidarImages[currentIndex % minLength];
+                // Playback finished - every panel has shown its last frame
+                if (currentIndex >= totalFrames) {
+                    finishImageDisplay();
+                    return;
+                }
+
+                const gpsFilename = frameAt(gpsImages, currentIndex);
+                const featuresFilename = frameAt(featuresImages, currentIndex);
+                const depthFilename = frameAt(depthImages, currentIndex);
+                const lidarFilename = frameAt(lidarImages, currentIndex);
 
                 // Debug logging
-                console.log(`Displaying index ${currentIndex}: features=${featuresFilename}`);
+                console.log(`Displaying frame ${currentIndex + 1}/${totalFrames}: features=${featuresFilename}`);
 
                 displayImages(gpsFilename, featuresFilename, depthFilename, lidarFilename);
 
                 updateProcessingTime();
 
                 currentIndex++;
+            }
 
-                // Reset index when we've cycled through all images
-                if (currentIndex >= minLength) {
-                    console.log(`Resetting index from ${currentIndex} to 0`);
-                    currentIndex = 0;
+            function finishImageDisplay() {
+                if (displayInterval) {
+                    clearInterval(displayInterval);
+                    displayInterval = null;
                 }
+                isRunning = false;
+                console.log(`Playback complete - displayed all ${totalFrames} frames`);
+                updateStatus(`Completed`, 'ready');
+                updateButtons();
             }
 
             // Display first set immediately
