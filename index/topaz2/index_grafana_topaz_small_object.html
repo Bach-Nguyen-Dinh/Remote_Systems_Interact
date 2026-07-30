@@ -75,8 +75,8 @@
             cursor: not-allowed;
         }
 
-        /* Status line: colour-coded by the type updateStatus() passes
-           ('running' / 'ready' / 'error'), on the dashboard's own palette. */
+        /* Status line: green only for the 'ready' type updateStatus() passes,
+           red for everything else, on the dashboard's own palette. */
         .sod-widget-status-bar {
             background-color: transparent;
             padding: 6px 10px;
@@ -84,11 +84,9 @@
             margin-bottom: 20px;
             text-align: center;
             font-size: 12px;
-            color: var(--text-weak);
+            color: var(--red);
         }
-        .sod-widget-status-bar.running { color: var(--blue-hover); }
-        .sod-widget-status-bar.ready   { color: var(--green); }
-        .sod-widget-status-bar.error   { color: var(--red); }
+        .sod-widget-status-bar.ready { color: var(--green); }
 
         .sod-widget-image-display {
             display: flex;
@@ -99,7 +97,9 @@
         
         .sod-widget-image-panel {
             flex: 1;
-            /* max-width: 500px; */
+            /* Flex items default to min-width:auto, which would let a wide image
+               push the panel past the Grafana panel's width instead of shrinking. */
+            min-width: 0;
             text-align: center;
         }
         
@@ -115,12 +115,14 @@
         }
         
         .sod-widget-image-container img {
-            /* max-width: 100%; */
+            /* Fill the container rather than a fixed pixel width, so appending an
+               image never grows the panel past its Grafana-allotted width. */
+            width: 100%;
+            max-width: 100%;
+            height: 500px;
             max-height: 500px;
             object-fit: cover;
             border-radius: 3px;
-            width: 925px;
-            height: 500px;
         }
         
         .sod-widget-image-placeholder {
@@ -161,7 +163,7 @@
                 <h3>Input image</h3>
                 <div class="sod-widget-image-container">
                     <div id="inputImageContainer" class="sod-widget-image-placeholder">
-                        Loading...
+                        No data
                     </div>
                 </div>
                 <p id="inputImageInfo"></p>
@@ -171,7 +173,7 @@
                 <h3>Output image</h3>
                 <div class="sod-widget-image-container">
                     <div id="outputImageContainer" class="sod-widget-image-placeholder">
-                        Loading...
+                        No data
                     </div>
                 </div>
                 <p id="outputImageInfo"></p>
@@ -181,11 +183,15 @@
         <div class="sod-widget-control-panel">
             <div class="sod-widget-button-container">
                 <button id="fetchBtn" onclick="preloadImages()">Fetch</button>
-                <button id="runBtn" onclick="run_small_obj_detect()">Run</button>
+                <!-- Run/Clear start disabled: there is nothing to run or clear until
+                     Fetch has cached the input data. updateButtons() owns them from
+                     then on; the attribute here just avoids a flash of enabled
+                     buttons before the script runs. -->
+                <button id="runBtn" onclick="run_small_obj_detect()" disabled>Run</button>
                 <!-- Doubles as Stop while a run is in flight (see updateButtons) -->
-                <button id="clearBtn" onclick="clear_or_stop_small_obj_detect()">Clear</button>
+                <button id="clearBtn" onclick="clear_or_stop_small_obj_detect()" disabled>Clear</button>
 
-                <div id="statusBar" class="sod-widget-status-bar">Ready to start processing</div>
+                <div id="statusBar" class="sod-widget-status-bar">Click "Fetch" to provide data to AI</div>
                 <p><strong>Processing Time:</strong> <span id="processingTime">-</span></p>
             </div>
         
@@ -216,6 +222,15 @@
         let isRunning = false;
         let startTime = null;
         let pollInterval = null;
+
+        // Fetch is a one-shot per page load: it caches the input/output frames in
+        // memory (sodInputImageCache/sodOutputImageCache) and everything else works
+        // off that cache, so re-fetching would only re-download what we already
+        // hold. Run/Clear stay disabled until it has succeeded; Fetch retires once
+        // it has. Deliberately NOT persisted to localStorage — a reload empties the
+        // caches, so the new page must be allowed to fetch again.
+        let hasFetched = false;
+        let isFetching = false;
         
         // // Preload all images when page loads
         // window.addEventListener('load', function() {
@@ -223,8 +238,8 @@
         // });
 
         function clearImages() {
-            document.getElementById('inputImageContainer').innerHTML = '<div class="sod-widget-image-placeholder">Loading...</div>';
-            document.getElementById('outputImageContainer').innerHTML = '<div class="sod-widget-image-placeholder">Loading...</div>';
+            document.getElementById('inputImageContainer').innerHTML = '<div class="sod-widget-image-placeholder">No data</div>';
+            document.getElementById('outputImageContainer').innerHTML = '<div class="sod-widget-image-placeholder">No data</div>';
             document.getElementById('inputImageInfo').textContent = '';
             document.getElementById('outputImageInfo').textContent = '';
         }
@@ -236,11 +251,17 @@
         }
 
         function updateButtons() {
+            const fetchBtn = document.getElementById('fetchBtn');
             const runBtn = document.getElementById('runBtn');
             const clearBtn = document.getElementById('clearBtn');
-            
-            runBtn.disabled = isRunning;
+
+            // Retired for the rest of the page's life once it has succeeded, and
+            // held down while it is in flight so a double-click can't start a
+            // second preload over the top of the first.
+            fetchBtn.disabled = isFetching || hasFetched;
+            runBtn.disabled = isRunning || !hasFetched;
             runBtn.textContent = isRunning ? 'Processing...' : 'Run';
+            clearBtn.disabled = !hasFetched;
             // One button, two jobs — same pattern as the HPC SAR panel's
             // Reset/Stop: "Stop" aborts the run on the Topaz box, "Clear" wipes
             // the results once nothing is running.
@@ -258,9 +279,13 @@
         }
         
         window.preloadImages = async function() {
+            if (isFetching || hasFetched) return;
+            isFetching = true;
+            updateButtons();
+
             try {
                 console.log('Starting enhanced image load...');
-                updateStatus('Loading image list...', 'running');
+                updateStatus('Loading data list...', 'running');
                 
                 const response = await fetch(`small_obj_detect/image_list`);
                 if (!response.ok) {
@@ -271,7 +296,7 @@
                 console.log('Image list received:', data);
                 
                 const totalImages = data.input_images.length + data.output_images.length;
-                updateStatus(`Loading input images...`, 'running');
+                updateStatus(`Loading input images ...`, 'running');
                 
                 // Enhanced image loading with retry mechanism
                 function loadImageWithRetry(src, filename, imageType, maxRetries = 3, timeout = 15000) {
@@ -286,7 +311,7 @@
                             
                             img.onload = () => {
                                 clearTimeout(timeoutId);
-                                console.log(`✓ Successfully loaded: ${filename} (${imageType})`);
+                                console.log(`✓ Loaded: ${filename} (${imageType})`);
                                 
                                 // Validate that the image actually loaded with content
                                 if (img.naturalWidth > 0 && img.naturalHeight > 0) {
@@ -363,7 +388,7 @@
                         loadPromises.push(loadImageWithRetry(src, filename, 'input'));
                         validatedCount++;
                     } else {
-                        console.warn(`Skipping invalid input image: ${filename}`);
+                        console.warn(`Skipping invalid input data: ${filename}`);
                     }
                 }
 
@@ -388,12 +413,12 @@
                     promise.then(result => {
                         loadedCount++;
                         const percentage = Math.round((loadedCount / validatedCount) * 100);
-                        updateStatus(`Loading images... ${loadedCount}/${validatedCount} (${percentage}%)`, 'running');
+                        updateStatus(`Loading data... ${loadedCount}/${validatedCount} (${percentage}%)`, 'running');
                         return result;
                     }).catch(error => {
                         loadedCount++;
                         const percentage = Math.round((loadedCount / validatedCount) * 100);
-                        updateStatus(`Loading images... ${loadedCount}/${validatedCount} (${percentage}%)`, 'running');
+                        updateStatus(`Loading data... ${loadedCount}/${validatedCount} (${percentage}%)`, 'running');
                         throw error;
                     })
                 );
@@ -431,13 +456,18 @@
                 
                 if (failed.length === 0) {
                     // updateStatus(`All input images loaded successfully (${successful.length}/${validatedCount})`, 'ready');
-                    updateStatus(`All input images loaded successfully`, 'ready');
+                    updateStatus(`Input images loaded`, 'ready');
                 } else if (successful.length > 0) {
                     // updateStatus(`Images loaded: ${successful.length}/${validatedCount} (${successRate}%) - ${failed.length} failed`, 'ready');
-                    updateStatus(`All input images loaded successfully`, 'ready');
+                    updateStatus(`Input images loaded`, 'ready');
                 } else {
-                    updateStatus('Failed to load input images - check console for details', 'error');
+                    updateStatus('Failed to load input data - check console for details', 'error');
                 }
+
+                // Anything cached is enough to run against, so that unlocks
+                // Run/Clear and retires Fetch. A total failure leaves hasFetched
+                // false, so Fetch stays available for a retry.
+                hasFetched = successful.length > 0;
                 
                 // // Store validation results for later use
                 // window.imageValidationResults = {
@@ -457,7 +487,7 @@
                     successRate: successRate
                 };
 
-                console.log('Input image load completed - ready for display');
+                console.log('Input data load completed - ready to run');
                 
                 // numToCheck = 300;
                 // // Validate first 100 input images
@@ -481,7 +511,10 @@
                                 
             } catch (error) {
                 console.error('Error in loading:', error);
-                updateStatus('Error loading input images - check network connection', 'error');
+                updateStatus('Error loading input data - check network connection', 'error');
+            } finally {
+                isFetching = false;
+                updateButtons();
             }
         }
 
@@ -684,10 +717,10 @@
                     
                     // Check if images exist in cache before displaying
                     if (!sodInputImageCache[data.input_image]) {
-                        console.warn(`Input image ${data.input_image} not found in input cache`);
+                        console.warn(`Input data ${data.input_image} not found in input cache`);
                     }
                     if (!sodOutputImageCache[data.output_image]) {
-                        console.warn(`Output image ${data.output_image} not found in output cache`);
+                        console.warn(`Output data ${data.output_image} not found in output cache`);
                     }
                                         
                     displayImagePair(data.input_image, data.output_image);
@@ -700,7 +733,7 @@
                     break;
                     
                 case 'small_obj_detect_complete':
-                    updateStatus('Detection completed successfully', 'ready');
+                    updateStatus('Detection completed', 'ready');
                     // document.getElementById('processStatus').textContent = 'Completed';
                     isRunning = false;
                     updateButtons();
@@ -784,6 +817,9 @@
                 console.warn(`Partial display: input=${inputDisplayed}, output=${outputDisplayed}`);
             }
         }
+
+        // Put the buttons into their pre-Fetch state (Run/Clear down, Fetch up).
+        updateButtons();
 
     })(); // End of IIFE
     </script>
