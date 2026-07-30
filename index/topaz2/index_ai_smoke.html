@@ -75,8 +75,8 @@
             cursor: not-allowed;
         }
 
-        /* Status line: colour-coded by the type updateStatus_aiSmoke() passes
-           ('running' / 'ready' / 'error'), on the dashboard's own palette. */
+        /* Status line: green only for the 'ready' type updateStatus_aiSmoke()
+           passes, red for everything else, on the dashboard's own palette. */
         .ai-smoke-widget-status-bar {
             background-color: transparent;
             padding: 6px 10px;
@@ -84,11 +84,9 @@
             margin-bottom: 20px;
             text-align: center;
             font-size: 12px;
-            color: var(--text-weak);
+            color: var(--red);
         }
-        .ai-smoke-widget-status-bar.running { color: var(--blue-hover); }
-        .ai-smoke-widget-status-bar.ready   { color: var(--green); }
-        .ai-smoke-widget-status-bar.error   { color: var(--red); }
+        .ai-smoke-widget-status-bar.ready { color: var(--green); }
 
         .ai-smoke-widget-image-display {
             display: flex;
@@ -194,7 +192,7 @@
                 <h3>Input image</h3>
                 <div class="ai-smoke-widget-image-container">
                     <div id="inputImageContainer_aiSmoke" class="ai-smoke-widget-image-placeholder">
-                        Loading...
+                        No data
                     </div>
                 </div>
                 <p id="inputImageInfo_aiSmoke"></p>
@@ -204,7 +202,7 @@
                 <h3>Output image</h3>
                 <div class="ai-smoke-widget-image-container">
                     <div id="outputImageContainer_aiSmoke" class="ai-smoke-widget-image-placeholder">
-                        Loading...
+                        No data
                     </div>
                 </div>
                 <p id="outputImageInfo_aiSmoke"></p>
@@ -219,11 +217,16 @@
                     </p>
                     <div>
                         <button id="fetchBtn_aiSmoke" onclick="preload_ai_smoke_images()">Fetch</button>
-                        <button id="runBtn_aiSmoke" onclick="run_ai_smoke()">Run</button>
-                        <button id="clearBtn_aiSmoke" onclick="clear_ai_smoke()">Clear</button>
+                        <!-- Run/Clear start disabled: there is nothing to run or clear until
+                             Fetch has cached the input data. updateButtons_aiSmoke() owns them
+                             from then on; the attribute here just avoids a flash of enabled
+                             buttons before the script runs. -->
+                        <button id="runBtn_aiSmoke" onclick="run_ai_smoke()" disabled>Run</button>
+                        <!-- Doubles as Stop while a run is in flight (see updateButtons_aiSmoke) -->
+                        <button id="clearBtn_aiSmoke" onclick="clear_or_stop_ai_smoke()" disabled>Clear</button>
                     </div>
     
-                    <div id="statusBar_aiSmoke" class="ai-smoke-widget-status-bar">Ready to start processing</div>
+                    <div id="statusBar_aiSmoke" class="ai-smoke-widget-status-bar">Click "Fetch" to provide data to AI</div>
                     <p style="margin-bottom: 0;"><strong>Processed Images:</strong> <span id="processed_images_aiSmoke">-</span></p>
                     <p style="margin-top: 0;"><strong>Processing Time:</strong> <span id="processingTime_aiSmoke">-</span></p>
                 </div>
@@ -286,7 +289,7 @@
 
         function startAICoreMonitoring() {
             imageDisplayStarted = false;
-            updateStatus_aiSmoke('Waiting for AI cores to start...', 'running');
+            updateStatus_aiSmoke('Waiting for AI cores to start ...', 'running');
             
             if (aiCoreMonitorInterval) clearInterval(aiCoreMonitorInterval);
             
@@ -302,7 +305,7 @@
                     // If usage has increased significantly above baseline, start displaying images
                     if (!imageDisplayStarted && usageIncrease > AI_USAGE_THRESHOLD) {
                         console.log('AI cores are now active - starting image display');
-                        updateStatus_aiSmoke('AI cores active - processing images...', 'running');
+                        updateStatus_aiSmoke('AI cores active - processing images ...', 'running');
                         startLocalImageDisplay();
                         imageDisplayStarted = true;
                         stopAICoreMonitoring();
@@ -438,6 +441,15 @@
         let isRunning_aiSmoke = false;
         let startTime_aiSmoke = null;
         let pollInterval_aiSmoke = null;
+
+        // Fetch is a one-shot per page load: it caches the input/output frames in
+        // memory (ai_smoke_InputImageCache/ai_smoke_OutputImageCache) and the
+        // display loop cycles that cache, so re-fetching would only re-download
+        // what we already hold. Run/Clear stay disabled until it has succeeded;
+        // Fetch retires once it has. Deliberately NOT persisted to localStorage —
+        // a reload empties the caches, so the new page must fetch again.
+        let hasFetched_aiSmoke = false;
+        let isFetching_aiSmoke = false;
         
         // // Preload all images when page loads
         // window.addEventListener('load', function() {
@@ -445,8 +457,8 @@
         // });
 
         function clearImages_aiSmoke() {
-            document.getElementById('inputImageContainer_aiSmoke').innerHTML = '<div class="ai-smoke-widget-image-placeholder">Loading...</div>';
-            document.getElementById('outputImageContainer_aiSmoke').innerHTML = '<div class="ai-smoke-widget-image-placeholder">Loading...</div>';
+            document.getElementById('inputImageContainer_aiSmoke').innerHTML = '<div class="ai-smoke-widget-image-placeholder">No data</div>';
+            document.getElementById('outputImageContainer_aiSmoke').innerHTML = '<div class="ai-smoke-widget-image-placeholder">No data</div>';
             document.getElementById('inputImageInfo_aiSmoke').textContent = '';
             document.getElementById('outputImageInfo_aiSmoke').textContent = '';
         }
@@ -458,11 +470,21 @@
         }
 
         function updateButtons_aiSmoke() {
+            const fetchBtn_aiSmoke = document.getElementById('fetchBtn_aiSmoke');
             const runBtn_aiSmoke = document.getElementById('runBtn_aiSmoke');
             const clearBtn_aiSmoke = document.getElementById('clearBtn_aiSmoke');
-            
-            runBtn_aiSmoke.disabled = isRunning_aiSmoke;
+
+            // Retired for the rest of the page's life once it has succeeded, and
+            // held down while it is in flight so a double-click can't start a
+            // second preload over the top of the first.
+            fetchBtn_aiSmoke.disabled = isFetching_aiSmoke || hasFetched_aiSmoke;
+            runBtn_aiSmoke.disabled = isRunning_aiSmoke || !hasFetched_aiSmoke;
             runBtn_aiSmoke.textContent = isRunning_aiSmoke ? 'Processing...' : 'Run';
+            clearBtn_aiSmoke.disabled = !hasFetched_aiSmoke;
+            // One button, two jobs — same pattern as the small-object-detection
+            // panel: "Stop" aborts the run on the Topaz box, "Clear" wipes the
+            // results once nothing is running.
+            clearBtn_aiSmoke.textContent = isRunning_aiSmoke ? 'Stop' : 'Clear';
         }
 
         function update_processingTime_aiSmoke() {
@@ -476,6 +498,10 @@
         }
         
         window.preload_ai_smoke_images = async function() {
+            if (isFetching_aiSmoke || hasFetched_aiSmoke) return;
+            isFetching_aiSmoke = true;
+            updateButtons_aiSmoke();
+
             try {
                 console.log('Starting enhanced image load...');
                 updateStatus_aiSmoke('Loading image list...', 'running');
@@ -648,14 +674,19 @@
                 const successRate = Math.round((successful.length / validatedCount) * 100);
                 
                 if (failed.length === 0) {
-                    // updateStatus_aiSmoke(`All input images loaded successfully (${successful.length}/${validatedCount})`, 'ready');
-                    updateStatus_aiSmoke(`All input images loaded successfully`, 'ready');
+                    // updateStatus_aiSmoke(`Input images loaded (${successful.length}/${validatedCount})`, 'ready');
+                    updateStatus_aiSmoke(`Input images loaded`, 'ready');
                 } else if (successful.length > 0) {
                     // updateStatus_aiSmoke(`Images loaded: ${successful.length}/${validatedCount} (${successRate}%) - ${failed.length} failed`, 'ready');
-                    updateStatus_aiSmoke(`All input images loaded successfully`, 'ready');
+                    updateStatus_aiSmoke(`Input images loaded`, 'ready');
                 } else {
                     updateStatus_aiSmoke('Failed to load input images - check console for details', 'error');
                 }
+
+                // Anything cached is enough to run against, so that unlocks
+                // Run/Clear and retires Fetch. A total failure leaves
+                // hasFetched_aiSmoke false, so Fetch stays available for a retry.
+                hasFetched_aiSmoke = successful.length > 0;
                 
                 // // Store validation results for later use
                 // window.imageValidationResults = {
@@ -700,6 +731,9 @@
             } catch (error) {
                 console.error('Error in loading:', error);
                 updateStatus_aiSmoke('Error loading input images - check network connection', 'error');
+            } finally {
+                isFetching_aiSmoke = false;
+                updateButtons_aiSmoke();
             }
         }
 
@@ -735,7 +769,7 @@
         //         updateStatus_aiSmoke(`Input images loaded with warnings: ${presentImages.length}/${numToCheck} input images found`, 'error');
         //     } else {
         //         console.log(`✓ All first ${numToCheck} input images are present in cache`);
-        //         updateStatus_aiSmoke(`All input images loaded successfully - First ${numToCheck} input images validated`, 'ready');
+        //         updateStatus_aiSmoke(`Input images loaded - First ${numToCheck} input images validated`, 'ready');
         //     }
             
         //     // Store validation results
@@ -797,6 +831,57 @@
             }
         }
         
+        // The Clear button's click handler: it is labelled "Stop" while a run is
+        // in flight, so route to whichever action the label promises.
+        window.clear_or_stop_ai_smoke = function() {
+            if (isRunning_aiSmoke) {
+                stop_ai_smoke();
+            } else {
+                clear_ai_smoke();
+            }
+        }
+
+        // Abort the run on the Topaz device. The host looks up the PID the target
+        // reported when this run started and forwards "stop_ai_smoke:<pid>", so
+        // only this run's process is killed. Killing it (rather than just
+        // dropping the local display loop) is what makes the next Run start the
+        // workload over from the beginning instead of picking up where the
+        // still-running process had got to. The displayed images are left alone
+        // — the button reverts to "Clear", which is what wipes them.
+        window.stop_ai_smoke = function() {
+            if (!isRunning_aiSmoke) return;
+
+            // Tear the local loops down first: a completion poll or an AI-core
+            // sample already in flight must not flip the buttons back to the
+            // running state after we reset them.
+            stopProgressPolling();
+            stopAICoreMonitoring();
+            stopLocalImageDisplay();
+            stopProcessingTimer();
+            update_processingTime_aiSmoke();   // freeze the elapsed time at the stop
+            isRunning_aiSmoke = false;
+            startTime_aiSmoke = null;
+            updateStatus_aiSmoke('Stopping ai smoke...', 'running');
+            updateButtons_aiSmoke();
+
+            fetch(`send_message`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ message: "stop_ai_smoke" })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log("Stop command sent:", data);
+                updateStatus_aiSmoke('AI smoke stopped', 'ready');
+            })
+            .catch(error => {
+                console.error("Error sending stop command:", error);
+                updateStatus_aiSmoke('Error stopping ai smoke', 'error');
+            });
+        }
+
         window.clear_ai_smoke = function() {
             stopLocalImageDisplay();
             stopProcessingTimer();
@@ -853,6 +938,8 @@
                     if (data.type === 'ai_smoke_complete') {
                         handleCompletion();
                         document.getElementById('processed_images_aiSmoke').textContent = '1,239';
+                    } else if (data.type === 'ai_smoke_stopped') {
+                        handleStopped();
                     } else if (data.type === 'ai_smoke_error') {
                         handleError(data.error);
                     }
@@ -927,6 +1014,19 @@
             stopProgressPolling();
         }
 
+        // The target confirming a Stop. Normally the poller is already down by the
+        // time this lands (stop_ai_smoke stops it), but handle it so a stop
+        // triggered from anywhere else still settles the UI.
+        function handleStopped() {
+            stopLocalImageDisplay();
+            stopProcessingTimer();
+            stopAICoreMonitoring();
+            updateStatus_aiSmoke('AI smoke stopped', 'ready');
+            isRunning_aiSmoke = false;
+            updateButtons_aiSmoke();
+            stopProgressPolling();
+        }
+
         function handleError(errorMsg) {
             stopLocalImageDisplay();
             stopProcessingTimer();
@@ -990,7 +1090,10 @@
                 console.warn(`Partial display: input=${inputDisplayed}, output=${outputDisplayed}`);
             }
         }
-    
+
+        // Put the buttons into their pre-Fetch state (Run/Clear down, Fetch up).
+        updateButtons_aiSmoke();
+
     })(); // End of IIFE
     </script>
 </body>
