@@ -126,6 +126,13 @@ latest_progress = {
     "ai_smoke": {},
 }
 
+# PID of the program each workload currently has running *on the target*, learned
+# from the "<workload>_start" progress update and dropped when the run ends. A
+# page's Stop button posts "stop_<workload>"; we append the PID before forwarding
+# so the target only ever kills the run the user was actually looking at (same
+# scheme as the HPC SAR panel's STOPSAR).
+workload_pids = {key: None for key in latest_progress}
+
 # AI-engine usage, used by the ai_ship/ai_smoke pages to detect "the workload has
 # actually started on the card" (usage risen ~5% above the baseline captured when
 # Run was pressed) and only then begin cycling through the image pairs.
@@ -322,6 +329,19 @@ def _progress_key(update):
     return None
 
 
+def _track_workload_pid(key, update):
+    """Keep workload_pids in step with the run this update describes.
+
+    The target puts its process's PID in the "_start" message and repeats it on
+    the message that ends the run ("_complete" / "_stopped" / "_error"), at which
+    point there is nothing left to stop."""
+    msg_type = str(update.get("type", ""))
+    if msg_type.endswith("_start"):
+        workload_pids[key] = update.get("pid")
+    elif msg_type.endswith(("_complete", "_stopped", "_error")):
+        workload_pids[key] = None
+
+
 def receive_workload_updates():
     """Accept the target's workload-progress connections and cache each update.
 
@@ -352,6 +372,7 @@ def receive_workload_updates():
                 key = _progress_key(update)
                 if key is not None:
                     latest_progress[key] = update
+                    _track_workload_pid(key, update)
         except json.JSONDecodeError:
             pass    # image bytes / non-JSON traffic on the same port — not ours
         except Exception as e:
@@ -429,13 +450,15 @@ def system_metrics():
 def send_message():
     """Forward a control command to the embedded target.
 
-    Two families of command need host-side bookkeeping before (or instead of)
+    Three families of command need host-side bookkeeping before (or instead of)
     being forwarded:
 
       * "run_<workload>[:<n cores>]" — drop the previous run's progress so the
         page doesn't briefly show stale numbers, and for the AI-engine workloads
         snapshot current usage as the baseline their "has it actually started?"
         check measures against.
+      * "stop_<workload>" — append the PID the target reported for the run in
+        flight, so it kills that run and not a newer one.
       * "clear_<workload>" — purely host-side; nothing to tell the target."""
     data = request.get_json(silent=True) or {}
     message = data.get("message", "")
@@ -446,6 +469,17 @@ def send_message():
             latest_progress[workload] = {}
             if workload in ai_baseline_usage:
                 ai_baseline_usage[workload] = latest_ai_core_usage
+            break
+        if message == f"stop_{workload}":
+            pid = workload_pids.get(workload)
+            if pid is None:
+                # Nothing recorded as running (start update lost, or the run
+                # already ended). Forward it anyway — the target stops whatever
+                # it still has running for this workload, and no-ops otherwise.
+                print(f"No PID recorded for {workload}; forwarding unqualified stop")
+            else:
+                print(f"Requesting target to stop {workload} process {pid}")
+                message = f"{message}:{pid}"
             break
         if message == f"clear_{workload}":
             latest_progress[workload] = {}
