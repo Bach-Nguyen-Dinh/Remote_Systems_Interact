@@ -75,8 +75,8 @@
             cursor: not-allowed;
         }
 
-        /* Status line: colour-coded by the type updateStatus_aiShip() passes
-           ('running' / 'ready' / 'error'), on the dashboard's own palette. */
+        /* Status line: green only for the 'ready' type updateStatus_aiShip()
+           passes, red for everything else, on the dashboard's own palette. */
         .ai-ship-widget-status-bar {
             background-color: transparent;
             padding: 6px 10px;
@@ -84,11 +84,9 @@
             margin-bottom: 20px;
             text-align: center;
             font-size: 12px;
-            color: var(--text-weak);
+            color: var(--red);
         }
-        .ai-ship-widget-status-bar.running { color: var(--blue-hover); }
-        .ai-ship-widget-status-bar.ready   { color: var(--green); }
-        .ai-ship-widget-status-bar.error   { color: var(--red); }
+        .ai-ship-widget-status-bar.ready { color: var(--green); }
 
         .ai-ship-widget-image-display {
             display: flex;
@@ -194,7 +192,7 @@
                 <h3>Input image</h3>
                 <div class="ai-ship-widget-image-container">
                     <div id="inputImageContainer_aiShip" class="ai-ship-widget-image-placeholder">
-                        Loading...
+                        No data
                     </div>
                 </div>
                 <p id="inputImageInfo_aiShip"></p>
@@ -204,7 +202,7 @@
                 <h3>Output image</h3>
                 <div class="ai-ship-widget-image-container">
                     <div id="outputImageContainer_aiShip" class="ai-ship-widget-image-placeholder">
-                        Loading...
+                        No data
                     </div>
                 </div>
                 <p id="outputImageInfo_aiShip"></p>
@@ -219,11 +217,16 @@
                     </p>
                     <div>
                         <button id="fetchBtn_aiShip" onclick="preload_ai_ship_images()">Fetch</button>
-                        <button id="runBtn_aiShip" onclick="run_ai_ship()">Run</button>
-                        <button id="clearBtn_aiShip" onclick="clear_ai_ship()">Clear</button>
+                        <!-- Run/Clear start disabled: there is nothing to run or clear until
+                             Fetch has cached the input data. updateButtons_aiShip() owns them
+                             from then on; the attribute here just avoids a flash of enabled
+                             buttons before the script runs. -->
+                        <button id="runBtn_aiShip" onclick="run_ai_ship()" disabled>Run</button>
+                        <!-- Doubles as Stop while a run is in flight (see updateButtons_aiShip) -->
+                        <button id="clearBtn_aiShip" onclick="clear_or_stop_ai_ship()" disabled>Clear</button>
                     </div>
     
-                    <div id="statusBar_aiShip" class="ai-ship-widget-status-bar">Ready to start processing</div>
+                    <div id="statusBar_aiShip" class="ai-ship-widget-status-bar">Click "Fetch" to provide data to AI</div>
                     <p style="margin-bottom: 0;"><strong>Processed Images:</strong> <span id="processed_images_aiShip">-</span></p>
                     <p style="margin-top: 0;"><strong>Processing Time:</strong> <span id="processingTime_aiShip">-</span></p>
                 </div>
@@ -249,10 +252,19 @@
         // either http://<box>:5001/ or behind the nginx /topaz/ prefix. See
         // set_up_proxy_server.md and combined_dashboard.html.
 
-        let isRunning_aiSmoke = false;
+        let isRunning_aiShip = false;
         let startTime_aiShip = null;
         let pollInterval_aiShip = null;
         let processingTimeInterval = null;
+
+        // Fetch is a one-shot per page load: it caches the input/output frames in
+        // memory (ai_ship_InputImageCache/ai_ship_OutputImageCache) and the display
+        // loop cycles that cache, so re-fetching would only re-download what we
+        // already hold. Run/Clear stay disabled until it has succeeded; Fetch
+        // retires once it has. Deliberately NOT persisted to localStorage — a
+        // reload empties the caches, so the new page must fetch again.
+        let hasFetched_aiShip = false;
+        let isFetching_aiShip = false;
 
         let numAICoreRun = 4;
         let imagePairs = [];
@@ -273,7 +285,7 @@
 
         function startAICoreMonitoring() {
             imageDisplayStarted = false;
-            updateStatus_aiShip('Waiting for AI cores to start...', 'running');
+            updateStatus_aiShip('Waiting for AI cores to start ...', 'running');
             
             if (aiCoreMonitorInterval) clearInterval(aiCoreMonitorInterval);
             
@@ -289,7 +301,7 @@
                     // If usage has increased significantly above baseline, start displaying images
                     if (!imageDisplayStarted && usageIncrease > AI_USAGE_THRESHOLD) {
                         console.log('AI cores are now active - starting image display');
-                        updateStatus_aiShip('AI cores active - processing images...', 'running');
+                        updateStatus_aiShip('AI cores active - processing data ...', 'running');
                         startLocalImageDisplay();
                         imageDisplayStarted = true;
                         stopAICoreMonitoring();
@@ -415,8 +427,8 @@
         }
 
         function clearImages_aiShip() {
-            document.getElementById('inputImageContainer_aiShip').innerHTML = '<div class="ai-ship-widget-image-placeholder">Loading...</div>';
-            document.getElementById('outputImageContainer_aiShip').innerHTML = '<div class="ai-ship-widget-image-placeholder">Loading...</div>';
+            document.getElementById('inputImageContainer_aiShip').innerHTML = '<div class="ai-ship-widget-image-placeholder">No data</div>';
+            document.getElementById('outputImageContainer_aiShip').innerHTML = '<div class="ai-ship-widget-image-placeholder">No data</div>';
             document.getElementById('inputImageInfo_aiShip').textContent = '';
             document.getElementById('outputImageInfo_aiShip').textContent = '';
         }
@@ -428,11 +440,21 @@
         }
 
         function updateButtons_aiShip() {
+            const fetchBtn_aiShip = document.getElementById('fetchBtn_aiShip');
             const runBtn_aiShip = document.getElementById('runBtn_aiShip');
             const clearBtn_aiShip = document.getElementById('clearBtn_aiShip');
 
-            runBtn_aiShip.disabled = isRunning_aiSmoke;
-            runBtn_aiShip.textContent = isRunning_aiSmoke ? 'Processing...' : 'Run';
+            // Retired for the rest of the page's life once it has succeeded, and
+            // held down while it is in flight so a double-click can't start a
+            // second preload over the top of the first.
+            fetchBtn_aiShip.disabled = isFetching_aiShip || hasFetched_aiShip;
+            runBtn_aiShip.disabled = isRunning_aiShip || !hasFetched_aiShip;
+            runBtn_aiShip.textContent = isRunning_aiShip ? 'Processing...' : 'Run';
+            clearBtn_aiShip.disabled = !hasFetched_aiShip;
+            // One button, two jobs — same pattern as the small-object-detection
+            // panel: "Stop" aborts the run on the Topaz box, "Clear" wipes the
+            // results once nothing is running.
+            clearBtn_aiShip.textContent = isRunning_aiShip ? 'Stop' : 'Clear';
         }
 
         function update_processingTime_aiShip() {
@@ -446,6 +468,10 @@
         }
         
         window.preload_ai_ship_images = async function() {
+            if (isFetching_aiShip || hasFetched_aiShip) return;
+            isFetching_aiShip = true;
+            updateButtons_aiShip();
+
             try {
                 console.log('Starting enhanced image load...');
                 updateStatus_aiShip('Loading image list...', 'running');
@@ -459,7 +485,7 @@
                 console.log('Image list received:', data);
                 
                 const totalImages = data.input_images.length + data.output_images.length;
-                updateStatus_aiShip(`Loading input images...`, 'running');
+                updateStatus_aiShip(`Loading input images ...`, 'running');
                 
                 // Enhanced image loading with retry mechanism
                 function loadImageWithRetry(src, filename, imageType, maxRetries = 3, timeout = 15000) {
@@ -618,14 +644,19 @@
                 const successRate = Math.round((successful.length / validatedCount) * 100);
                 
                 if (failed.length === 0) {
-                    // updateStatus_aiShip(`All input images loaded successfully (${successful.length}/${validatedCount})`, 'ready');
-                    updateStatus_aiShip(`All input images loaded successfully`, 'ready');
+                    // updateStatus_aiShip(`Input images loaded (${successful.length}/${validatedCount})`, 'ready');
+                    updateStatus_aiShip(`Input images loaded`, 'ready');
                 } else if (successful.length > 0) {
                     // updateStatus_aiShip(`Images loaded: ${successful.length}/${validatedCount} (${successRate}%) - ${failed.length} failed`, 'ready');
-                    updateStatus_aiShip(`All input images loaded successfully`, 'ready');
+                    updateStatus_aiShip(`Input images loaded`, 'ready');
                 } else {
-                    updateStatus_aiShip('Failed to load input images - check console for details', 'error');
+                    updateStatus_aiShip('Failed to load input data - check console for details', 'error');
                 }
+
+                // Anything cached is enough to run against, so that unlocks
+                // Run/Clear and retires Fetch. A total failure leaves
+                // hasFetched_aiShip false, so Fetch stays available for a retry.
+                hasFetched_aiShip = successful.length > 0;
 
                 // Store validation results for later use
                 window.imageValidationResults = {
@@ -640,13 +671,16 @@
             } catch (error) {
                 console.error('Error in loading:', error);
                 updateStatus_aiShip('Error loading input images - check network connection', 'error');
+            } finally {
+                isFetching_aiShip = false;
+                updateButtons_aiShip();
             }
         }
 
         window.run_ai_ship = function() {
-            if (isRunning_aiSmoke) return;
+            if (isRunning_aiShip) return;
             
-            isRunning_aiSmoke = true;
+            isRunning_aiShip = true;
             startTime_aiShip = new Date();
             startProcessingTimer();
             
@@ -674,22 +708,73 @@
                 .catch(error => {
                     console.error("Error sending command:", error);
                     updateStatus_aiShip('Error starting detection', 'error');
-                    isRunning_aiSmoke = false;
+                    isRunning_aiShip = false;
                     updateButtons_aiShip();
                 });
             } catch (error) {
                 console.error("Error:", error);
                 updateStatus_aiShip('Error starting detection', 'error');
-                isRunning_aiSmoke = false;
+                isRunning_aiShip = false;
                 updateButtons_aiShip();
             }
         }
         
+        // The Clear button's click handler: it is labelled "Stop" while a run is
+        // in flight, so route to whichever action the label promises.
+        window.clear_or_stop_ai_ship = function() {
+            if (isRunning_aiShip) {
+                stop_ai_ship();
+            } else {
+                clear_ai_ship();
+            }
+        }
+
+        // Abort the run on the Topaz device. The host looks up the PID the target
+        // reported when this run started and forwards "stop_ai_ship:<pid>", so
+        // only this run's process is killed. Killing it (rather than just
+        // dropping the local display loop) is what makes the next Run start the
+        // workload over from the beginning instead of picking up where the
+        // still-running process had got to. The displayed images are left alone
+        // — the button reverts to "Clear", which is what wipes them.
+        window.stop_ai_ship = function() {
+            if (!isRunning_aiShip) return;
+
+            // Tear the local loops down first: a completion poll or an AI-core
+            // sample already in flight must not flip the buttons back to the
+            // running state after we reset them.
+            stopProgressPolling();
+            stopAICoreMonitoring();
+            stopLocalImageDisplay();
+            stopProcessingTimer();
+            update_processingTime_aiShip();   // freeze the elapsed time at the stop
+            isRunning_aiShip = false;
+            startTime_aiShip = null;
+            updateStatus_aiShip('Stopping ai ship...', 'running');
+            updateButtons_aiShip();
+
+            fetch(`send_message`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ message: "stop_ai_ship" })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log("Stop command sent:", data);
+                updateStatus_aiShip('AI ship stopped', 'ready');
+            })
+            .catch(error => {
+                console.error("Error sending stop command:", error);
+                updateStatus_aiShip('Error stopping ai ship', 'error');
+            });
+        }
+
         window.clear_ai_ship = function() {
             stopLocalImageDisplay();
             stopAICoreMonitoring();
             stopProgressPolling();
-            isRunning_aiSmoke = false;
+            isRunning_aiShip = false;
             startTime_aiShip = null;
             
             clearImages_aiShip();
@@ -744,6 +829,8 @@
                         console.log("AI ship application completed")
                         handleCompletion();
                         document.getElementById('processed_images_aiShip').textContent = '2,199';
+                    } else if (data.type === 'ai_ship_stopped') {
+                        handleStopped();
                     } else if (data.type === 'ai_ship_error') {
                         handleError(data.error);
                     }
@@ -765,7 +852,20 @@
             stopProcessingTimer();
             stopAICoreMonitoring();
             updateStatus_aiShip('Detection completed successfully', 'ready');
-            isRunning_aiSmoke = false;
+            isRunning_aiShip = false;
+            updateButtons_aiShip();
+            stopProgressPolling();
+        }
+
+        // The target confirming a Stop. Normally the poller is already down by the
+        // time this lands (stop_ai_ship stops it), but handle it so a stop
+        // triggered from anywhere else still settles the UI.
+        function handleStopped() {
+            stopLocalImageDisplay();
+            stopProcessingTimer();
+            stopAICoreMonitoring();
+            updateStatus_aiShip('AI ship stopped', 'ready');
+            isRunning_aiShip = false;
             updateButtons_aiShip();
             stopProgressPolling();
         }
@@ -775,7 +875,7 @@
             stopProcessingTimer();
             stopAICoreMonitoring();
             updateStatus_aiShip(`Error: ${errorMsg}`, 'error');
-            isRunning_aiSmoke = false;
+            isRunning_aiShip = false;
             updateButtons_aiShip();
             stopProgressPolling();
         }
@@ -833,7 +933,10 @@
                 console.warn(`Partial display: input=${inputDisplayed}, output=${outputDisplayed}`);
             }
         }
-    
+
+        // Put the buttons into their pre-Fetch state (Run/Clear down, Fetch up).
+        updateButtons_aiShip();
+
     })(); // End of IIFE
     </script>
 </body>
