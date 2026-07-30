@@ -71,6 +71,8 @@ cphd_files = {}
 BW = 1000
 
 small_obj_detect_running = False
+small_obj_process = None          # Popen of the RSS binary while a run is in flight
+small_obj_stop_requested = False  # set by stop_small_object_detection()
 current_output_count = 0
 
 ai_core_run_ai_smoke = 4
@@ -243,16 +245,68 @@ def run_ai_ship():
     finally:
         ai_ship_running = False
 
+def stop_small_object_detection(message):
+    """Kill the running small-object-detection process group, if any.
+
+    `message` is "stop_small_obj_detect" or "stop_small_obj_detect:<pid>" — the
+    optional pid is the one this target reported in the "_start" update, so a
+    Stop click that arrives late (after the run it was meant for already ended)
+    can never kill a newer run. Mirrors stop_sar_process() on the HPC target.
+
+    RSS is a plain compute binary with no signal handling of its own, so escalate
+    SIGINT -> SIGTERM -> SIGKILL rather than assuming Ctrl+C is honoured. Runs on
+    its own thread: the escalation waits, and listen_for_messages() must stay
+    responsive to other commands meanwhile.
+    """
+    global small_obj_stop_requested
+
+    process = small_obj_process
+    if process is None or process.poll() is not None:
+        print("No small object detection running, nothing to stop")
+        return
+
+    parts = message.split(":", 1)
+    if len(parts) == 2 and parts[1].strip().isdigit() and int(parts[1]) != process.pid:
+        print(f"stop_small_obj_detect pid {parts[1]} does not match running pid {process.pid}, ignoring")
+        return
+
+    # Tell run_small_object_detection() this exit was requested, so it reports
+    # "stopped" instead of "completed" when process.wait() returns.
+    small_obj_stop_requested = True
+
+    try:
+        pgid = os.getpgid(process.pid)
+    except ProcessLookupError:
+        print("Small object detection process already exited")
+        return
+
+    for sig, grace in ((signal.SIGINT, 3), (signal.SIGTERM, 3), (signal.SIGKILL, 0)):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            print("Small object detection process already exited")
+            return
+        print(f"Sent {sig.name} to small object detection process group {pgid}")
+        if grace == 0:
+            return
+        try:
+            process.wait(timeout=grace)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
 def run_small_object_detection():
     global small_obj_detect_running, current_output_count
-    
+    global small_obj_process, small_obj_stop_requested
+
     if small_obj_detect_running:
         print("Small object detection already running")
         return
-    
+
     small_obj_detect_running = True
+    small_obj_stop_requested = False
     current_output_count = 0
-    
+
     # Clear output directory
     if os.path.exists(OUTPUT_IMAGE_DIR):
         for file in glob.glob(os.path.join(OUTPUT_IMAGE_DIR, "*.png")):
@@ -267,28 +321,42 @@ def run_small_object_detection():
     observer.start()
     
     try:
-        # Send start notification
+        # Run the RSS executable in its own process group, so a Stop from the
+        # dashboard can signal the whole group (RSS plus anything it spawns).
+        print(f"Starting RSS executable: {RSS_EXECUTABLE_PATH}")
+        process = subprocess.Popen([RSS_EXECUTABLE_PATH],
+                                 cwd="/home/user/Small-Object-Detection",
+                                 start_new_session=True)
+        small_obj_process = process
+
+        # Send start notification. The PID rides along so the host can hand it
+        # back with a later "stop_small_obj_detect:<pid>".
         start_data = {
             "type": "small_obj_detect_start",
-            "status": "started"
+            "status": "started",
+            "pid": process.pid
         }
         send_progress_update(start_data)
-        
-        # Run the RSS executable
-        print(f"Starting RSS executable: {RSS_EXECUTABLE_PATH}")
-        process = subprocess.Popen([RSS_EXECUTABLE_PATH], 
-                                 cwd="/home/user/Small-Object-Detection")
-        
+
         # Wait for process to complete
         process.wait()
-        
-        # Send completion notification
-        completion_data = {
-            "type": "small_obj_detect_complete",
-            "status": "completed"
-        }
+
+        # Send completion notification — or a distinct "stopped" if the exit was
+        # the result of a Stop request rather than the run finishing.
+        if small_obj_stop_requested:
+            completion_data = {
+                "type": "small_obj_detect_stopped",
+                "status": "stopped",
+                "pid": process.pid
+            }
+        else:
+            completion_data = {
+                "type": "small_obj_detect_complete",
+                "status": "completed",
+                "pid": process.pid
+            }
         send_progress_update(completion_data)
-        
+
     except Exception as e:
         error_data = {
             "type": "small_obj_detect_error", 
@@ -299,6 +367,7 @@ def run_small_object_detection():
     finally:
         observer.stop()
         observer.join()
+        small_obj_process = None
         small_obj_detect_running = False
 
 class OutputImageHandler(FileSystemEventHandler):
@@ -541,6 +610,12 @@ def listen_for_messages():
 
                     elif message == "run_small_obj_detect":
                         threading.Thread(target=run_small_object_detection, daemon=True).start()
+
+                    elif message.startswith("stop_small_obj_detect"):
+                        # Off-thread: the signal escalation can take several
+                        # seconds and this loop handles one message at a time.
+                        threading.Thread(target=stop_small_object_detection,
+                                         args=(message,), daemon=True).start()
 
                     elif message.startswith("run_ai_smoke"):
                         if ":" in message:
