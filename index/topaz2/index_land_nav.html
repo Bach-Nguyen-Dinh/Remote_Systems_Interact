@@ -77,6 +77,16 @@
             cursor: not-allowed;
         }
 
+        /* Combined Stop/Clear button - red, matching the HPC SAR Reset/Stop button
+           (.buttonRed-sar in index/hpc/sar_process_reset.html). */
+        .autoNav-widget-button-container button.autoNav-widget-button-red {
+            background-color: #ca2715;
+        }
+
+        .autoNav-widget-button-container button.autoNav-widget-button-red:hover:not(:disabled) {
+            background-color: #ff4c47;
+        }
+
         /* Status line: colour-coded by the type updateStatus() passes
            ('running' / 'ready' / 'error'), on the dashboard's own palette. */
         .autoNav-widget-status-bar {
@@ -271,8 +281,8 @@
             <div class="autoNav-widget-button-container">
                 <button id="fetchBtn_autoNav" onclick="preloadImages()">Fetch</button>
                 <button id="runBtn_autoNav" onclick="run_auto_nav()">Run</button>
-                <button id="stopBtn_autoNav" onclick="stop_auto_nav()">Stop</button>
-                <button id="clearBtn_autoNav" onclick="clear_auto_nav()">Clear</button>
+                <!-- Doubles as Stop while playback is running (see updateButtons) -->
+                <button id="clearBtn_autoNav" class="autoNav-widget-button-red" onclick="clear_or_stop_auto_nav()">Clear</button>
 
                 <div id="statusBar" class="autoNav-widget-status-bar">Ready to start processing</div>
                 <p><strong>Processing Time:</strong> <span id="processingTime">-</span></p>
@@ -335,7 +345,6 @@
         function updateButtons() {
             const fetchBtn_autoNav = document.getElementById('fetchBtn_autoNav');
             const runBtn_autoNav = document.getElementById('runBtn_autoNav');
-            const stopBtn_autoNav = document.getElementById('stopBtn_autoNav');
             const clearBtn_autoNav = document.getElementById('clearBtn_autoNav');
 
             // Check if images are already in memory
@@ -350,11 +359,11 @@
             // Run button: enabled if images in memory and not running
             runBtn_autoNav.disabled = !hasImagesInMemory || isRunning;
 
-            // Stop button: enabled only while running
-            stopBtn_autoNav.disabled = !isRunning;
-
-            // Clear button: disabled while running
-            clearBtn_autoNav.disabled = isRunning;
+            // One button, two jobs — same pattern as the small-object panel's
+            // Clear/Stop: "Stop" halts the playback, "Clear" wipes the displayed
+            // frames once nothing is running. Always enabled.
+            clearBtn_autoNav.textContent = isRunning ? 'Stop' : 'Clear';
+            clearBtn_autoNav.disabled = false;
         }
 
         function updateProcessingTime() {
@@ -569,7 +578,7 @@
                 const successRate = Math.round((successful.length / validatedCount) * 100);
 
                 if (failed.length === 0) {
-                    updateStatus(`All images loaded successfully (${successful.length} images)`, 'ready');
+                    updateStatus(`All input loaded successfully)`, 'ready');
                 } else if (successful.length > 0) {
                     updateStatus(`Images loaded: ${successful.length}/${validatedCount} (${successRate}%)`, 'ready');
                 } else {
@@ -837,6 +846,20 @@
             displayInterval = setInterval(displayNextSet, 100);
         }
 
+        // The Clear button's click handler: it is labelled "Stop" while playback is
+        // in flight, so route to whichever action the label promises.
+        window.clear_or_stop_auto_nav = function() {
+            if (isRunning) {
+                stop_auto_nav();
+            } else {
+                clear_auto_nav();
+            }
+        }
+
+        // Purely client-side: this demo replays cached frames, there is no process
+        // on the target to abort, so no stop/terminate command is sent. The
+        // displayed frames are left on screen — the button reverts to "Clear",
+        // which is what wipes them.
         window.stop_auto_nav = function() {
             if (!isRunning) return;
 
