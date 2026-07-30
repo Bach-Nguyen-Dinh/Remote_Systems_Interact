@@ -137,21 +137,21 @@
         </div>
         <div class="section-body">
             <div class="tabs">
-                <button class="tab-btn active" data-tab="sod" onclick="switchVisionTab('sod')">Small object detection</button>
                 <button class="tab-btn" data-tab="nav" onclick="switchVisionTab('nav')">Autonomous navigation</button>
+                <button class="tab-btn active" data-tab="sod" onclick="switchVisionTab('sod')">Small object detection</button>
                 <button class="tab-btn" data-tab="ship" onclick="switchVisionTab('ship')">AI ship</button>
                 <button class="tab-btn" data-tab="smoke" onclick="switchVisionTab('smoke')">AI smoke</button>
             </div>
 
             <!-- data-src, not src: each frame is loaded the first time its tab is
                  opened (the default tab loads on page load), then stays mounted. -->
-            <div class="tab-panel active" data-tab="sod">
-                <iframe class="frame" id="frame-sod" data-src="small_obj_app"
-                        title="Small object detection" style="height: 700px;"></iframe>
-            </div>
             <div class="tab-panel" data-tab="nav">
                 <iframe class="frame" id="frame-nav" data-src="auto_nav_app"
                         title="Autonomous navigation" style="height: 700px;"></iframe>
+            </div>
+            <div class="tab-panel active" data-tab="sod">
+                <iframe class="frame" id="frame-sod" data-src="small_obj_app"
+                        title="Small object detection" style="height: 700px;"></iframe>
             </div>
             <div class="tab-panel" data-tab="ship">
                 <iframe class="frame" id="frame-ship" data-src="ai_ship_app"
@@ -168,34 +168,48 @@
     (function () {
         "use strict";
 
-        // Auto-size a same-origin frame to its content (grow + full remeasure),
-        // exactly like the HPC shell. Both Topaz pages build async grids from the
-        // first /system_metrics response, so the frames must grow into content.
+        // Auto-size a same-origin frame to its content, exactly like the HPC shell
+        // that hosts this page. The Topaz pages build async grids from the first
+        // /system_metrics response, so frames are re-fitted on a 1s poll too.
         function frameDoc(fr) {
             try { return fr.contentWindow.document; } catch (e) { return null; }
         }
+        // Measure the BODY, not documentElement: an auto-height body is exactly as
+        // tall as its content, while documentElement.scrollHeight is never smaller
+        // than the frame's own viewport (i.e. the height we already set). Measuring
+        // the body is what lets a frame SHRINK as well as grow, which the vision
+        // tabs need: switching from a tall tab to a short one must give the height
+        // back instead of leaving a big empty gap under the page.
         function contentHeight(d) {
             if (!d) return 0;
-            return Math.max(
-                d.body ? d.body.scrollHeight : 0,
-                d.documentElement ? d.documentElement.scrollHeight : 0
-            );
+            var b = d.body;
+            if (b) {
+                var h = Math.max(b.scrollHeight, Math.ceil(b.getBoundingClientRect().height));
+                if (h) return h;
+            }
+            return d.documentElement ? d.documentElement.scrollHeight : 0;
         }
         // A frame inside a hidden tab panel (or a collapsed row) measures as 0 and
-        // would collapse to its fallback, so leave those alone entirely — each is
-        // remeasured when its tab/row is actually shown.
+        // would collapse to its fallback, so leave those alone entirely -- each is
+        // fitted when its tab/row is actually shown.
         function isVisible(fr) {
             return fr.offsetParent !== null;
         }
-        function remeasure(fr, fallback) {
+        // Size a frame to its content, in both directions. The 1px deadband keeps
+        // the 1s poll from rewriting the style on sub-pixel noise.
+        function fit(fr, fallback) {
             var d = frameDoc(fr);
             if (!d || !isVisible(fr)) return;
-            fr.style.height = "0px";
-            fr.style.height = (contentHeight(d) || fallback) + "px";
+            var h = contentHeight(d) || fallback;
+            if (Math.abs(h - fr.offsetHeight) > 1) fr.style.height = h + "px";
         }
-        function grow(fr) {
-            var h = contentHeight(frameDoc(fr));
-            if (h && h > fr.offsetHeight) fr.style.height = h + "px";
+        // A frame that was just revealed needs a moment to re-layout before its
+        // content height is trustworthy, and these pages build their grids from
+        // their first data response -- so re-fit a few times, not once.
+        function refit(f) {
+            [0, 150, 400, 1000, 1500].forEach(function (ms) {
+                setTimeout(function () { fit(f.el, f.fallback); }, ms);
+            });
         }
 
         var FRAMES = [
@@ -208,19 +222,15 @@
         ];
 
         FRAMES.forEach(function (f) {
-            f.el.addEventListener("load", function () {
-                remeasure(f.el, f.fallback);
-                setTimeout(function () { remeasure(f.el, f.fallback); }, 500);
-                setTimeout(function () { remeasure(f.el, f.fallback); }, 1500);
-            });
+            f.el.addEventListener("load", function () { refit(f); });
         });
-        setInterval(function () { FRAMES.forEach(function (f) { grow(f.el); }); }, 1000);
+        setInterval(function () { FRAMES.forEach(function (f) { fit(f.el, f.fallback); }); }, 1000);
 
         var resizeTimer = null;
         window.addEventListener("resize", function () {
             if (resizeTimer) clearTimeout(resizeTimer);
             resizeTimer = setTimeout(function () {
-                FRAMES.forEach(function (f) { remeasure(f.el, f.fallback); });
+                FRAMES.forEach(function (f) { fit(f.el, f.fallback); });
             }, 200);
         });
 
@@ -229,12 +239,10 @@
             if (!el) return;
             el.classList.toggle("collapsed");
             // Re-fit this section's frames when it is revealed (can't measure
-            // while hidden). Frames in non-active tabs are skipped by remeasure().
+            // while hidden). Frames in non-active tabs are skipped by fit().
             if (!el.classList.contains("collapsed")) {
                 var own = FRAMES.filter(function (x) { return x.sec === id; });
-                setTimeout(function () {
-                    own.forEach(function (f) { loadFrame(f); remeasure(f.el, f.fallback); });
-                }, 50);
+                own.forEach(function (f) { loadFrame(f); refit(f); });
             }
         };
 
@@ -260,8 +268,10 @@
             var f = FRAMES.filter(function (x) { return x.tab === tab; })[0];
             if (!f) return;
             loadFrame(f);
-            // Now that the panel is visible the frame can finally be measured.
-            setTimeout(function () { remeasure(f.el, f.fallback); }, 50);
+            // Now that the panel is visible the frame can finally be measured. The
+            // outgoing tab may have been taller, so this must be able to shrink the
+            // section back down, not just grow it.
+            refit(f);
         };
 
         FRAMES.forEach(loadFrame);   // gives the default (visible) vision tab its src
