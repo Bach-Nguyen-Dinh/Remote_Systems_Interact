@@ -1,0 +1,1261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AICraft VLM</title>
+    <style>
+        /* ------------------------------------------------------------------
+           Single-page VLM frontend, served by backend/main.py at '/'. Four
+           tabs (Chat / Chat with Image / Chat with SAR / Image Analysis)
+           switch visibility via plain classList toggles -- no iframes. Same
+           dark theme/panel/button conventions as nexon_dashboard's index/hpc
+           pages, for a consistent look across both tools.
+
+           Chat, Chat with Image and Chat with SAR share the same
+           ".chat-panel" shell: a centered, empty-state layout (heading +
+           composer vertically centered) that transitions to a docked layout
+           (transcript + bottom composer) on first send, toggled via the
+           .active class on the panel's root element (see the
+           createChatPanel() JS factory below). ".image-chat" is layered on
+           top of ".chat-panel" for the image-bearing tabs' roots, for the
+           rules (image preview, upload row) that are genuinely image-only.
+
+           Image Analysis reuses the same ".chat-panel.image-chat" shell and
+           ".transcript"/".msg" bubble styling for visual consistency, but is
+           a one-shot request/response, not a chat session -- it has its own
+           small controller below (not createChatPanel()) since it needs two
+           uploads (image + prompt .txt) and no text composer input at all.
+           ------------------------------------------------------------------ */
+        :root {
+            --bg:            #111217;
+            --panel-bg:      #181b1f;
+            --border:        #28292f;
+            --input-border:  #2c3235;
+            --text:          rgba(204, 204, 220, 0.90);
+            --text-weak:     rgba(204, 204, 220, 0.65);
+            --blue:          #2372cc;
+            --blue-hover:    #3696ff;
+            --red:           #ca2715;
+            --red-hover:     #ff4c47;
+            --green:         #2e8f5b;
+            --green-hover:   #38ab6d;
+            --red-dot:       #f2495c;
+        }
+
+        * { box-sizing: border-box; }
+        html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            font-size: 14px;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .panel {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 10px;
+        }
+
+        /* ---- top bar / tabs ---- */
+        .app { display: flex; flex-direction: column; height: 100%; }
+        .topbar {
+            flex: 0 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 12px;
+            border-bottom: 1px solid var(--border);
+        }
+        .tabs { display: flex; gap: 4px; }
+        .tab-btn {
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--text-weak);
+            padding: 14px 16px;
+            font-size: 14px;
+            font-family: inherit;
+            cursor: pointer;
+            transition: color .15s ease, border-color .15s ease;
+        }
+        .tab-btn:hover { color: var(--text); }
+        .tab-btn.active { color: var(--text); border-bottom-color: var(--blue); }
+
+        .health-status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-weak); }
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #73bf69;
+            box-shadow: 0 0 6px rgba(115, 191, 105, 0.6);
+            transition: background-color .2s ease;
+        }
+        .status-dot.stale { background: var(--red-dot); box-shadow: 0 0 6px rgba(242, 73, 92, 0.6); }
+
+        /* ---- tab panels ---- */
+        .app-body { flex: 1; display: flex; overflow: hidden; }
+        .tab-panel { display: none; flex: 1; overflow: hidden; }
+        .tab-panel.active { display: flex; }
+
+        /* ---- shared action buttons ---- */
+        .buttonBlue-sar, .buttonRed-sar, .buttonGreen-sar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 80px;
+            height: 40px;
+            border-radius: 8px;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color .15s ease, transform .08s ease, opacity .15s ease;
+        }
+        .buttonBlue-sar:active:not(:disabled), .buttonRed-sar:active:not(:disabled), .buttonGreen-sar:active:not(:disabled) { transform: scale(0.94); }
+        .buttonBlue-sar { background-color: var(--blue); }
+        .buttonBlue-sar:hover:not(:disabled) { background-color: var(--blue-hover); }
+        .buttonRed-sar { background-color: var(--red); }
+        .buttonRed-sar:hover:not(:disabled) { background-color: var(--red-hover); }
+        .buttonGreen-sar { background-color: var(--green); }
+        .buttonGreen-sar:hover:not(:disabled) { background-color: var(--green-hover); }
+
+        .buttonBlue-sar.running, .buttonBlue-sar:disabled,
+        .buttonRed-sar.running, .buttonRed-sar:disabled,
+        .buttonGreen-sar.running, .buttonGreen-sar:disabled {
+            background-color: #6b7a8f;
+            opacity: 0.55;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-sm { width: auto; height: 32px; padding: 0 14px; font-size: 13px; }
+
+        /* ---- shared chat-panel shell: centered <-> docked layout ---- */
+        .chat-panel {
+            position: relative;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            width: 100%;
+            padding: 24px 24px 20px;
+            gap: 14px;
+        }
+        .chat-panel.active { justify-content: flex-start; }
+
+        /* toolbar: tokens dropdown + reset, always in the top-right corner */
+        .ic-toolbar {
+            position: absolute;
+            top: 10px;
+            right: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            z-index: 5;
+        }
+        .tokens-widget { position: relative; }
+        .tokens-toggle {
+            height: 32px;
+            padding: 0 12px;
+            border-radius: 8px;
+            border: 1px solid var(--input-border);
+            background: transparent;
+            color: var(--text-weak);
+            font-size: 12px;
+            font-family: inherit;
+            cursor: pointer;
+            transition: color .15s ease, border-color .15s ease;
+        }
+        .tokens-toggle:hover { color: var(--text); border-color: var(--blue); }
+        .tokens-pop {
+            position: absolute;
+            top: 38px;
+            right: 0;
+            min-width: 150px;
+            display: none;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+        }
+        .tokens-pop.open { display: block; }
+        .tokens-pop p { display: flex; justify-content: space-between; margin: 2px 0; font-size: 13px; }
+        .tokens-pop strong { font-weight: 500; color: var(--text); }
+        .tokens-pop span { color: var(--text-weak); }
+
+        /* centered heading, shown only in the empty/pre-send state */
+        .ic-header {
+            text-align: center;
+            max-height: 70px;
+            opacity: 1;
+            overflow: hidden;
+            transition: opacity .2s ease, max-height .2s ease, margin .2s ease;
+        }
+        .ic-header h1 { font-size: 22px; font-weight: 400; margin: 0 0 4px; color: var(--text); }
+        .ic-header p { font-size: 13px; color: var(--text-weak); margin: 0; }
+        .chat-panel.active .ic-header { max-height: 0; opacity: 0; margin: 0; pointer-events: none; }
+
+        /* image preview: a dashed drop-zone outline before an image is chosen;
+           once shown, the frame disappears entirely -- just the photo, ~1.5x the
+           original size in both the empty-state hero and the docked/active view */
+        .image-preview {
+            width: 100%;
+            max-width: 780px;
+            height: 510px;
+            flex: 0 0 auto;
+            background: transparent;
+            border: 1px dashed var(--border);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            position: relative;
+            transition: height .3s ease, max-width .3s ease, border-color .15s ease, background-color .15s ease;
+        }
+        .image-chat.active .image-preview { max-width: 1020px; height: 270px; }
+        .image-preview.drag-over { border-color: var(--blue); background: rgba(35, 114, 204, 0.10); }
+        .image-preview.has-image { border: none; border-radius: 0; background: transparent; }
+        .image-preview img { max-width: 100%; max-height: 100%; object-fit: contain; display: none; }
+        .image-preview .no-image { color: var(--text-weak); font-size: 14px; text-align: center; line-height: 1.5; padding: 0 28px; pointer-events: none; }
+
+        .upload-row {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            width: 100%;
+            max-width: 520px;
+            transition: max-width .3s ease;
+        }
+        .image-chat.active .upload-row { max-width: 680px; }
+
+        .upload-row-buttons { display: flex; gap: 8px; }
+
+        .upload-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 0 18px;
+            height: 36px;
+            border-radius: 8px;
+            border: 1px solid var(--input-border);
+            background: #1f2228;
+            color: var(--text);
+            cursor: pointer;
+            font-size: 13px;
+            transition: background-color .15s ease, border-color .15s ease;
+        }
+        .upload-btn:hover:not(:disabled) { background: #2a2e36; border-color: var(--blue); }
+        .upload-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .upload-msg { font-size: 12px; min-height: 14px; margin-top: 2px; text-align: center; word-break: break-word; color: var(--text-weak); }
+        .upload-msg.error { color: #ff8a80; }
+
+        /* transcript: no heavy panel box -- a light, centered column of bubbles,
+           hidden entirely until the conversation actually starts */
+        .transcript {
+            display: none;
+            flex-direction: column;
+            width: 100%;
+            max-width: 680px;
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            padding: 4px 2px 8px;
+            gap: 12px;
+        }
+        .chat-panel.active .transcript { display: flex; }
+
+        .msg {
+            max-width: 78%;
+            padding: 10px 14px;
+            border-radius: 14px;
+            font-size: 14px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            word-break: break-word;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+        }
+        .msg.user { align-self: flex-end; background: #22334d; }
+        .msg.assistant { align-self: flex-start; background: var(--panel-bg); border: 1px solid var(--border); }
+        .msg.assistant.err { border-color: var(--red); color: #ff8a80; }
+        .msg-role { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-weak); margin-bottom: 4px; }
+        .msg-body.processing { color: var(--text-weak); font-style: italic; animation: msg-pulse 1.4s ease-in-out infinite; }
+        @keyframes msg-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+        /* composer: rounded pill, circular green send button -- moves from the
+           center of the page to the bottom as .chat-panel.active kicks in */
+        .composer {
+            flex: 0 0 auto;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            width: 100%;
+            max-width: 520px;
+            background: #0e0f12;
+            border: 1px solid var(--input-border);
+            border-radius: 26px;
+            padding: 6px 6px 6px 20px;
+            transition: max-width .3s ease, border-color .15s ease;
+        }
+        .chat-panel.active .composer { max-width: 680px; }
+        .composer:focus-within { border-color: var(--blue); }
+        .composer input[type="text"] {
+            flex: 1;
+            height: 42px;
+            border: none;
+            background: transparent;
+            color: var(--text);
+            font-size: 14px;
+            font-family: inherit;
+        }
+        .composer input[type="text"]:focus { outline: none; }
+        .composer input[type="text"]:disabled { opacity: 0.5; cursor: not-allowed; }
+        .composer input[type="text"]::placeholder { color: var(--text-weak); }
+
+        .send-btn {
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            padding: 0;
+            font-size: 18px;
+            font-weight: 600;
+            flex: 0 0 auto;
+        }
+        .send-btn.stop-mode { font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <div class="topbar">
+            <div class="tabs">
+                <button class="tab-btn" data-tab="chat" onclick="switchTab('chat')">Chatbox</button>
+                <button class="tab-btn" data-tab="analysis" onclick="switchTab('analysis')">Image Prompting</button>
+                <button class="tab-btn" data-tab="image" onclick="switchTab('image')">Image Chat</button>
+                <button class="tab-btn active" data-tab="sar" onclick="switchTab('sar')">SAR Chat</button>
+            </div>
+            <div class="health-status">
+                <span class="status-dot stale" id="statusDot"></span>
+                <span id="statusText">Connecting…</span>
+            </div>
+        </div>
+
+        <div class="app-body">
+            <!-- ===================== Chat ===================== -->
+            <div class="tab-panel" data-tab="chat">
+                <div class="chat-panel" id="chatOnly">
+                    <div class="ic-toolbar">
+                        <!-- <div class="tokens-widget">
+                            <button class="tokens-toggle" onclick="chatPanel.toggleTokens(event)">Tokens ▾</button>
+                            <div class="tokens-pop panel">
+                                <p><strong>Used</strong><span class="token-usage">—</span></p>
+                            </div>
+                        </div> -->
+                        <button class="buttonRed-sar btn-sm reset-btn" onclick="chatPanel.onReset()">Reset</button>
+                    </div>
+
+                    <div class="ic-header">
+                        <h1>Chatbox</h1>
+                        <p>Ask a question or start a conversation.</p>
+                    </div>
+
+                    <div class="transcript"></div>
+
+                    <div class="composer">
+                        <input type="text" class="chat-input" placeholder="Enter a message">
+                        <button class="buttonGreen-sar send-btn" title="Send">↑</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===================== Image Analysis ===================== -->
+            <div class="tab-panel" data-tab="analysis">
+                <div class="chat-panel image-chat" id="analysisChat">
+                    <div class="ic-toolbar">
+                        <button class="buttonRed-sar btn-sm reset-btn" onclick="analysisPanel.onReset()">Reset</button>
+                    </div>
+
+                    <div class="ic-header">
+                        <h1>Image prompting</h1>
+                        <p>Upload an image and a prompt file(.txt), and run the prompt over the image.</p>
+                    </div>
+
+                    <div class="image-preview" id="analysisPreviewWrap">
+                        <span class="no-image" id="analysisNoImageLabel">Please drag and drop the image or click on the upload image button</span>
+                        <img id="analysisPreview" alt="">
+                    </div>
+
+                    <div class="upload-row" id="analysisUploadRow">
+                        <div class="upload-row-buttons">
+                            <button id="analysisUploadBtn" class="upload-btn" onclick="document.getElementById('analysisFileInput').click()">⬆ Upload image</button>
+                            <input id="analysisFileInput" type="file" accept="image/*" style="display:none">
+                            <button id="analysisPromptBtn" class="upload-btn" onclick="document.getElementById('analysisPromptInput').click()">⬆ Upload prompt (.txt)</button>
+                            <input id="analysisPromptInput" type="file" accept=".txt,text/plain" style="display:none">
+                        </div>
+                        <div id="analysisUploadMsg" class="upload-msg"></div>
+                    </div>
+
+                    <div class="transcript"></div>
+
+                    <button class="buttonGreen-sar btn-sm" id="analysisRunBtn">▶ Run analysis</button>
+                </div>
+            </div>
+
+            <!-- ===================== Chat with Image ===================== -->
+            <div class="tab-panel" data-tab="image">
+                <div class="chat-panel image-chat" id="imageChat">
+                    <div class="ic-toolbar">
+                        <!-- <div class="tokens-widget">
+                            <button class="tokens-toggle" onclick="imagePanel.toggleTokens(event)">Tokens ▾</button>
+                            <div class="tokens-pop panel">
+                                <p><strong>Used</strong><span class="token-usage">—</span></p>
+                            </div>
+                        </div> -->
+                        <button class="buttonRed-sar btn-sm reset-btn" onclick="imagePanel.onReset()">Reset</button>
+                    </div>
+
+                    <div class="ic-header">
+                        <h1>Chat about an image</h1>
+                        <p>Upload an image, then ask anything about it.</p>
+                    </div>
+
+                    <div class="image-preview" id="imagePreviewWrap">
+                        <span class="no-image" id="noImageLabel">Please drag and drop the image or click on the upload image button</span>
+                        <img id="imagePreview" alt="">
+                    </div>
+
+                    <div class="upload-row" id="uploadRow">
+                        <button id="uploadBtn" class="upload-btn" onclick="document.getElementById('fileInput').click()">⬆ Upload image</button>
+                        <input id="fileInput" type="file" accept="image/*" style="display:none">
+                        <div id="uploadMsg" class="upload-msg"></div>
+                    </div>
+
+                    <div class="transcript"></div>
+
+                    <div class="composer">
+                        <input type="text" class="chat-input" placeholder="Enter text to query image">
+                        <button class="buttonGreen-sar send-btn" title="Send">↑</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===================== Chat with SAR ===================== -->
+            <div class="tab-panel active" data-tab="sar">
+                <div class="chat-panel image-chat" id="sarChat">
+                    <div class="ic-header">
+                        <h1>Chat about a SAR image</h1>
+                        <p>Ask anything about the latest synthetic aperture radar map.</p>
+                    </div>
+
+                    <div class="image-preview" id="sarPreviewWrap">
+                        <span class="no-image" id="sarNoImageLabel">Waiting for a SAR image to arrive…</span>
+                        <img id="sarPreview" alt="">
+                    </div>
+
+                    <div class="transcript"></div>
+
+                    <div class="composer">
+                        <input type="text" class="chat-input" placeholder="Enter text to query the SAR map">
+                        <button class="buttonGreen-sar send-btn" title="Send">↑</button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        "use strict";
+
+        // ---- page-level shared state: health is inherently global (the backend
+        // only ever runs one session at a time, regardless of which tab started
+        // it), so it lives here rather than duplicated per panel. ----
+        var statusDot = document.getElementById("statusDot");
+        var statusText = document.getElementById("statusText");
+        var sharedHealth = { modelLoaded: false };
+        var panelsToRefresh = [];   // each panel's renderControls, refreshed by pollHealth
+
+        // ---- tabs ----
+        window.switchTab = function (tab) {
+            document.querySelectorAll(".tab-btn").forEach(function (b) {
+                b.classList.toggle("active", b.dataset.tab === tab);
+            });
+            document.querySelectorAll(".tab-panel").forEach(function (p) {
+                p.classList.toggle("active", p.dataset.tab === tab);
+            });
+        };
+
+        async function backendError(resp) {
+            var detail = resp.statusText;
+            try {
+                var body = await resp.json();
+                if (body && body.detail) detail = body.detail;
+            } catch (e) { /* non-JSON error body */ }
+            return new Error("[" + resp.status + "] " + detail);
+        }
+
+        // ---- createChatPanel: everything shared between "Chat" and "Chat with
+        // Image" (transcript, SSE streaming, Send/Stop morph, Reset, Tokens
+        // dropdown, the centered<->docked transition) lives here once. Each panel
+        // supplies only how its first message begins (opts.startFirst) plus a
+        // handful of optional hooks for panel-specific bits (image swapping,
+        // upload-row visibility) -- all default to no-ops, which is exactly right
+        // for the plain-text Chat panel that needs none of them. ----
+        function createChatPanel(opts) {
+            var root = opts.root;
+            var mode = opts.mode;
+            var wantsFreshSession = opts.wantsFreshSession || function () { return false; };
+            var beforeSend = opts.beforeSend || function () { return true; };
+            var hasContext = opts.hasContext || function () { return true; };
+            var onSendStarted = opts.onSendStarted || function () {};
+            var onFirstSendFailed = opts.onFirstSendFailed || function () {};
+            var onSessionEnded = opts.onSessionEnded || function () {};
+            var onResetExtra = opts.onReset || function () {};
+            var onRenderControls = opts.onRenderControls || function () {};
+
+            var transcript = root.querySelector(".transcript");
+            var chatInput = root.querySelector(".chat-input");
+            var sendBtn = root.querySelector(".send-btn");
+            var resetBtn = root.querySelector(".reset-btn");
+            var tokensToggle = root.querySelector(".tokens-toggle");
+            var tokensPop = root.querySelector(".tokens-pop");
+            var tokenUsageEl = root.querySelector(".token-usage");
+
+            var panelState = {
+                sessionStarted: false,          // has this panel successfully started a session at least once
+                busy: false,
+                currentAbortController: null,   // aborts the in-flight fetch when Stop is clicked
+                currentBubbleBody: null,        // .msg-body of the assistant message currently streaming
+            };
+
+            function renderControls() {
+                var blocked = !sharedHealth.modelLoaded;
+                // Chat with SAR has no Reset button (its onReset() is still
+                // triggered programmatically -- see the /health poll's SAR
+                // handling below), so resetBtn is null there.
+                if (resetBtn) {
+                    resetBtn.disabled = blocked || panelState.busy;
+                    resetBtn.classList.toggle("running", panelState.busy);
+                }
+                chatInput.disabled = blocked || panelState.busy;
+
+                // Send stays enabled (as Stop) while busy so generation can
+                // actually be interrupted -- only the model-loading gate can
+                // disable it then.
+                sendBtn.disabled = panelState.busy ? blocked : (blocked || !hasContext());
+                onRenderControls(blocked, panelState.busy);
+            }
+
+            // Swaps the single send/stop button between the two modes: Send
+            // (green, arrow) when idle, Stop (red, square) while a generation is
+            // in flight.
+            function setBusy(flag) {
+                panelState.busy = flag;
+                sendBtn.classList.toggle("stop-mode", flag);
+                if (flag) {
+                    sendBtn.textContent = "■";
+                    sendBtn.title = "Stop";
+                    sendBtn.classList.remove("buttonGreen-sar");
+                    sendBtn.classList.add("buttonRed-sar");
+                    sendBtn.onclick = onStop;
+                } else {
+                    sendBtn.textContent = "↑";
+                    sendBtn.title = "Send";
+                    sendBtn.classList.remove("buttonRed-sar");
+                    sendBtn.classList.add("buttonGreen-sar");
+                    sendBtn.onclick = onSend;
+                }
+                renderControls();
+            }
+
+            function toggleTokens(e) {
+                if (e) e.stopPropagation();
+                if (tokensPop) tokensPop.classList.toggle("open");
+            }
+            // Tokens widget markup is commented out in the "production" layout for
+            // this panel -- tokensPop/tokensToggle are then null, since it's never
+            // in the DOM at all. Guard every use rather than assume it's present.
+            document.addEventListener("click", function (e) {
+                if (!tokensPop || !tokensPop.classList.contains("open")) return;
+                if (e.target === tokensToggle || tokensPop.contains(e.target)) return;
+                tokensPop.classList.remove("open");
+            });
+
+            // ---- transcript helpers ----
+            function appendMessage(role, text) {
+                var el = document.createElement("div");
+                el.className = "msg " + role;
+                var roleLabel = document.createElement("div");
+                roleLabel.className = "msg-role";
+                roleLabel.textContent = role === "user" ? "User" : "Assistant";
+                var body = document.createElement("div");
+                body.className = "msg-body";
+                body.textContent = text;
+                el.appendChild(roleLabel);
+                el.appendChild(body);
+                transcript.appendChild(el);
+                transcript.scrollTop = transcript.scrollHeight;
+                return el;
+            }
+
+            function showError(err) {
+                var el = appendMessage("assistant", "Error: " + (err && err.message ? err.message : String(err)));
+                el.classList.add("err");
+            }
+
+            function updateTokenUsage(used, total) {
+                if (tokenUsageEl) tokenUsageEl.textContent = used + " / " + total;
+            }
+
+            // ---- hand-rolled SSE reader: the backend's streaming endpoints are
+            // POST, so the browser's native EventSource (GET-only) doesn't apply.
+            // Tokens are rendered as they arrive, not buffered until the stream
+            // ends. ----
+            async function streamSseIntoBubble(response, bubbleEl) {
+                var reader = response.body.getReader();
+                var decoder = new TextDecoder();
+                var buffer = "";
+                var text = "";
+
+                function handleEvent(rawBlock) {
+                    var event = null;
+                    var dataLines = [];
+                    rawBlock.split("\n").forEach(function (line) {
+                        if (line.indexOf("event:") === 0) event = line.slice(6).trim();
+                        else if (line.indexOf("data:") === 0) dataLines.push(line.slice(5).trim());
+                    });
+                    if (!event) return;
+                    var payload = dataLines.length ? JSON.parse(dataLines.join("\n")) : {};
+                    if (event === "token") {
+                        text += payload.piece || "";
+                        // Trim only what's displayed, not the accumulator -- the
+                        // model occasionally emits trailing newlines at the end of
+                        // a turn, which "white-space: pre-wrap" would otherwise
+                        // render as extra blank space inside the bubble. A
+                        // mid-word trailing space gets trimmed for a frame then
+                        // reappears correctly once the next piece is concatenated
+                        // onto the untouched `text`.
+                        bubbleEl.textContent = text.replace(/\s+$/, "");
+                        transcript.scrollTop = transcript.scrollHeight;
+                    } else if (event === "usage") {
+                        updateTokenUsage(payload.used, payload.total);
+                    } else if (event === "stopped") {
+                        text += (text ? " " : "") + "[stopped]";
+                        bubbleEl.textContent = text;
+                    } else if (event === "error") {
+                        showError(new Error(payload.detail || "Backend error"));
+                    }
+                }
+
+                while (true) {
+                    var res = await reader.read();
+                    if (res.value) buffer += decoder.decode(res.value, { stream: true });
+                    var idx;
+                    while ((idx = buffer.indexOf("\n\n")) !== -1) {
+                        handleEvent(buffer.slice(0, idx));
+                        buffer = buffer.slice(idx + 2);
+                    }
+                    if (res.done) break;
+                }
+            }
+
+            function streamIntoNewBubble(resp) {
+                var bubble = appendMessage("assistant", "").querySelector(".msg-body");
+                panelState.currentBubbleBody = bubble;
+                return streamSseIntoBubble(resp, bubble);
+            }
+
+            async function sendFollowUp(text, signal) {
+                var resp = await fetch("session/message", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ message: text }),
+                    signal: signal,
+                });
+                if (!resp.ok) throw await backendError(resp);
+                await streamIntoNewBubble(resp);
+            }
+
+            var helpers = {
+                backendError: backendError,
+                sendFollowUp: sendFollowUp,
+                streamIntoNewBubble: streamIntoNewBubble,
+            };
+
+            // ---- Send: before treating this as a follow-up, re-verify via
+            // /health that a session is active AND its mode still matches this
+            // panel -- not just trust a local flag. The backend only ever allows
+            // one active session process-wide, so another tab may have silently
+            // ended this one and started its own since this panel last sent
+            // (the established behavior here is auto-end-whatever's-active, not
+            // a 409 -- and checking active-ness alone isn't enough, since without
+            // the mode check a stale tab would silently succeed against the
+            // *wrong* session and stream back a contextually-wrong reply instead
+            // of erroring). Also docks the composer to the bottom / reveals the
+            // transcript, Claude-homepage style, the first time a message is
+            // sent. ----
+            async function onSend() {
+                var text = chatInput.value.trim();
+                if (!text || panelState.busy || !sharedHealth.modelLoaded) return;
+                if (!beforeSend(text)) return;
+
+                // Computable synchronously, before any network round-trip: are we
+                // definitely about to attempt a fresh start? (Never started yet,
+                // or the panel explicitly wants a new one, e.g. a different image
+                // was picked.) This can never be true when a plain follow-up will
+                // actually happen, so it's safe to let a panel react immediately
+                // -- e.g. hiding its upload control -- without waiting on the
+                // health check below, which only exists to catch the *other*
+                // case: a session this panel still believes is its own having
+                // been silently stolen by another tab.
+                var likelyNeedsFresh = !panelState.sessionStarted || wantsFreshSession();
+                onSendStarted(likelyNeedsFresh);
+
+                root.classList.add("active");
+                setBusy(true);
+                appendMessage("user", text);
+                chatInput.value = "";
+
+                var controller = new AbortController();
+                panelState.currentAbortController = controller;
+                var wentThroughStartFirst = false;
+
+                try {
+                    var believesAlive = !likelyNeedsFresh;
+                    var health = await fetch("health", { cache: "no-store" }).then(function (r) { return r.json(); });
+                    var sessionStillMine = believesAlive && health.session_active && health.mode === mode;
+
+                    if (sessionStillMine) {
+                        await sendFollowUp(text, controller.signal);
+                    } else {
+                        panelState.sessionStarted = false;
+                        onSessionEnded();
+                        if (health.session_active) {
+                            await fetch("session/end", { method: "POST" });
+                        }
+                        wentThroughStartFirst = true;
+                        await opts.startFirst(text, controller.signal, helpers);
+                        panelState.sessionStarted = true;
+                    }
+                } catch (err) {
+                    if (wentThroughStartFirst && !panelState.sessionStarted) {
+                        onFirstSendFailed();
+                    }
+                    if (err && err.name === "AbortError") {
+                        if (panelState.currentBubbleBody) {
+                            var t = panelState.currentBubbleBody.textContent;
+                            panelState.currentBubbleBody.textContent = t + (t ? " " : "") + "[stopped]";
+                        } else {
+                            appendMessage("assistant", "[stopped]");
+                        }
+                    } else {
+                        showError(err);
+                    }
+                } finally {
+                    panelState.currentAbortController = null;
+                    panelState.currentBubbleBody = null;
+                    setBusy(false);
+                }
+            }
+
+            // ---- Stop: interrupts the in-flight generation without ending the
+            // session. Aborting the fetch stops the UI from advancing
+            // immediately; /session/stop asks the backend to try to unwind the
+            // native call early (best-effort -- the vendor API has no documented
+            // cancel). Either way, the session/active_mode stay untouched, so the
+            // very next Send can query the same session right away. ----
+            function onStop() {
+                if (!panelState.busy) return;
+                if (panelState.currentAbortController) panelState.currentAbortController.abort();
+                fetch("session/stop", { method: "POST" }).catch(function () {});
+            }
+
+            // ---- Reset: end whatever session is active, clear all client
+            // state, and return to the centered empty-state layout. ----
+            async function onReset() {
+                if (panelState.busy) return;
+                setBusy(true);
+                try {
+                    var health = await fetch("health", { cache: "no-store" }).then(function (r) { return r.json(); });
+                    if (health.session_active) await fetch("session/end", { method: "POST" });
+                } catch (e) { /* best-effort */ }
+
+                panelState.sessionStarted = false;
+                transcript.innerHTML = "";
+                if (tokenUsageEl) tokenUsageEl.textContent = "—";
+                if (tokensPop) tokensPop.classList.remove("open");
+                root.classList.remove("active");
+                onResetExtra();
+
+                setBusy(false);
+            }
+
+            chatInput.addEventListener("keydown", function (e) {
+                if (e.key === "Enter") onSend();
+            });
+
+            setBusy(false);
+            panelsToRefresh.push(renderControls);
+
+            return { onReset: onReset, toggleTokens: toggleTokens, state: panelState };
+        }
+
+        // ==================== Chat (text-only) ====================
+        window.chatPanel = createChatPanel({
+            root: document.getElementById("chatOnly"),
+            mode: "chat",
+            startFirst: async function (text, signal, helpers) {
+                var resp = await fetch("session/start", { method: "POST", signal: signal });
+                if (!resp.ok) throw await helpers.backendError(resp);
+                await helpers.sendFollowUp(text, signal);
+            },
+        });
+
+        // ==================== Chat with Image ====================
+        // File selection / drag-and-drop are image-only concerns and stay
+        // outside the factory, keyed off page-level IDs (no collision risk --
+        // the Chat panel has no image elements at all).
+        var fileInput = document.getElementById("fileInput");
+        var uploadRow = document.getElementById("uploadRow");
+        var uploadBtn = document.getElementById("uploadBtn");
+        var imagePreviewWrap = document.getElementById("imagePreviewWrap");
+        var imgPreview = document.getElementById("imagePreview");
+        var noImageLabel = document.getElementById("noImageLabel");
+        var uploadMsgEl = document.getElementById("uploadMsg");
+
+        var imageState = {
+            selectedFile: null,      // File chosen client-side, not yet sent to the backend
+            selectedFileKey: null,   // identity of the chosen file: "name:size:lastModified"
+            activeImageKey: null,    // key of the image actually backing the live session (null = none)
+        };
+
+        window.imagePanel = createChatPanel({
+            root: document.getElementById("imageChat"),
+            mode: "image_chat",
+            wantsFreshSession: function () {
+                return !!imageState.selectedFile && imageState.selectedFileKey !== imageState.activeImageKey;
+            },
+            beforeSend: function () {
+                if (!imageState.selectedFile && !imageState.activeImageKey) {
+                    uploadMsgEl.textContent = "Choose an image first.";
+                    uploadMsgEl.className = "upload-msg error";
+                    return false;
+                }
+                return true;
+            },
+            hasContext: function () {
+                return !!imageState.selectedFile || !!imageState.activeImageKey;
+            },
+            onRenderControls: function (blocked, busy) {
+                uploadBtn.disabled = blocked || busy;
+                uploadBtn.classList.toggle("running", busy);
+            },
+            onSendStarted: function (likelyNeedsFresh) {
+                // Hide the upload control the instant Send is clicked -- don't
+                // wait for the assistant to actually reply. Restored below if
+                // this attempt fails.
+                if (likelyNeedsFresh) {
+                    uploadRow.style.display = "none";
+                }
+            },
+            onFirstSendFailed: function () {
+                // The image was never actually accepted -- bring the upload
+                // control back so the user isn't stuck without a way to retry.
+                uploadRow.style.display = "";
+            },
+            onSessionEnded: function () {
+                imageState.activeImageKey = null;
+            },
+            onReset: function () {
+                imageState.activeImageKey = null;
+                imageState.selectedFile = null;
+                imageState.selectedFileKey = null;
+                fileInput.value = "";
+                imgPreview.style.display = "none";
+                imgPreview.removeAttribute("src");
+                noImageLabel.style.display = "block";
+                imagePreviewWrap.classList.remove("has-image");
+                uploadMsgEl.textContent = "";
+                uploadRow.style.display = "";
+            },
+            startFirst: async function (text, signal, helpers) {
+                var form = new FormData();
+                form.append("image", imageState.selectedFile, imageState.selectedFile.name);
+                form.append("prompt", text);
+                var resp = await fetch("session/start-image", { method: "POST", body: form, signal: signal });
+                if (!resp.ok) throw await helpers.backendError(resp);
+                await helpers.streamIntoNewBubble(resp);
+                // Only mark this image as the confirmed, active-session image once
+                // the full round-trip (including the streamed reply) has actually
+                // succeeded -- matches wantsFreshSession()'s assumption that
+                // activeImageKey reflects a *established* session, not merely an
+                // attempted one.
+                imageState.activeImageKey = imageState.selectedFileKey;
+            },
+        });
+
+        // ---- file selection: client-side preview only, no network call yet.
+        // The upload control (and drag-and-drop) stay available until the image
+        // is actually sent to the backend for the first time -- so the user can
+        // still swap their pick beforehand. ----
+        function canAcceptImage() {
+            return sharedHealth.modelLoaded && !imagePanel.state.busy && !imageState.activeImageKey;
+        }
+
+        function handleSelectedFile(file) {
+            if (!file) return;
+            if (file.type.indexOf("image/") !== 0) {
+                uploadMsgEl.textContent = "Please choose an image file.";
+                uploadMsgEl.className = "upload-msg error";
+                return;
+            }
+            imageState.selectedFile = file;
+            imageState.selectedFileKey = file.name + ":" + file.size + ":" + file.lastModified;
+            imgPreview.src = URL.createObjectURL(file);
+            imgPreview.style.display = "block";
+            noImageLabel.style.display = "none";
+            imagePreviewWrap.classList.add("has-image");
+            uploadMsgEl.textContent = "";
+            uploadMsgEl.className = "upload-msg";
+            panelsToRefresh.forEach(function (fn) { fn(); });
+        }
+
+        fileInput.addEventListener("change", function (e) {
+            handleSelectedFile(e.target.files[0]);
+        });
+
+        imagePreviewWrap.addEventListener("dragover", function (e) {
+            if (!canAcceptImage()) return;
+            e.preventDefault();
+            imagePreviewWrap.classList.add("drag-over");
+        });
+        imagePreviewWrap.addEventListener("dragleave", function () {
+            imagePreviewWrap.classList.remove("drag-over");
+        });
+        imagePreviewWrap.addEventListener("drop", function (e) {
+            imagePreviewWrap.classList.remove("drag-over");
+            if (!canAcceptImage()) return;
+            e.preventDefault();
+            handleSelectedFile(e.dataTransfer.files && e.dataTransfer.files[0]);
+        });
+        // Safety net: without this, dropping outside the zone (or a miss inside
+        // it) makes the browser navigate to/open the dropped file.
+        ["dragover", "drop"].forEach(function (evt) {
+            document.addEventListener(evt, function (e) { e.preventDefault(); });
+        });
+
+        // ==================== Chat with SAR ====================
+        // No upload control at all -- the image arrives from a separate SAR
+        // machine over Ethernet (POST /sar/upload) and is picked up here purely
+        // via the shared health poll below, keyed off /health's "sar" field.
+        var sarPreviewWrap = document.getElementById("sarPreviewWrap");
+        var sarPreviewImg = document.getElementById("sarPreview");
+        var sarNoImageLabel = document.getElementById("sarNoImageLabel");
+
+        var sarImgState = {
+            version: null,         // version currently shown in the preview (null = none shown)
+            activeVersion: null,   // version backing the currently active/started session (null = none)
+        };
+
+        function showSarImage(version) {
+            sarPreviewImg.src = "sar/image?v=" + version;
+            sarPreviewImg.style.display = "block";
+            sarNoImageLabel.style.display = "none";
+            sarPreviewWrap.classList.add("has-image");
+            sarImgState.version = version;
+        }
+
+        function clearSarImage() {
+            sarPreviewImg.style.display = "none";
+            sarPreviewImg.removeAttribute("src");
+            sarNoImageLabel.style.display = "block";
+            sarPreviewWrap.classList.remove("has-image");
+            sarImgState.version = null;
+        }
+
+        window.sarPanel = createChatPanel({
+            root: document.getElementById("sarChat"),
+            mode: "sar_chat",
+            wantsFreshSession: function () {
+                return sarImgState.version != null && sarImgState.version !== sarImgState.activeVersion;
+            },
+            beforeSend: function () {
+                return sarImgState.version != null;
+            },
+            hasContext: function () {
+                return sarImgState.version != null;
+            },
+            onSessionEnded: function () {
+                sarImgState.activeVersion = null;
+            },
+            onReset: function () {
+                sarImgState.activeVersion = null;
+                clearSarImage();
+            },
+            startFirst: async function (text, signal, helpers) {
+                var resp = await fetch("sar/session/start", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ prompt: text }),
+                    signal: signal,
+                });
+                if (!resp.ok) throw await helpers.backendError(resp);
+                await helpers.streamIntoNewBubble(resp);
+                // Matches imageState.activeImageKey's timing: only anchor the
+                // session to this version once the full round-trip succeeded.
+                sarImgState.activeVersion = sarImgState.version;
+            },
+        });
+
+        // ==================== Image Analysis ====================
+        // Not a chat: one image + one prompt (.txt) file in, one answer out.
+        // No text composer, no follow-up, no SSE streaming -- gemma3_describe()
+        // is called in a token-by-token loop server-side (see demo_poc.py) and
+        // decoded as a whole at the end (SentencePiece subword joins need the
+        // full sequence), so the frontend just shows a placeholder bubble
+        // while /analysis/run is in flight and fills it in once the response
+        // arrives. Deliberately its own small controller rather than another
+        // createChatPanel() panel -- the interaction shape genuinely differs
+        // (two uploads, no text input, no session to continue).
+        var analysisRoot = document.getElementById("analysisChat");
+        var analysisTranscript = analysisRoot.querySelector(".transcript");
+        var analysisResetBtn = analysisRoot.querySelector(".reset-btn");
+        var analysisFileInput = document.getElementById("analysisFileInput");
+        var analysisPromptInput = document.getElementById("analysisPromptInput");
+        var analysisUploadRow = document.getElementById("analysisUploadRow");
+        var analysisUploadBtn = document.getElementById("analysisUploadBtn");
+        var analysisPromptBtn = document.getElementById("analysisPromptBtn");
+        var analysisPreviewWrap = document.getElementById("analysisPreviewWrap");
+        var analysisImgPreview = document.getElementById("analysisPreview");
+        var analysisNoImageLabel = document.getElementById("analysisNoImageLabel");
+        var analysisUploadMsgEl = document.getElementById("analysisUploadMsg");
+        var analysisRunBtn = document.getElementById("analysisRunBtn");
+
+        var analysisState = {
+            selectedImage: null,
+            selectedPromptFile: null,
+            busy: false,     // an /analysis/run request is in flight
+            locked: false,   // set the moment Run is clicked; only Reset clears it --
+                              // uploads and Run stay hidden through success or failure,
+                              // since only one image+prompt is processed at a time.
+        };
+
+        // Same bubble shape as createChatPanel()'s appendMessage, just
+        // labelled "Prompt"/"Assistant" instead of "You"/"Assistant" since
+        // the "user" bubble here holds the prompt file's contents, not
+        // something typed. ".msg" is already "white-space: pre-wrap", and
+        // setting .textContent (never innerHTML) means the prompt/output are
+        // shown exactly as read -- every space and newline preserved, none
+        // collapsed.
+        function analysisAppendMessage(role, text) {
+            var el = document.createElement("div");
+            el.className = "msg " + role;
+            var roleLabel = document.createElement("div");
+            roleLabel.className = "msg-role";
+            roleLabel.textContent = role === "user" ? "Prompt" : "Assistant";
+            var body = document.createElement("div");
+            body.className = "msg-body";
+            body.textContent = text;
+            el.appendChild(roleLabel);
+            el.appendChild(body);
+            analysisTranscript.appendChild(el);
+            analysisTranscript.scrollTop = analysisTranscript.scrollHeight;
+            return el;
+        }
+
+        function analysisShowError(err) {
+            var el = analysisAppendMessage("assistant", "Error: " + (err && err.message ? err.message : String(err)));
+            el.classList.add("err");
+        }
+
+        function analysisRenderControls() {
+            var blocked = !sharedHealth.modelLoaded;
+            var ready = !!analysisState.selectedImage && !!analysisState.selectedPromptFile;
+            analysisResetBtn.disabled = blocked || analysisState.busy;
+            analysisResetBtn.classList.toggle("running", analysisState.busy);
+
+            // Once locked (Run clicked), both the upload row and Run button
+            // vanish entirely -- not just disabled -- and stay gone through
+            // success or failure. Only Reset brings them back: one image +
+            // prompt is processed at a time.
+            analysisUploadRow.style.display = analysisState.locked ? "none" : "";
+            analysisUploadBtn.disabled = blocked || analysisState.busy;
+            analysisPromptBtn.disabled = blocked || analysisState.busy;
+
+            analysisRunBtn.style.display = analysisState.locked ? "none" : "";
+            analysisRunBtn.disabled = blocked || analysisState.busy || !ready;
+            analysisRunBtn.classList.toggle("running", analysisState.busy);
+        }
+        panelsToRefresh.push(analysisRenderControls);
+
+        function analysisCanAcceptImage() {
+            return sharedHealth.modelLoaded && !analysisState.busy && !analysisState.locked;
+        }
+
+        function analysisHandleImage(file) {
+            if (!file) return;
+            if (file.type.indexOf("image/") !== 0) {
+                analysisUploadMsgEl.textContent = "Please choose an image file.";
+                analysisUploadMsgEl.className = "upload-msg error";
+                return;
+            }
+            analysisState.selectedImage = file;
+            analysisImgPreview.src = URL.createObjectURL(file);
+            analysisImgPreview.style.display = "block";
+            analysisNoImageLabel.style.display = "none";
+            analysisPreviewWrap.classList.add("has-image");
+            analysisUploadMsgEl.textContent = "";
+            analysisUploadMsgEl.className = "upload-msg";
+            analysisRenderControls();
+        }
+
+        function analysisHandlePrompt(file) {
+            if (!file) return;
+            if (!/\.txt$/i.test(file.name)) {
+                analysisUploadMsgEl.textContent = "Prompt must be a .txt file.";
+                analysisUploadMsgEl.className = "upload-msg error";
+                return;
+            }
+            analysisState.selectedPromptFile = file;
+            analysisUploadMsgEl.textContent = "Prompt file: " + file.name;
+            analysisUploadMsgEl.className = "upload-msg";
+            analysisRenderControls();
+        }
+
+        analysisFileInput.addEventListener("change", function (e) {
+            analysisHandleImage(e.target.files[0]);
+        });
+        analysisPromptInput.addEventListener("change", function (e) {
+            analysisHandlePrompt(e.target.files[0]);
+        });
+
+        analysisPreviewWrap.addEventListener("dragover", function (e) {
+            if (!analysisCanAcceptImage()) return;
+            e.preventDefault();
+            analysisPreviewWrap.classList.add("drag-over");
+        });
+        analysisPreviewWrap.addEventListener("dragleave", function () {
+            analysisPreviewWrap.classList.remove("drag-over");
+        });
+        analysisPreviewWrap.addEventListener("drop", function (e) {
+            analysisPreviewWrap.classList.remove("drag-over");
+            if (!analysisCanAcceptImage()) return;
+            e.preventDefault();
+            analysisHandleImage(e.dataTransfer.files && e.dataTransfer.files[0]);
+        });
+
+        async function analysisRun() {
+            if (analysisState.busy || analysisState.locked || !sharedHealth.modelLoaded) return;
+            if (!analysisState.selectedImage || !analysisState.selectedPromptFile) return;
+
+            analysisState.locked = true;
+            analysisState.busy = true;
+            analysisRenderControls();
+            analysisRoot.classList.add("active");
+
+            var promptText = await analysisState.selectedPromptFile.text();
+            analysisAppendMessage("user", promptText);
+            var pendingBubble = analysisAppendMessage("assistant", "Processing…");
+            pendingBubble.querySelector(".msg-body").classList.add("processing");
+
+            try {
+                // Image Analysis and the chat tabs share the one global,
+                // process-wide session -- same "silently take over" handoff
+                // createChatPanel()'s onSend() does before starting fresh,
+                // so an operator can switch here without hunting for Reset
+                // on whichever chat tab was active.
+                var health = await fetch("health", { cache: "no-store" }).then(function (r) { return r.json(); });
+                if (health.session_active) await fetch("session/end", { method: "POST" });
+
+                var form = new FormData();
+                form.append("image", analysisState.selectedImage, analysisState.selectedImage.name);
+                form.append("prompt_file", analysisState.selectedPromptFile, analysisState.selectedPromptFile.name);
+
+                var resp = await fetch("analysis/run", { method: "POST", body: form });
+                if (!resp.ok) throw await backendError(resp);
+                var data = await resp.json();
+                var bodyEl = pendingBubble.querySelector(".msg-body");
+                bodyEl.classList.remove("processing");
+                bodyEl.textContent = data.output;
+            } catch (err) {
+                pendingBubble.remove();
+                analysisShowError(err);
+            } finally {
+                analysisState.busy = false;
+                analysisRenderControls();
+            }
+        }
+
+        analysisRunBtn.addEventListener("click", analysisRun);
+
+        function analysisReset() {
+            if (analysisState.busy) return;
+            analysisState.selectedImage = null;
+            analysisState.selectedPromptFile = null;
+            analysisState.locked = false;
+            analysisFileInput.value = "";
+            analysisPromptInput.value = "";
+            analysisImgPreview.style.display = "none";
+            analysisImgPreview.removeAttribute("src");
+            analysisNoImageLabel.style.display = "block";
+            analysisPreviewWrap.classList.remove("has-image");
+            analysisUploadMsgEl.textContent = "";
+            analysisUploadMsgEl.className = "upload-msg";
+            analysisTranscript.innerHTML = "";
+            analysisRoot.classList.remove("active");
+            analysisRenderControls();
+        }
+
+        window.analysisPanel = { onReset: analysisReset };
+
+        // ---- health polling (shared, one loop for the whole page) ----
+        async function pollHealth() {
+            try {
+                var r = await fetch("health", { cache: "no-store" });
+                var h = await r.json();
+                sharedHealth.modelLoaded = !!h.model_loaded;
+                if (sharedHealth.modelLoaded) {
+                    statusDot.classList.remove("stale");
+                    statusText.textContent = h.session_active ? ("Session active (" + h.mode + ")") : "Ready";
+                } else {
+                    statusDot.classList.add("stale");
+                    statusText.textContent = "Waiting for model to load on the card…";
+                }
+
+                // SAR image lifecycle: auto-show a newly arrived image only if
+                // this tab hasn't already anchored a session to one -- once a
+                // SAR chat is active, a newer arrival is held back until Reset,
+                // the same gating Chat-with-Image already applies to picking a
+                // different file mid-conversation (see canAcceptImage() above).
+                var sar = h.sar || { available: false, version: null };
+                if (sar.available) {
+                    if (sarImgState.activeVersion == null && sar.version !== sarImgState.version) {
+                        showSarImage(sar.version);
+                    }
+                } else if (sarImgState.version != null) {
+                    // The SAR system's own Reset was pressed (POST /sar/reset) --
+                    // snap this tab back to its empty state even if a
+                    // transcript/session was in progress. Retries every tick
+                    // (harmless no-op via onReset()'s own busy guard) until any
+                    // in-flight generation actually unwinds.
+                    sarPanel.onReset();
+                }
+            } catch (e) {
+                sharedHealth.modelLoaded = false;
+                statusDot.classList.add("stale");
+                statusText.textContent = "Backend unreachable";
+            }
+            panelsToRefresh.forEach(function (fn) { fn(); });
+            setTimeout(pollHealth, 5000);
+        }
+
+        pollHealth();
+    })();
+    </script>
+</body>
+</html>
