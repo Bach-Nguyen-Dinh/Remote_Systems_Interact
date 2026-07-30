@@ -87,8 +87,8 @@
             background-color: #ff4c47;
         }
 
-        /* Status line: colour-coded by the type updateStatus() passes
-           ('running' / 'ready' / 'error'), on the dashboard's own palette. */
+        /* Status line: green only for the 'ready' type updateStatus() passes,
+           red for everything else, on the dashboard's own palette. */
         .autoNav-widget-status-bar {
             background-color: transparent;
             padding: 6px 10px;
@@ -96,11 +96,9 @@
             margin-bottom: 20px;
             text-align: center;
             font-size: 12px;
-            color: var(--text-weak);
+            color: var(--red);
         }
-        .autoNav-widget-status-bar.running { color: var(--blue-hover); }
-        .autoNav-widget-status-bar.ready   { color: var(--green); }
-        .autoNav-widget-status-bar.error   { color: var(--red); }
+        .autoNav-widget-status-bar.ready { color: var(--green); }
 
         .autoNav-widget-image-display {
             display: flex;
@@ -265,11 +263,15 @@
         <div class="autoNav-widget-control-panel">
             <div class="autoNav-widget-button-container">
                 <button id="fetchBtn_autoNav" onclick="preloadImages()">Fetch</button>
-                <button id="runBtn_autoNav" onclick="run_auto_nav()">Run</button>
+                <!-- Run/Clear start disabled: there is nothing to run or clear until
+                     Fetch has cached the frames. updateButtons() owns them from then
+                     on; the attribute here just avoids a flash of enabled buttons
+                     before the script runs. -->
+                <button id="runBtn_autoNav" onclick="run_auto_nav()" disabled>Run</button>
                 <!-- Doubles as Stop while playback is running (see updateButtons) -->
-                <button id="clearBtn_autoNav" class="autoNav-widget-button-red" onclick="clear_or_stop_auto_nav()">Clear</button>
+                <button id="clearBtn_autoNav" class="autoNav-widget-button-red" onclick="clear_or_stop_auto_nav()" disabled>Clear</button>
 
-                <div id="statusBar" class="autoNav-widget-status-bar">Ready to start processing</div>
+                <div id="statusBar" class="autoNav-widget-status-bar">Click "Fetch" to provide data to AI</div>
                 <p><strong>Processing Time:</strong> <span id="processingTime">-</span></p>
             </div>
         
@@ -305,6 +307,11 @@
         let pollInterval = null;
         let displayInterval = null;
 
+        // Held down for the duration of a preload so a double-click can't start a
+        // second fetch over the top of the first. Not persisted anywhere — a reload
+        // empties the caches, so the new page must be allowed to fetch again.
+        let isFetching = false;
+
         // // Preload all images when page loads
         // window.addEventListener('load', function() {
         //     preloadImages();
@@ -327,28 +334,36 @@
             statusBar.className = `autoNav-widget-status-bar ${type}`;
         }
 
+        // Are all four frame sets already preloaded? Clear() deliberately keeps the
+        // caches, so this stays true after a Clear and both the button states and
+        // the status line have to agree on it.
+        function hasCachedImages() {
+            return Object.keys(autoNavGpsImageCache).length > 0 &&
+                   Object.keys(autoNavFeaturesImageCache).length > 0 &&
+                   Object.keys(autoNavDepthImageCache).length > 0 &&
+                   Object.keys(autoNavLidarImageCache).length > 0;
+        }
+
         function updateButtons() {
             const fetchBtn_autoNav = document.getElementById('fetchBtn_autoNav');
             const runBtn_autoNav = document.getElementById('runBtn_autoNav');
             const clearBtn_autoNav = document.getElementById('clearBtn_autoNav');
 
-            // Check if images are already in memory
-            const hasImagesInMemory = Object.keys(autoNavGpsImageCache).length > 0 &&
-                                      Object.keys(autoNavFeaturesImageCache).length > 0 &&
-                                      Object.keys(autoNavDepthImageCache).length > 0 &&
-                                      Object.keys(autoNavLidarImageCache).length > 0;
+            const hasImagesInMemory = hasCachedImages();
 
-            // Fetch button: disabled if running or already fetched
-            fetchBtn_autoNav.disabled = isRunning || hasImagesInMemory;
+            // Retired for the rest of the page's life once the frames are cached,
+            // and held down while a preload is in flight.
+            fetchBtn_autoNav.disabled = isFetching || isRunning || hasImagesInMemory;
 
             // Run button: enabled if images in memory and not running
             runBtn_autoNav.disabled = !hasImagesInMemory || isRunning;
 
             // One button, two jobs — same pattern as the small-object panel's
             // Clear/Stop: "Stop" halts the playback, "Clear" wipes the displayed
-            // frames once nothing is running. Always enabled.
+            // frames once nothing is running. Nothing to stop or wipe until Fetch
+            // has cached something, so it stays down until then.
             clearBtn_autoNav.textContent = isRunning ? 'Stop' : 'Clear';
-            clearBtn_autoNav.disabled = false;
+            clearBtn_autoNav.disabled = !hasImagesInMemory;
         }
 
         function updateProcessingTime() {
@@ -362,6 +377,10 @@
         }
         
         window.preloadImages = async function() {
+            if (isFetching || hasCachedImages()) return;
+            isFetching = true;
+            updateButtons();
+
             try {
                 console.log('Starting image preload...');
                 updateStatus('Loading image list...', 'running');
@@ -376,7 +395,7 @@
 
                 const totalImages = data.gps_images.length + data.features_images.length +
                                     data.depth_images.length + data.lidar_images.length;
-                updateStatus(`Loading input data...`, 'running');
+                updateStatus(`Loading input data ...`, 'running');
                 
                 // Enhanced image loading with retry mechanism
                 function loadImageWithRetry(src, filename, imageType, maxRetries = 3, timeout = 15000) {
@@ -391,7 +410,7 @@
                             
                             img.onload = () => {
                                 clearTimeout(timeoutId);
-                                console.log(`✓ Successfully loaded: ${filename} (${imageType})`);
+                                console.log(`✓ Loaded: ${filename} (${imageType})`);
                                 
                                 // Validate that the image actually loaded with content
                                 if (img.naturalWidth > 0 && img.naturalHeight > 0) {
@@ -563,7 +582,7 @@
                 const successRate = Math.round((successful.length / validatedCount) * 100);
 
                 if (failed.length === 0) {
-                    updateStatus(`All input loaded successfully)`, 'ready');
+                    updateStatus(`All input loaded`, 'ready');
                 } else if (successful.length > 0) {
                     updateStatus(`Images loaded: ${successful.length}/${validatedCount} (${successRate}%)`, 'ready');
                 } else {
@@ -611,6 +630,11 @@
             } catch (error) {
                 console.error('Error in loading:', error);
                 updateStatus('Error loading input images - check network connection', 'error');
+            } finally {
+                // A failed preload leaves the caches empty, so this hands Fetch back
+                // for a retry rather than stranding the panel with everything down.
+                isFetching = false;
+                updateButtons();
             }
         }
 
@@ -672,7 +696,7 @@
             isRunning = true;
             startTime = new Date();
 
-            updateStatus('Starting autonomous navigation display...', 'running');
+            updateStatus('Running autonomous navigation ...', 'running');
             updateButtons();
 
             // Start cycling through images
@@ -875,7 +899,10 @@
             // Only clear the displayed images
 
             clearImages();
-            updateStatus('Ready to start processing', 'ready');
+            // The caches survive a Clear, so Fetch stays disabled — don't tell the
+            // user to click it. With data still in memory the panel is simply ready
+            // to Run again; the Fetch prompt only applies if nothing was fetched yet.
+            updateStatus(hasCachedImages() ? 'Cleared' : 'Click "Fetch" to provide data to AI', 'ready');
             updateButtons();
 
             document.getElementById('processingTime').textContent = '-';
@@ -953,10 +980,10 @@
             displayImage(lidarFilename, 'lidar', lidarContainer, lidarInfo);
         }
 
-        // Initialize button states on page load
-        window.addEventListener('load', function() {
-            updateButtons();
-        });
+        // Put the buttons into their pre-Fetch state (Run/Clear down, Fetch up).
+        // Called directly rather than on 'load': when a collapsed Grafana row is
+        // re-expanded the script re-runs but the load event does not fire again.
+        updateButtons();
 
     })(); // End of IIFE
     </script>
