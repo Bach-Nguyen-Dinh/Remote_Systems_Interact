@@ -75,6 +75,16 @@
             cursor: not-allowed;
         }
 
+        /* Combined Stop/Clear button - red, matching the HPC SAR Reset/Stop button
+           (.buttonRed-sar in index/hpc/sar_process_reset.html). */
+        .ai-smoke-widget-button-container button.ai-smoke-widget-button-red {
+            background-color: #ca2715;
+        }
+
+        .ai-smoke-widget-button-container button.ai-smoke-widget-button-red:hover:not(:disabled) {
+            background-color: #ff4c47;
+        }
+
         /* Status line: green only for the 'ready' type updateStatus_aiSmoke()
            passes, red for everything else, on the dashboard's own palette. */
         .ai-smoke-widget-status-bar {
@@ -223,7 +233,7 @@
                              buttons before the script runs. -->
                         <button id="runBtn_aiSmoke" onclick="run_ai_smoke()" disabled>Run</button>
                         <!-- Doubles as Stop while a run is in flight (see updateButtons_aiSmoke) -->
-                        <button id="clearBtn_aiSmoke" onclick="clear_or_stop_ai_smoke()" disabled>Clear</button>
+                        <button id="clearBtn_aiSmoke" class="ai-smoke-widget-button-red" onclick="clear_or_stop_ai_smoke()" disabled>Clear</button>
                     </div>
     
                     <div id="statusBar_aiSmoke" class="ai-smoke-widget-status-bar">Click "Fetch" to provide data to AI</div>
