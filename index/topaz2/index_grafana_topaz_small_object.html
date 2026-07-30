@@ -197,7 +197,8 @@
             <div class="sod-widget-button-container">
                 <button id="fetchBtn" onclick="preloadImages()">Fetch</button>
                 <button id="runBtn" onclick="run_small_obj_detect()">Run</button>
-                <button id="clearBtn" onclick="clear_small_obj_detect()">Clear</button>
+                <!-- Doubles as Stop while a run is in flight (see updateButtons) -->
+                <button id="clearBtn" onclick="clear_or_stop_small_obj_detect()">Clear</button>
 
                 <div id="statusBar" class="sod-widget-status-bar">Ready to start processing</div>
                 <p><strong>Processing Time:</strong> <span id="processingTime">-</span></p>
@@ -255,6 +256,10 @@
             
             runBtn.disabled = isRunning;
             runBtn.textContent = isRunning ? 'Processing...' : 'Run';
+            // One button, two jobs — same pattern as the HPC SAR panel's
+            // Reset/Stop: "Stop" aborts the run on the Topaz box, "Clear" wipes
+            // the results once nothing is running.
+            clearBtn.textContent = isRunning ? 'Stop' : 'Clear';
         }
 
         function updateProcessingTime() {
@@ -586,6 +591,51 @@
             }
         }
         
+        // The Clear button's click handler: it is labelled "Stop" while a run is
+        // in flight, so route to whichever action the label promises.
+        window.clear_or_stop_small_obj_detect = function() {
+            if (isRunning) {
+                stop_small_obj_detect();
+            } else {
+                clear_small_obj_detect();
+            }
+        }
+
+        // Abort the run on the Topaz device. The host looks up the PID the target
+        // reported when this run started and forwards
+        // "stop_small_obj_detect:<pid>", so only this run's process is killed.
+        // The displayed images are left alone — the button reverts to "Clear",
+        // which is what wipes them.
+        window.stop_small_obj_detect = function() {
+            if (!isRunning) return;
+
+            // Stop polling first: a progress update already in flight must not
+            // flip the buttons back to the running state after we reset them.
+            stopProgressPolling();
+            updateProcessingTime();   // freeze the elapsed time at the stop
+            isRunning = false;
+            startTime = null;
+            updateStatus('Stopping detection...', 'running');
+            updateButtons();
+
+            fetch(`send_message`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({ message: "stop_small_obj_detect" })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log("Stop command sent:", data);
+                updateStatus('Detection stopped', 'ready');
+            })
+            .catch(error => {
+                console.error("Error sending stop command:", error);
+                updateStatus('Error stopping detection', 'error');
+            });
+        }
+
         window.clear_small_obj_detect = function() {
             stopProgressPolling();
             isRunning = false;
@@ -672,6 +722,17 @@
                     stopProgressPolling();
                     break;
                     
+                case 'small_obj_detect_stopped':
+                    // The target confirming a Stop. Normally the poller is
+                    // already down by the time this lands (stop_small_obj_detect
+                    // stops it), but handle it so a stop triggered from anywhere
+                    // else still settles the UI.
+                    updateStatus('Detection stopped', 'ready');
+                    isRunning = false;
+                    updateButtons();
+                    stopProgressPolling();
+                    break;
+
                 case 'small_obj_detect_error':
                     updateStatus(`Error: ${data.error}`, 'error');
                     // document.getElementById('processStatus').textContent = 'Error';
