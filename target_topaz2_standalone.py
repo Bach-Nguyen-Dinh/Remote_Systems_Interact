@@ -77,8 +77,12 @@ current_output_count = 0
 
 ai_core_run_ai_smoke = 4
 ai_smoke_running = False
+ai_smoke_process = None           # Popen of ai_server.py while a run is in flight
+ai_smoke_stop_requested = False   # set by stop_ai_smoke()
 ai_core_run_ai_ship = 4
 ai_ship_running = False
+ai_ship_process = None            # Popen of ai_ship.py while a run is in flight
+ai_ship_stop_requested = False    # set by stop_ai_ship()
 
 ai_run_metrics_raw = None
 ai_run_metrics_lock = threading.Lock()  # Add thread safety
@@ -128,41 +132,100 @@ def send_progress_update(data):
     except Exception as e:
         print(f"Error sending progress update: {e}")
 
+def terminate_process_group(process, label):
+    """Escalate SIGINT -> SIGTERM -> SIGKILL over `process`'s group.
+
+    The AI workloads are plain compute scripts with no signal handling of their
+    own, so Ctrl+C cannot be assumed to be honoured — same escalation
+    stop_small_object_detection() uses. Signalling the *group* also catches the
+    worker processes the script spawns, which is what actually keeps the AI
+    engines busy.
+    """
+    try:
+        pgid = os.getpgid(process.pid)
+    except ProcessLookupError:
+        print(f"{label} process already exited")
+        return
+
+    for sig, grace in ((signal.SIGINT, 3), (signal.SIGTERM, 3), (signal.SIGKILL, 0)):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            print(f"{label} process already exited")
+            return
+        print(f"Sent {sig.name} to {label} process group {pgid}")
+        if grace == 0:
+            return
+        try:
+            process.wait(timeout=grace)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+def stop_targets_running_process(message, process):
+    """Does this "stop_<workload>[:<pid>]" command refer to `process`?
+
+    The host appends the PID this target reported in the run's "_start" update,
+    so a Stop click that arrives after the run it was meant for already ended
+    can never kill a newer run. An unqualified stop (no pid) always matches.
+    """
+    parts = message.split(":", 1)
+    if len(parts) == 2 and parts[1].strip().isdigit():
+        return int(parts[1]) == process.pid
+    return True
+
 def run_ai_smoke():
     global ai_core_run_ai_smoke, ai_smoke_running
+    global ai_smoke_process, ai_smoke_stop_requested
+
     if ai_smoke_running:
         print("AI smoke already running")
         return
     ai_smoke_running = True
+    ai_smoke_stop_requested = False
 
     try:
         print(f"Running ai server with {ai_core_run_ai_smoke} cores")
 
-        # Send start notification
-        start_data = {
-            "type": "ai_smoke_start",
-            "status": "started",
-            "ai_cores": ai_core_run_ai_smoke
-        }
-        send_progress_update(start_data)
-
-        # Run the AI smoke process and wait for completion
+        # Run the AI smoke process in its own process group, so a Stop from the
+        # dashboard can signal the whole group (the server plus its workers).
         process = subprocess.Popen([
             "python3",
             AI_SMOKE_PATH,
             "--ai",
             str(ai_core_run_ai_smoke)
-        ])
+        ], start_new_session=True)
+        ai_smoke_process = process
+
+        # Send start notification. The PID rides along so the host can hand it
+        # back with a later "stop_ai_smoke:<pid>".
+        start_data = {
+            "type": "ai_smoke_start",
+            "status": "started",
+            "ai_cores": ai_core_run_ai_smoke,
+            "pid": process.pid
+        }
+        send_progress_update(start_data)
 
         # Wait for process to complete
         return_code = process.wait()
 
-        # Send completion notification based on return code
-        if return_code == 0:
+        # Send completion notification based on return code — but a Stop makes
+        # the non-zero exit expected, so report that as "stopped", not an error.
+        if ai_smoke_stop_requested:
+            completion_data = {
+                "type": "ai_smoke_stopped",
+                "status": "stopped",
+                "ai_cores": ai_core_run_ai_smoke,
+                "pid": process.pid
+            }
+            print("AI smoke process stopped on request")
+        elif return_code == 0:
             completion_data = {
                 "type": "ai_smoke_complete",
                 "status": "completed",
-                "ai_cores": ai_core_run_ai_smoke
+                "ai_cores": ai_core_run_ai_smoke,
+                "pid": process.pid
             }
             print("AI smoke process completed successfully")
         else:
@@ -170,7 +233,8 @@ def run_ai_smoke():
                 "type": "ai_smoke_error",
                 "status": "error",
                 "error": f"Process exited with code {return_code}",
-                "ai_cores": ai_core_run_ai_smoke
+                "ai_cores": ai_core_run_ai_smoke,
+                "pid": process.pid
             }
             print(f"AI smoke process failed with return code {return_code}")
 
@@ -185,42 +249,81 @@ def run_ai_smoke():
         send_progress_update(error_data)
         print(f"Error running ai_smoke: {e}")
     finally:
+        ai_smoke_process = None
         ai_smoke_running = False
+
+def stop_ai_smoke(message):
+    """Kill the running AI-smoke process group, if any.
+
+    Runs on its own thread: the escalation in terminate_process_group() waits,
+    and listen_for_messages() must stay responsive to other commands meanwhile.
+    """
+    global ai_smoke_stop_requested
+
+    process = ai_smoke_process
+    if process is None or process.poll() is not None:
+        print("No AI smoke running, nothing to stop")
+        return
+
+    if not stop_targets_running_process(message, process):
+        print(f"stop_ai_smoke pid does not match running pid {process.pid}, ignoring")
+        return
+
+    # Tell run_ai_smoke() this exit was requested, so it reports "stopped"
+    # instead of the error the kill's non-zero exit code would otherwise mean.
+    ai_smoke_stop_requested = True
+    terminate_process_group(process, "AI smoke")
 
 def run_ai_ship():
     global ai_core_run_ai_ship, ai_ship_running
+    global ai_ship_process, ai_ship_stop_requested
+
     if ai_ship_running:
         print("AI ship already running")
         return
     ai_ship_running = True
+    ai_ship_stop_requested = False
 
     try:
         print(f"Running ai application with {ai_core_run_ai_ship} cores")
 
-        # Send start notification
-        start_data = {
-            "type": "ai_ship_start",
-            "status": "started",
-            "ai_cores": ai_core_run_ai_ship
-        }
-        send_progress_update(start_data)
-
-        # Run AI ship application and wait for completion
+        # Own process group so Stop can signal the whole group — see run_ai_smoke().
         process = subprocess.Popen([
             "python3",
             AI_SHIP_PATH,
             "--ai",
             str(ai_core_run_ai_ship)
-        ])
+        ], start_new_session=True)
+        ai_ship_process = process
+
+        # Send start notification, carrying the PID for a later
+        # "stop_ai_ship:<pid>".
+        start_data = {
+            "type": "ai_ship_start",
+            "status": "started",
+            "ai_cores": ai_core_run_ai_ship,
+            "pid": process.pid
+        }
+        send_progress_update(start_data)
 
         return_code = process.wait()
 
-        # Send completion notification based on return code
-        if return_code == 0:
+        # Send completion notification based on return code — a requested stop
+        # is reported as "stopped" rather than an error.
+        if ai_ship_stop_requested:
+            completion_data = {
+                "type": "ai_ship_stopped",
+                "status": "stopped",
+                "ai_cores": ai_core_run_ai_ship,
+                "pid": process.pid
+            }
+            print("AI ship application stopped on request")
+        elif return_code == 0:
             completion_data = {
                 "type": "ai_ship_complete",
                 "status": "completed",
-                "ai_cores": ai_core_run_ai_ship
+                "ai_cores": ai_core_run_ai_ship,
+                "pid": process.pid
             }
             print("AI ship application completed successfully")
         else:
@@ -228,7 +331,8 @@ def run_ai_ship():
                 "type": "ai_ship_error",
                 "status": "error",
                 "error": f"Process exited with code {return_code}",
-                "ai_cores": ai_core_run_ai_ship
+                "ai_cores": ai_core_run_ai_ship,
+                "pid": process.pid
             }
             print(f"AI ship application failed with return code {return_code}")
 
@@ -243,7 +347,24 @@ def run_ai_ship():
         send_progress_update(error_data)
         print(f"Error running ai_ship: {e}")
     finally:
+        ai_ship_process = None
         ai_ship_running = False
+
+def stop_ai_ship(message):
+    """Kill the running AI-ship process group, if any. See stop_ai_smoke()."""
+    global ai_ship_stop_requested
+
+    process = ai_ship_process
+    if process is None or process.poll() is not None:
+        print("No AI ship running, nothing to stop")
+        return
+
+    if not stop_targets_running_process(message, process):
+        print(f"stop_ai_ship pid does not match running pid {process.pid}, ignoring")
+        return
+
+    ai_ship_stop_requested = True
+    terminate_process_group(process, "AI ship")
 
 def stop_small_object_detection(message):
     """Kill the running small-object-detection process group, if any.
@@ -626,6 +747,12 @@ def listen_for_messages():
                                 ai_core_run_ai_smoke = 1
                         threading.Thread(target=run_ai_smoke, daemon=True).start()
 
+                    elif message.startswith("stop_ai_smoke"):
+                        # Off-thread: the signal escalation can take several
+                        # seconds and this loop handles one message at a time.
+                        threading.Thread(target=stop_ai_smoke,
+                                         args=(message,), daemon=True).start()
+
                     elif message.startswith("run_ai_ship"):
                         if ":" in message:
                             ai_core_run_ai_ship = int(message.split(":")[1])
@@ -634,6 +761,10 @@ def listen_for_messages():
                             elif ai_core_run_ai_ship <= 0:
                                 ai_core_run_ai_ship = 1
                         threading.Thread(target=run_ai_ship, daemon=True).start()
+
+                    elif message.startswith("stop_ai_ship"):
+                        threading.Thread(target=stop_ai_ship,
+                                         args=(message,), daemon=True).start()
 
                     elif message == "recalibrate_imu":
                         print("IMU recalibration requested by host")
