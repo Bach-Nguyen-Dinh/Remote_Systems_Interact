@@ -107,28 +107,43 @@
         
         .ai-smoke-widget-image-panel {
             flex: 1;
-            /* max-width: 500px; */
+            /* Flex items default to min-width:auto, which would let a wide image
+               push the panel past the Grafana panel's width instead of shrinking. */
+            min-width: 0;
             text-align: center;
         }
-        
+
         .ai-smoke-widget-image-container {
             border: 1px solid var(--border);
             border-radius: 3px;
             /* padding: 10px; */
             background-color: var(--panel-bg);
-            min-height: 600px;
+            height: 600px;
             display: flex;
             align-items: center;
             justify-content: center;
         }
-        
+
+        /* The div the display loop swaps content into. Pinned to the frame so the
+           frame's size comes from this stylesheet, not from whichever image the
+           loop happens to be showing. */
+        .ai-smoke-widget-image-container > div {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
         .ai-smoke-widget-image-container img {
-            /* max-width: 100%; */
-            max-height: 800px;
-            object-fit: contain;
+            /* Fill the container rather than sizing to the image, so cycling
+               through frames of differing aspect ratios never resizes the panel. */
+            width: 100%;
+            max-width: 100%;
+            height: 100%;
+            max-height: 100%;
+            /* object-fit: cover; */
             border-radius: 3px;
-            width: auto;
-            height: 600px;
         }
         
         .ai-smoke-widget-image-placeholder {
@@ -137,7 +152,7 @@
             font-size: 12px;
         }
         .ai-smoke-widget-control-panel {
-            min-width: 450px;
+            /* min-width: 450px; */
             display: flex;
         }
         
@@ -391,27 +406,62 @@
         //     console.log('Number of AI cores selected:', numAICoreRun);
         // }
 
+        // Reduce a filename to the identity its input and output frames share, so
+        // the two sides can be matched by NAME. The smoke set names them alike
+        // (validation/smoke_1007.webp <-> classification/smoke_1007.webp), so the
+        // extension is all that comes off here; the suffix stripping keeps this
+        // working for the "<name>_seg" / "<name>_out" styles the other sets use,
+        // and for a rename to 1_in.webp / 1_out.webp.
+        function pairKey_aiSmoke(filename) {
+            return filename
+                .replace(/\.[^.]+$/, '')                              // extension
+                .replace(/[_-](seg|out|output|pred|result|mask)$/i, '')   // output-side marker
+                .replace(/[_-](in|input|orig|original)$/i, '')            // input-side marker
+                .toLowerCase();
+        }
+
         function createShuffledPairs() {
-            const pairs = [];
-            // Create pairs from cached images
-            const inputKeys = Object.keys(ai_smoke_InputImageCache);
-            const outputKeys = Object.keys(ai_smoke_OutputImageCache);
-            
-            // Match input/output pairs (assuming they have corresponding numbers/names)
-            const minLength = Math.min(inputKeys.length, outputKeys.length);
-            for (let i = 0; i < minLength; i++) {
-                pairs.push({
-                    input: inputKeys[i],
-                    output: outputKeys[i]
-                });
+            // Pair by name, never by position. Both caches are keyed by filename
+            // but filled from image-decode callbacks running across parallel
+            // bundle workers, so their key order is decode-completion order: it
+            // differs between the two caches and shifts again whenever a frame
+            // fails to load. Walking the two key lists in lockstep therefore put
+            // one scene's input beside an unrelated scene's output whenever those
+            // orders happened to diverge -- which is why the panels lined up only
+            // some of the time.
+            const outputByKey = {};
+            for (const filename of Object.keys(ai_smoke_OutputImageCache)) {
+                const key = pairKey_aiSmoke(filename);
+                if (outputByKey[key] === undefined) {
+                    outputByKey[key] = filename;
+                } else {
+                    console.warn(`AI Smoke: two output frames share the key "${key}" ` +
+                                 `(${outputByKey[key]}, ${filename}); keeping the first.`);
+                }
             }
-            
+
+            const pairs = [];
+            const unmatched = [];
+            for (const inputFilename of Object.keys(ai_smoke_InputImageCache).sort()) {
+                const outputFilename = outputByKey[pairKey_aiSmoke(inputFilename)];
+                if (outputFilename === undefined) {
+                    unmatched.push(inputFilename);
+                } else {
+                    pairs.push({ input: inputFilename, output: outputFilename });
+                }
+            }
+            if (unmatched.length > 0) {
+                console.warn(`AI Smoke: ${unmatched.length} input frame(s) have no matching ` +
+                             `output frame and will not be shown:`, unmatched);
+            }
+            console.log(`AI Smoke: matched ${pairs.length} input/output pair(s) by name.`);
+
             // Shuffle the pairs array
             for (let i = pairs.length - 1; i > 0; i--) {
                 const j = Math.floor(Math.random() * (i + 1));
                 [pairs[i], pairs[j]] = [pairs[j], pairs[i]];
             }
-            
+
             return pairs;
         }
 
@@ -525,8 +575,25 @@
                 console.log('Image list received:', data);
                 
                 const totalImages = data.input_images.length + data.output_images.length;
-                updateStatus_aiSmoke(`Loading input images...`, 'running');
-                
+                // One percentage over the whole download. Repaint only when the
+                // whole number changes.
+                let loadedCount = 0;
+                let lastPercent = -1;
+                function reportProgress(percent) {
+                    percent = Math.round(percent);
+                    if (percent === lastPercent) return;
+                    lastPercent = percent;
+                    updateStatus_aiSmoke(`Loading input data ... ${percent}%`, 'running');
+                }
+                function noteLoaded() {
+                    // Clamped: if a chunk is retried, or the per-frame fallback
+                    // takes over after some frames already arrived, late callbacks
+                    // must not push the percentage past 100.
+                    if (loadedCount < totalImages) loadedCount++;
+                    reportProgress((loadedCount / totalImages) * 100);
+                }
+                reportProgress(0);
+
                 // Enhanced image loading with retry mechanism
                 function loadImageWithRetry(src, filename, imageType, maxRetries = 3, timeout = 15000) {
                     return new Promise((resolve, reject) => {
@@ -590,71 +657,182 @@
                     });
                 }
                 
-                // Validate images exist on server before attempting to load
-                async function validateImageExists(filename, type) {
-                    try {
-                        const response = await fetch(`ai_smoke/validate_image/${type}/${filename}`);
-                        if (response.ok) {
-                            const result = await response.json();
-                            return result.valid;
+                // ---- bundled preload ----
+                // Frames used to be fetched one at a time, each preceded by a
+                // validate_image probe, so a set cost two round trips per frame
+                // *in series*. That is invisible on the LAN but a round trip to
+                // this server measures ~1 s from the other side of the world, so
+                // the big sets took tens of minutes to transfer a few megabytes.
+                // Ask for a few hundred frames per request instead and cut the
+                // response up here. The probe is gone with it: /image_list only
+                // ever lists frames the server already stat'd as readable.
+                // Chunks are sized in BYTES, not frames, and the whole page shares
+                // one concurrency budget. This is what keeps the 1 s
+                // /system_metrics poll alive during a Fetch: every response on this
+                // origin shares a single HTTP/2 connection, so whatever frame data
+                // is already queued sits in front of that poll and delays it by
+                // however long the link needs to drain it. The link to a distant
+                // browser is narrow (~1.5 Mbps measured from the US west coast), so
+                // sizing by frame count made ~1 MB chunks and six of them at once —
+                // roughly 4.5 MB, about 24 s of pipe, and metrics polls stalled up
+                // to 13 s behind it. Capping the bytes in flight at
+                // TARGET x PARALLEL keeps that worst case near a couple of seconds.
+                // Two in flight still covers the bandwidth-delay product (~190 KB),
+                // so the transfer itself is no slower for being paced.
+                const BUNDLE_TARGET_BYTES = 192 * 1024;   // per request
+                const BUNDLE_PARALLEL = 2;                // requests in flight, page-wide
+                const BUNDLE_MAX_FILES = 500;             // server's own per-request cap
+                const BUNDLE_RETRIES = 3;                 // attempts per chunk
+
+                // A dropped connection is routine on a long-haul link. Retrying the
+                // one chunk that failed costs a couple of hundred KB; letting the
+                // error escape drops the whole page onto the per-frame fallback and
+                // its ~1500 round trips, which is the slow path we came here to
+                // remove.
+                async function fetchChunk(url) {
+                    let lastError;
+                    for (let attempt = 1; attempt <= BUNDLE_RETRIES; attempt++) {
+                        try {
+                            const response = await fetch(url);
+                            if (!response.ok) {
+                                throw new Error(`Bundle request failed: ${response.status}`);
+                            }
+                            return await response.arrayBuffer();
+                        } catch (error) {
+                            lastError = error;
+                            console.warn(`Bundle chunk attempt ${attempt}/${BUNDLE_RETRIES} failed:`, error);
+                            if (attempt < BUNDLE_RETRIES) {
+                                await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+                            }
                         }
-                        return false;
-                    } catch (error) {
-                        console.error(`Error validating image ${filename}:`, error);
-                        return false;
                     }
-                }
-                
-                const loadPromises = [];
-                let validatedCount = 0;
-                
-                // Process input images
-                // Process input images
-                for (const filename of data.input_images) {
-                    const isValid = await validateImageExists(filename, 'input');
-                    if (isValid) {
-                        const src = `ai_smoke/images/input/${filename}`;
-                        loadPromises.push(loadImageWithRetry(src, filename, 'input'));
-                        validatedCount++;
-                    } else {
-                        console.warn(`Skipping invalid input image: ${filename}`);
-                    }
+                    throw lastError;
                 }
 
-                // Process output images
-                for (const filename of data.output_images) {
-                    const isValid = await validateImageExists(filename, 'output');
-                    if (isValid) {
-                        const src = `ai_smoke/images/output/${filename}`;
-                        loadPromises.push(loadImageWithRetry(src, filename, 'output'));
-                        validatedCount++;
-                    } else {
-                        console.warn(`Skipping invalid output image: ${filename}`);
+                // Group the listing into byte-budgeted runs. Sizes come from
+                // /image_list, which already reports them per frame.
+                function planChunks(infos) {
+                    const chunks = [];
+                    let start = 0;
+                    while (start < infos.length) {
+                        let bytes = 0;
+                        let count = 0;
+                        while (start + count < infos.length && count < BUNDLE_MAX_FILES) {
+                            const size = infos[start + count].size || 0;
+                            // A frame larger than the whole budget still gets a
+                            // chunk of its own rather than stalling the plan.
+                            if (count > 0 && bytes + size > BUNDLE_TARGET_BYTES) break;
+                            bytes += size;
+                            count++;
+                        }
+                        chunks.push({ start: start, count: count });
+                        start += count;
                     }
+                    return chunks;
                 }
-                
-                console.log(`Validated ${validatedCount}/${totalImages} images, starting download...`);
-                updateStatus_aiSmoke(`Loading ${validatedCount} validated images...`, 'running');
-                
-                // Track progress
-                let loadedCount = 0;
-                const progressPromises = loadPromises.map(promise => 
-                    promise.then(result => {
-                        loadedCount++;
-                        const percentage = Math.round((loadedCount / validatedCount) * 100);
-                        updateStatus_aiSmoke(`Loading images... ${loadedCount}/${validatedCount} (${percentage}%)`, 'running');
-                        return result;
-                    }).catch(error => {
-                        loadedCount++;
-                        const percentage = Math.round((loadedCount / validatedCount) * 100);
-                        updateStatus_aiSmoke(`Loading images... ${loadedCount}/${validatedCount} (${percentage}%)`, 'running');
-                        throw error;
-                    })
-                );
-                
-                // Wait for all images with detailed results
-                const results = await Promise.allSettled(progressPromises);
-                
+
+                // Cut one bundle body up into the cache. Resolves once every frame
+                // in it has decoded, so Run can display any of them straight away.
+                // Yields allSettled-shaped entries so the reporting below is
+                // identical whichever path we took.
+                function unpackBundle(buffer, imageType) {
+                    const headerLength = new DataView(buffer).getUint32(0);
+                    const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, headerLength)));
+                    const cache = imageType === 'input' ? ai_smoke_InputImageCache : ai_smoke_OutputImageCache;
+
+                    let offset = 4 + headerLength;
+                    return Promise.all(header.files.map(entry => {
+                        const filename = entry.name;
+                        const start = offset;
+                        offset += entry.size;
+
+                        // size 0 means the file vanished between the listing and
+                        // the bundle; it contributes no bytes, so just skip it.
+                        if (entry.size === 0) {
+                            noteLoaded();
+                            return Promise.resolve({ status: 'rejected', reason: new Error(`Missing on server: ${filename} (${imageType})`) });
+                        }
+
+                        const blob = new Blob([new Uint8Array(buffer, start, entry.size)], { type: 'image/webp' });
+                        const url = URL.createObjectURL(blob);
+                        return new Promise(resolve => {
+                            const img = new Image();
+                            img.onload = () => {
+                                cache[filename] = img;
+                                noteLoaded();
+                                resolve({ status: 'fulfilled', value: { filename, imageType, attempts: 1 } });
+                            };
+                            img.onerror = () => {
+                                URL.revokeObjectURL(url);
+                                noteLoaded();
+                                resolve({ status: 'rejected', reason: new Error(`Corrupt frame: ${filename} (${imageType})`) });
+                            };
+                            img.src = url;
+                        });
+                    }));
+                }
+
+                // Every set on the page feeds ONE queue drained by BUNDLE_PARALLEL
+                // workers. Giving each set its own budget is what let six requests
+                // go out together and buried the metrics poll.
+                async function loadInBundles(sets) {
+                    const jobs = [];
+                    for (const set of sets) {
+                        for (const chunk of planChunks(set.infos)) {
+                            jobs.push({ imageType: set.imageType, chunk: chunk });
+                        }
+                    }
+
+                    const jobResults = new Array(jobs.length);
+                    let nextJob = 0;
+                    async function worker() {
+                        while (nextJob < jobs.length) {
+                            const index = nextJob++;
+                            const job = jobs[index];
+                            const buffer = await fetchChunk(
+                                `ai_smoke/image_bundle/${job.imageType}?start=${job.chunk.start}&count=${job.chunk.count}`);
+                            jobResults[index] = await unpackBundle(buffer, job.imageType);
+                        }
+                    }
+
+                    const workers = [];
+                    for (let i = 0; i < Math.min(BUNDLE_PARALLEL, jobs.length); i++) {
+                        workers.push(worker());
+                    }
+                    await Promise.all(workers);
+                    return [].concat.apply([], jobResults);
+                }
+
+                // Kept for a server that predates /image_bundle. Still one round
+                // trip per frame, but they all go at once rather than in series.
+                function loadOneByOne() {
+                    const promises = [];
+                    for (const filename of data.input_images) {
+                        promises.push(loadImageWithRetry(`ai_smoke/images/input/${filename}`, filename, 'input'));
+                    }
+                    for (const filename of data.output_images) {
+                        promises.push(loadImageWithRetry(`ai_smoke/images/output/${filename}`, filename, 'output'));
+                    }
+                    return Promise.allSettled(promises.map(promise =>
+                        promise.then(result => { noteLoaded(); return result; },
+                                     error => { noteLoaded(); throw error; })
+                    ));
+                }
+
+                const validatedCount = totalImages;
+                let results;
+                try {
+                    results = await loadInBundles([
+                        { imageType: 'input', infos: data.input_images_info },
+                        { imageType: 'output', infos: data.output_images_info },
+                    ]);
+                } catch (bundleError) {
+                    console.warn('Bundled preload unavailable, falling back to per-frame loads:', bundleError);
+                    loadedCount = 0;
+                    lastPercent = -1;
+                    results = await loadOneByOne();
+                }
+
                 const successful = results.filter(r => r.status === 'fulfilled');
                 const failed = results.filter(r => r.status === 'rejected');
                 

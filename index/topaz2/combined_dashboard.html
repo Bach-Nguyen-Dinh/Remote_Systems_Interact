@@ -74,6 +74,10 @@
         .section-row.collapsed .chev { transform: rotate(-90deg); }
         .section-row.collapsed .section-body { display: none; }
 
+        /* Every .frame here is auto-sized to its content by fit() below and
+           carries scrolling="no": the whole dashboard scrolls as one page, so a
+           frame must never grow its own scrollbar. fit() keeps the height right;
+           scrolling="no" makes an inner scrollbar impossible even mid-transition. */
         .frame {
             width: 100%;
             border: none;
@@ -114,7 +118,7 @@
             <span class="chev">&#9662;</span><span>Orientation</span>
         </div>
         <div class="section-body">
-            <iframe class="frame" id="frame-ori" src="orientation"
+            <iframe class="frame" id="frame-ori" src="orientation" scrolling="no"
                     title="Orientation" style="height: 420px;"></iframe>
         </div>
     </div>
@@ -125,7 +129,7 @@
             <span class="chev">&#9662;</span><span>System monitoring</span>
         </div>
         <div class="section-body">
-            <iframe class="frame" id="frame-mon" src="system_monitor"
+            <iframe class="frame" id="frame-mon" src="system_monitor" scrolling="no"
                     title="System monitoring" style="height: 900px;"></iframe>
         </div>
     </div>
@@ -146,19 +150,19 @@
             <!-- data-src, not src: each frame is loaded the first time its tab is
                  opened (the default tab loads on page load), then stays mounted. -->
             <div class="tab-panel" data-tab="nav">
-                <iframe class="frame" id="frame-nav" data-src="auto_nav_app"
+                <iframe class="frame" id="frame-nav" data-src="auto_nav_app" scrolling="no"
                         title="Autonomous navigation" style="height: 700px;"></iframe>
             </div>
             <div class="tab-panel active" data-tab="sod">
-                <iframe class="frame" id="frame-sod" data-src="small_obj_app"
+                <iframe class="frame" id="frame-sod" data-src="small_obj_app" scrolling="no"
                         title="Small object detection" style="height: 700px;"></iframe>
             </div>
             <div class="tab-panel" data-tab="ship">
-                <iframe class="frame" id="frame-ship" data-src="ai_ship_app"
+                <iframe class="frame" id="frame-ship" data-src="ai_ship_app" scrolling="no"
                         title="AI ship" style="height: 800px;"></iframe>
             </div>
             <div class="tab-panel" data-tab="smoke">
-                <iframe class="frame" id="frame-smoke" data-src="ai_smoke_app"
+                <iframe class="frame" id="frame-smoke" data-src="ai_smoke_app" scrolling="no"
                         title="AI smoke" style="height: 800px;"></iframe>
             </div>
         </div>
@@ -195,13 +199,17 @@
         function isVisible(fr) {
             return fr.offsetParent !== null;
         }
-        // Size a frame to its content, in both directions. The 1px deadband keeps
-        // the 1s poll from rewriting the style on sub-pixel noise.
+        // Size a frame to its content, in both directions. The deadband is
+        // deliberately one-sided: leaving the frame even 1px SHORT than its
+        // content makes the browser paint a scrollbar inside it -- the second
+        // scrollbar this whole auto-sizing exists to avoid -- so any shortfall is
+        // corrected immediately. Only shrinking is damped, which is all that is
+        // needed to stop sub-pixel noise rewriting the style on every tick.
         function fit(fr, fallback) {
             var d = frameDoc(fr);
             if (!d || !isVisible(fr)) return;
             var h = contentHeight(d) || fallback;
-            if (Math.abs(h - fr.offsetHeight) > 1) fr.style.height = h + "px";
+            if (h > fr.offsetHeight || fr.offsetHeight - h > 1) fr.style.height = h + "px";
         }
         // A frame that was just revealed needs a moment to re-layout before its
         // content height is trustworthy, and these pages build their grids from

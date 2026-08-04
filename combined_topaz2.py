@@ -42,10 +42,13 @@ import os
 import json
 import time
 import socket
+import struct
+import hashlib
+import mimetypes
 import threading
 import subprocess
 
-from flask import Flask, request, jsonify, send_file, send_from_directory  # type: ignore
+from flask import Flask, request, jsonify, send_file, send_from_directory, Response  # type: ignore
 from flask_cors import CORS  # type: ignore
 
 try:
@@ -90,11 +93,15 @@ AI_SMOKE_FRONTEND = os.path.join(INDEX_DIR, "index_ai_smoke.html")
 SMALL_OBJ_INPUT_DIR = os.path.join(CURR_DIR, "small_obj_detect", "data1", "image")
 SMALL_OBJ_OUTPUT_DIR = os.path.join(CURR_DIR, "small_obj_detect", "data1", "predictions")
 
-AI_SMOKE_INPUT_DIR = "/home/matthew/Downloads/SmokeNet-Data/validation/opt_web_img"
-AI_SMOKE_OUTPUT_DIR = "/home/matthew/Downloads/SmokeNet-Data/classification/opt_web_img"
+# AI_SMOKE_INPUT_DIR = "/home/matthew/Downloads/SmokeNet-Data/validation/opt_web_img"
+AI_SMOKE_INPUT_DIR = os.path.join(CURR_DIR, "SmokeNet-Data/validation/opt_web_img")
+# AI_SMOKE_OUTPUT_DIR = "/home/matthew/Downloads/SmokeNet-Data/classification/opt_web_img"
+AI_SMOKE_OUTPUT_DIR = os.path.join(CURR_DIR, "SmokeNet-Data/classification/opt_web_img")
 
-AI_SHIP_INPUT_DIR = "/home/matthew/modified_ai_ship/ship/short_example/opt_web_img"
-AI_SHIP_OUTPUT_DIR = "/home/matthew/modified_ai_ship/ship/output_segment/opt_web_img"
+# AI_SHIP_INPUT_DIR = "/home/matthew/modified_ai_ship/ship/short_example/opt_web_img"
+AI_SHIP_INPUT_DIR = os.path.join(CURR_DIR, "modified_ai_ship/ship/short_example/opt_web_img")
+# AI_SHIP_OUTPUT_DIR = "/home/matthew/modified_ai_ship/ship/output_segment/opt_web_img"
+AI_SHIP_OUTPUT_DIR = os.path.join(CURR_DIR, "modified_ai_ship/ship/output_segment/opt_web_img")
 
 AUTO_NAV_DIRS = {
     "gps": os.path.join(CURR_DIR, "autonomous_nav", "gps"),
@@ -141,6 +148,15 @@ ai_baseline_usage = {"ai_ship": 0.0, "ai_smoke": 0.0}
 
 app = Flask(__name__)
 CORS(app)
+
+# Python's mimetypes table doesn't always know .webp, and without this every
+# frame goes out as application/octet-stream.
+mimetypes.add_type("image/webp", ".webp")
+
+# How many frames one /image_bundle request may carry. The pages ask for chunks
+# well under this; the cap is only here so a hand-made request can't make the
+# server build a single multi-hundred-megabyte response.
+BUNDLE_MAX_FILES = 500
 
 # ----------------------------------------------------------------------------
 # Helpers
@@ -571,6 +587,99 @@ def validate_in(directories, image_type, filename):
     return jsonify({"valid": False, "error": "File not accessible"}), 404
 
 
+def bundle_in(directories, image_type):
+    """Return many frames in a single response.
+
+    Fetching frames one <img> at a time costs one round trip each, which is
+    invisible next to the LAN but dominates everything for a browser on another
+    continent (~1 s per request was measured from the US west coast). These
+    image sets run to ~1500 frames, so that alone is ~25 minutes of waiting for
+    a few megabytes. One request per few-hundred frames removes essentially all
+    of it.
+
+    Wire format, so the client can cut the blob back up without a second pass:
+
+        [4-byte big-endian header length][header JSON, utf-8][frame bytes, concatenated]
+        header = {"files": [{"name": "a.webp", "size": 1234}, ...]}
+
+    Sizes come from stat() and the body is padded/truncated to match, so the
+    framing can never desync even if a file changes underneath us. A frame that
+    has gone missing since the listing is reported with size 0 and contributes
+    no bytes — the client skips it instead of spending a round trip finding out.
+
+    Query parameters `start` and `count` select a slice of the same (sorted)
+    listing /image_list returns, so the page can stream several chunks in
+    parallel and show real progress.
+    """
+    directory = directories.get(image_type)
+    if directory is None:
+        return jsonify({"error": "Invalid image type"}), 400
+
+    try:
+        start = max(0, int(request.args.get("start", 0)))
+        count = int(request.args.get("count", BUNDLE_MAX_FILES))
+    except ValueError:
+        return jsonify({"error": "start and count must be integers"}), 400
+    count = max(0, min(count, BUNDLE_MAX_FILES))
+
+    names = [img["filename"] for img in list_webp(directory)][start:start + count]
+
+    entries = []          # (absolute path or None, declared size)
+    header_files = []
+    fingerprint = hashlib.sha1()
+    for name in names:
+        path = os.path.join(directory, name)
+        try:
+            stat = os.stat(path)
+            size, mtime = stat.st_size, stat.st_mtime
+        except OSError:
+            path, size, mtime = None, 0, 0
+        entries.append((path, size))
+        header_files.append({"name": name, "size": size})
+        fingerprint.update(f"{name}:{size}:{mtime};".encode("utf-8"))
+
+    # Revalidate rather than trust a TTL: these directories get swapped for a new
+    # dataset from time to time, and a stale frame is far more confusing than one
+    # extra round trip per chunk (a few dozen, against the ~1500 this saves).
+    etag = '"' + fingerprint.hexdigest() + '"'
+    if request.headers.get("If-None-Match") == etag:
+        response = Response(status=304)
+        response.headers["ETag"] = etag
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    header = json.dumps({"files": header_files}).encode("utf-8")
+    prefix = struct.pack(">I", len(header)) + header
+    total = len(prefix) + sum(size for _, size in entries)
+
+    def generate():
+        yield prefix
+        for path, size in entries:
+            if size == 0:
+                continue
+            sent = 0
+            try:
+                with open(path, "rb") as fh:
+                    while sent < size:
+                        chunk = fh.read(min(65536, size - sent))
+                        if not chunk:
+                            break
+                        sent += len(chunk)
+                        yield chunk
+            except OSError as e:
+                print(f"Error reading {path} for bundle: {e}")
+            if sent < size:
+                # File shrank or could not be read — keep the declared length so
+                # every later offset in the header stays correct.
+                yield b"\0" * (size - sent)
+
+    response = Response(generate(), mimetype="application/octet-stream")
+    response.headers["Content-Length"] = str(total)
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 def ai_core_usage_for(workload):
     """Live AI-engine usage plus the baseline captured when this workload's Run
     was pressed — the page starts displaying frames once the gap exceeds ~5%."""
@@ -589,6 +698,11 @@ def small_obj_image_list():
 @app.route('/small_obj_detect/validate_image/<image_type>/<filename>')
 def small_obj_validate_image(image_type, filename):
     return validate_in({"input": SMALL_OBJ_INPUT_DIR, "output": SMALL_OBJ_OUTPUT_DIR}, image_type, filename)
+
+
+@app.route('/small_obj_detect/image_bundle/<image_type>')
+def small_obj_image_bundle(image_type):
+    return bundle_in({"input": SMALL_OBJ_INPUT_DIR, "output": SMALL_OBJ_OUTPUT_DIR}, image_type)
 
 
 @app.route('/small_obj_detect/images/input/<filename>')
@@ -625,6 +739,11 @@ def auto_nav_validate_image(image_type, filename):
     return validate_in(AUTO_NAV_VALIDATE_DIRS, image_type, filename)
 
 
+@app.route('/auto_nav/image_bundle/<image_type>')
+def auto_nav_image_bundle(image_type):
+    return bundle_in(AUTO_NAV_VALIDATE_DIRS, image_type)
+
+
 @app.route('/auto_nav/images/<kind>/<filename>')
 def auto_nav_image(kind, filename):
     directory = AUTO_NAV_DIRS.get(kind)
@@ -647,6 +766,11 @@ def ai_ship_image_list():
 @app.route('/ai_ship/validate_image/<image_type>/<filename>')
 def ai_ship_validate_image(image_type, filename):
     return validate_in({"input": AI_SHIP_INPUT_DIR, "output": AI_SHIP_OUTPUT_DIR}, image_type, filename)
+
+
+@app.route('/ai_ship/image_bundle/<image_type>')
+def ai_ship_image_bundle(image_type):
+    return bundle_in({"input": AI_SHIP_INPUT_DIR, "output": AI_SHIP_OUTPUT_DIR}, image_type)
 
 
 @app.route('/ai_ship/images/input/<filename>')
@@ -680,6 +804,11 @@ def ai_smoke_validate_image(image_type, filename):
     return validate_in({"input": AI_SMOKE_INPUT_DIR, "output": AI_SMOKE_OUTPUT_DIR}, image_type, filename)
 
 
+@app.route('/ai_smoke/image_bundle/<image_type>')
+def ai_smoke_image_bundle(image_type):
+    return bundle_in({"input": AI_SMOKE_INPUT_DIR, "output": AI_SMOKE_OUTPUT_DIR}, image_type)
+
+
 @app.route('/ai_smoke/images/input/<filename>')
 def ai_smoke_input_image(filename):
     return send_from_directory(AI_SMOKE_INPUT_DIR, filename)
@@ -701,6 +830,12 @@ def ai_smoke_core_usage():
 
 
 def run_flask_server():
+    # NOTE: the Werkzeug development server hard-codes "Connection: close" on
+    # every response (werkzeug/serving.py, "Always close the connection"), so the
+    # reverse proxy in front of us opens a fresh TCP connection per request. Over
+    # a long-haul link that is an extra round trip on every call, and no amount of
+    # nginx-side keepalive can recover it. Serving this app under waitress or
+    # gunicorn instead is what would fix that; it cannot be fixed from here.
     print(f"Running Flask server on {HOST_IP}:{FLASK_PORT} ...")
     app.run(host=HOST_IP, port=FLASK_PORT, debug=False, use_reloader=False)
 
