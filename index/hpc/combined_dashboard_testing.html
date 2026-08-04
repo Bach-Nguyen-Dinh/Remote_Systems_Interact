@@ -192,8 +192,16 @@
     <!-- ===================== Topaz box ===================== -->
     <div class="section-row" id="sec-topaz">
         <div class="section-body">
-            <!-- data-src, not src: loaded on the first visit to this tab -->
-            <iframe class="frame" id="frame-topaz" data-src="/topaz/"
+            <!-- data-src, not src: loaded on the first visit to this tab.
+                 scrolling="no": this frame is auto-sized to the Topaz shell's own
+                 content height, so it is never meant to scroll on its own -- the
+                 page scrolls as one. Without this, any moment where the fitted
+                 height trails the content (a tab switch, a workload growing the
+                 page between polls) shows a second scrollbar beside the window's.
+                 Only affects the framed instance; /topaz/ opened directly still
+                 scrolls normally. Frames with a FIXED height (SAR, VLM) keep their
+                 scrollbars -- those genuinely need them. -->
+            <iframe class="frame" id="frame-topaz" data-src="/topaz/" scrolling="no"
                     title="Edge device" style="height: 1900px;"></iframe>
         </div>
     </div>
@@ -238,13 +246,19 @@
         function isVisible(fr) {
             return fr.offsetParent !== null;
         }
-        // Size a frame to its content, in both directions. The 1px deadband keeps
-        // the 1s poll from rewriting the style on sub-pixel noise.
+        // Size a frame to its content, in both directions. The deadband is
+        // deliberately one-sided: leaving the frame even 1px SHORT than its
+        // content makes the browser paint a scrollbar inside it -- e.g. the Topaz
+        // shell is 2544px tall on the Small object tab and 2545px on AI ship, and
+        // a symmetric 1px deadband swallowed that change, so the AI ship tab got a
+        // second scrollbar next to the window's. Any shortfall is corrected
+        // immediately; only shrinking is damped, which is all that is needed to
+        // stop sub-pixel noise rewriting the style on every tick.
         function fit(fr, fallback) {
             var d = docOf(fr);
             if (!d || !isVisible(fr)) return;
             var h = contentHeight(d) || fallback;
-            if (Math.abs(h - fr.offsetHeight) > 1) fr.style.height = h + "px";
+            if (h > fr.offsetHeight || fr.offsetHeight - h > 1) fr.style.height = h + "px";
         }
 
         // Re-fit a frame a few times after a reveal/load: it needs a moment to
