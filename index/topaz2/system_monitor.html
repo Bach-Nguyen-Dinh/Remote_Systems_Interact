@@ -618,7 +618,7 @@
             if (timeBuf.length > WINDOW) timeBuf.shift();
 
             setText("v_cpu_power", n2(d.cpu_power));
-            setText("v_ai_power", d.ai_total_pwr == null ? "—" : Math.round(d.ai_total_pwr));
+            setText("v_ai_power", d.ai_total_pwr == null ? "—" : Number(d.ai_total_pwr).toFixed(2));
             setUptime(fmtUptime(d.uptime_seconds));
 
             setText("v_cores", d.num_threads != null ? d.num_threads : (d.num_cores != null ? d.num_cores : "—"));
