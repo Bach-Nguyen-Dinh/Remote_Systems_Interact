@@ -8,7 +8,9 @@
         /* ------------------------------------------------------------------
            Live Topaz system-utilisation monitor, served by combined_topaz2.py
            and embedded in the combined shell via an <iframe>. Driven by ONE
-           request per refresh (GET system_metrics); the time-series panels keep
+           system_metrics snapshot per refresh — pushed in by the shell, which
+           polls that endpoint once for every frame that shares it, or fetched
+           here when the page is opened on its own; the time-series panels keep
            their own rolling history client-side. Grafana dark theme reproduced.
            Every fetch/URL is RELATIVE so the page works behind an nginx prefix
            (…/topaz/system_monitor) and directly (:5001/system_monitor) alike.
@@ -675,32 +677,45 @@
             }
         }
 
-        // ---------- polling ----------
-        var timer = null, inFlight = false;
+        // ---------- metrics feed ----------
+        // This page and orientation.html render from the SAME /system_metrics
+        // snapshot, so inside the combined shell the shell fetches it once and
+        // pushes it in here — polling it again from this frame would just pull
+        // the identical payload a second time every tick. Opened directly (or
+        // embedded in anything that doesn't broker metrics) nothing acks the
+        // subscription and this page polls for itself, exactly as before.
+        var pollMs = 1000;                              // from the Refresh selector
+        var selfTimer = null, inFlight = false, fed = false, lastApply = 0;
+
         function markStatus(ok) { var dot = document.getElementById("statusDot"); if (dot) dot.classList.toggle("stale", !ok); }
+        function apply(d) {
+            if (!d || d.cpu_usage == null) { markStatus(true); return; }
+            lastApply = Date.now();
+            update(d); markStatus(true);
+            var ts = d.timestamp ? new Date(d.timestamp * 1000) : new Date();
+            setText("lastUpdate", ts.toLocaleTimeString());
+        }
         function tick() {
             if (inFlight) return;
             inFlight = true;
             fetch("system_metrics", { cache: "no-store" })
                 .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-                .then(function (d) {
-                    if (!d || d.cpu_usage == null) { markStatus(true); return; }
-                    update(d); markStatus(true);
-                    var ts = d.timestamp ? new Date(d.timestamp * 1000) : new Date();
-                    setText("lastUpdate", ts.toLocaleTimeString());
-                })
+                .then(apply)
                 .catch(function () { markStatus(false); })
                 .finally(function () { inFlight = false; });
         }
-        function startTimer(ms) { if (timer) clearInterval(timer); tick(); timer = setInterval(tick, ms); }
+        function startSelfPoll() { if (selfTimer) clearInterval(selfTimer); tick(); selfTimer = setInterval(tick, pollMs); }
+        function stopSelfPoll() { if (selfTimer) { clearInterval(selfTimer); selfTimer = null; } }
 
         var sel = document.getElementById("refreshSelect");
         var saved = parseInt(localStorage.getItem(STORE_KEY), 10);
         if (saved && [1000, 2000, 5000, 30000, 60000].indexOf(saved) !== -1) sel.value = String(saved);
+        pollMs = parseInt(sel.value, 10) || 1000;
         sel.addEventListener("change", function () {
-            var ms = parseInt(sel.value, 10) || 1000;
-            localStorage.setItem(STORE_KEY, String(ms));
-            startTimer(ms);
+            pollMs = parseInt(sel.value, 10) || 1000;
+            localStorage.setItem(STORE_KEY, String(pollMs));
+            if (fed) subscribe();          // tell the host our new rate
+            else startSelfPoll();
         });
 
         var resizeRAF = null;
@@ -712,7 +727,37 @@
             });
         });
 
-        startTimer(parseInt(sel.value, 10) || 1000);
+        function subscribe() {
+            window.parent.postMessage({ type: "metrics-subscribe", interval: pollMs },
+                                      window.location.origin);
+        }
+        if (window.parent === window) {
+            startSelfPoll();
+        } else {
+            window.addEventListener("message", function (e) {
+                if (e.origin !== window.location.origin) return;
+                var m = e.data;
+                if (!m || typeof m !== "object") return;
+                if (m.type === "metrics-subscribed") { fed = true; stopSelfPoll(); }
+                else if (m.type === "metrics") {
+                    fed = true; stopSelfPoll();
+                    // The host polls at the fastest rate any frame asked for, so
+                    // honour our own Refresh setting by dropping the extras.
+                    if (Date.now() - lastApply >= pollMs - 100) apply(m.data);
+                }
+                else if (m.type === "metrics-error") { fed = true; markStatus(false); }
+            });
+            // The host's listener may not be attached yet when this frame's
+            // script first runs, so retry a few times before concluding nobody
+            // is going to feed us and falling back to our own poll.
+            var tries = 0;
+            (function subscribeRetry() {
+                if (fed) return;
+                subscribe();
+                if (++tries < 4) setTimeout(subscribeRetry, 300);
+                else setTimeout(function () { if (!fed) startSelfPoll(); }, 300);
+            })();
+        }
     })();
     </script>
 </body>

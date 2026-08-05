@@ -7,9 +7,11 @@
     <style>
         /* ------------------------------------------------------------------
            IMU orientation monitor, served by combined_topaz2.py and embedded in
-           the combined shell via an <iframe>. Driven by ONE request per refresh
-           (GET system_metrics); each time-series keeps its own rolling history
-           client-side. Grafana dark theme reproduced (the iframe doesn't inherit
+           the combined shell via an <iframe>. Driven by ONE system_metrics
+           snapshot per refresh — pushed in by the shell, which polls that
+           endpoint once for every frame that shares it, or fetched here when the
+           page is opened on its own; each time-series keeps its own rolling
+           history client-side. Grafana dark theme reproduced (the iframe doesn't inherit
            it). Every fetch/URL is RELATIVE so the page works behind an nginx
            prefix (…/topaz/orientation) as well as directly (:5001/orientation).
            ------------------------------------------------------------------ */
@@ -296,26 +298,43 @@
             drawAll();
         }
 
-        // ---------- polling ----------
-        var inFlight = false;
+        // ---------- metrics feed ----------
+        // This page and system_monitor.html render from the SAME /system_metrics
+        // snapshot, so inside the combined shell the shell fetches it once and
+        // pushes it in here — polling it again from this frame would just pull
+        // the identical payload a second time every tick. Opened directly (or
+        // embedded in anything that doesn't broker metrics) nothing acks the
+        // subscription and this page polls for itself, exactly as before.
+        var POLL_MS = 1000;
+        var selfTimer = null, inFlight = false, fed = false;
+
         function markStatus(ok) {
             var dot = document.getElementById("statusDot");
             if (dot) dot.classList.toggle("stale", !ok);
+        }
+        function apply(d) {
+            if (!d || !d.imu_data) { markStatus(true); return; }
+            update(d);
+            markStatus(true);
+            var ts = d.timestamp ? new Date(d.timestamp * 1000) : new Date();
+            setText("lastUpdate", ts.toLocaleTimeString());
         }
         function tick() {
             if (inFlight) return;
             inFlight = true;
             fetch("system_metrics", { cache: "no-store" })
                 .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-                .then(function (d) {
-                    if (!d || !d.imu_data) { markStatus(true); return; }
-                    update(d);
-                    markStatus(true);
-                    var ts = d.timestamp ? new Date(d.timestamp * 1000) : new Date();
-                    setText("lastUpdate", ts.toLocaleTimeString());
-                })
+                .then(apply)
                 .catch(function () { markStatus(false); })
                 .finally(function () { inFlight = false; });
+        }
+        function startSelfPoll() {
+            if (selfTimer) return;
+            tick();
+            selfTimer = setInterval(tick, POLL_MS);
+        }
+        function stopSelfPoll() {
+            if (selfTimer) { clearInterval(selfTimer); selfTimer = null; }
         }
 
         // recalibrate
@@ -337,8 +356,29 @@
             resizeRAF = requestAnimationFrame(drawAll);
         });
 
-        tick();
-        setInterval(tick, 1000);
+        if (window.parent === window) {
+            startSelfPoll();
+        } else {
+            window.addEventListener("message", function (e) {
+                if (e.origin !== window.location.origin) return;
+                var m = e.data;
+                if (!m || typeof m !== "object") return;
+                if (m.type === "metrics-subscribed") { fed = true; stopSelfPoll(); }
+                else if (m.type === "metrics") { fed = true; stopSelfPoll(); apply(m.data); }
+                else if (m.type === "metrics-error") { fed = true; markStatus(false); }
+            });
+            // The host's listener may not be attached yet when this frame's
+            // script first runs, so retry a few times before concluding nobody
+            // is going to feed us and falling back to our own poll.
+            var tries = 0;
+            (function subscribe() {
+                if (fed) return;
+                window.parent.postMessage({ type: "metrics-subscribe", interval: POLL_MS },
+                                          window.location.origin);
+                if (++tries < 4) setTimeout(subscribe, 300);
+                else setTimeout(function () { if (!fed) startSelfPoll(); }, 300);
+            })();
+        }
     })();
     </script>
 </body>
