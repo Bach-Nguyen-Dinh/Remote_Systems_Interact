@@ -279,7 +279,9 @@
 
         let isRunning_aiShip = false;
         let startTime_aiShip = null;
-        let pollInterval_aiShip = null;
+        // Open EventSource on 'ai_ship/events' while a run is in flight, so the
+        // host pushes the run's completion instead of the page asking for it.
+        let progressStream_aiShip = null;
         let processingTimeInterval = null;
 
         // Fetch is a one-shot per page load: it caches the input/output frames in
@@ -534,7 +536,7 @@
 
             try {
                 console.log('Starting enhanced image load...');
-                updateStatus_aiShip('Loading image list...', 'running');
+                updateStatus_aiShip('Loading data list...', 'running');
                 
                 const response = await fetch(`ai_ship/image_list`);
                 if (!response.ok) {
@@ -637,23 +639,62 @@
                 // Ask for a few hundred frames per request instead and cut the
                 // response up here. The probe is gone with it: /image_list only
                 // ever lists frames the server already stat'd as readable.
-                // Chunks are sized in BYTES, not frames, and the whole page shares
-                // one concurrency budget. This is what keeps the 1 s
-                // /system_metrics poll alive during a Fetch: every response on this
-                // origin shares a single HTTP/2 connection, so whatever frame data
-                // is already queued sits in front of that poll and delays it by
-                // however long the link needs to drain it. The link to a distant
-                // browser is narrow (~1.5 Mbps measured from the US west coast), so
-                // sizing by frame count made ~1 MB chunks and six of them at once —
-                // roughly 4.5 MB, about 24 s of pipe, and metrics polls stalled up
-                // to 13 s behind it. Capping the bytes in flight at
-                // TARGET x PARALLEL keeps that worst case near a couple of seconds.
-                // Two in flight still covers the bandwidth-delay product (~190 KB),
-                // so the transfer itself is no slower for being paced.
-                const BUNDLE_TARGET_BYTES = 192 * 1024;   // per request
+                // Chunks are paced, and the whole page shares one concurrency
+                // budget. This is what keeps the 1 s /system_metrics poll alive
+                // during a Fetch: every response on this origin shares a single
+                // HTTP/2 connection, so whatever frame data is already queued sits
+                // in front of that poll and delays it by however long the link needs
+                // to drain it.
+                //
+                // The budget is a TIME, not a byte count, because the link is not a
+                // fixed speed: the same page measured 105 KB/s from Oregon in one
+                // session and 6 KB/s in the next. 192 KB is a second of pipe on the
+                // first and half a minute on the second, which is how a fixed chunk
+                // size still let metrics polls stall 44 s. Size each chunk from the
+                // speed the previous ones actually achieved instead, so the bytes in
+                // flight stay near BUNDLE_TARGET_SECONDS x BUNDLE_PARALLEL of pipe
+                // time whatever the link is doing that day.
+                const BUNDLE_TARGET_SECONDS = 1.2;        // pipe time per request
+                const BUNDLE_MIN_BYTES = 8 * 1024;        // sanity floor, not a target
+                const BUNDLE_MAX_BYTES = 512 * 1024;      // must not devolve to per-frame
                 const BUNDLE_PARALLEL = 2;                // requests in flight, page-wide
                 const BUNDLE_MAX_FILES = 500;             // server's own per-request cap
                 const BUNDLE_RETRIES = 3;                 // attempts per chunk
+
+                // Speed is measured as plain goodput: bytes landed over wall clock.
+                // Deliberately NOT by timing one response body -- anything that
+                // buffers a small response and releases it in one burst (a proxy, a
+                // TLS record boundary) makes a single-body measurement read as
+                // instantaneous and the estimate runs away. Wall clock cannot be
+                // fooled that way, and because it charges the round trips to the
+                // link as well it only ever errs low, which costs a round trip
+                // rather than a stall.
+                //
+                // Settling point, with a round trip R and a link speed L: a chunk
+                // takes R + B/L, PARALLEL of them are in flight, so the measured
+                // rate is P*B/(R + B/L) and B = TARGET * that rate. For P = 2 and
+                // TARGET = 1.2 that solves to B = 1.4*L -- about 1.4 s of pipe per
+                // chunk and under 3 s in flight, whatever L turns out to be.
+                let bundleWindowAt = 0;                   // start of current window
+                let bundleWindowBytes = 0;
+                let bundleRate = 0;                       // bytes/sec, 0 until measured
+
+                function chunkBudget() {
+                    const elapsed = bundleWindowAt ? (performance.now() - bundleWindowAt) / 1000 : 0;
+                    // A window is worth believing once it spans a round trip and a
+                    // chunk. Roll it afterwards so the estimate follows the link's
+                    // current speed instead of averaging in the slow ramp at the
+                    // start.
+                    if (elapsed >= 2 && bundleWindowBytes >= BUNDLE_MIN_BYTES) {
+                        bundleRate = bundleWindowBytes / elapsed;
+                        bundleWindowAt = performance.now();
+                        bundleWindowBytes = 0;
+                    }
+                    if (!bundleRate) return BUNDLE_MIN_BYTES;
+                    return Math.max(BUNDLE_MIN_BYTES,
+                                    Math.min(BUNDLE_MAX_BYTES,
+                                             Math.round(bundleRate * BUNDLE_TARGET_SECONDS)));
+                }
 
                 // A dropped connection is routine on a long-haul link. Retrying the
                 // one chunk that failed costs a couple of hundred KB; letting the
@@ -661,6 +702,7 @@
                 // its ~1500 round trips, which is the slow path we came here to
                 // remove.
                 async function fetchChunk(url) {
+                    if (!bundleWindowAt) bundleWindowAt = performance.now();
                     let lastError;
                     for (let attempt = 1; attempt <= BUNDLE_RETRIES; attempt++) {
                         try {
@@ -668,7 +710,9 @@
                             if (!response.ok) {
                                 throw new Error(`Bundle request failed: ${response.status}`);
                             }
-                            return await response.arrayBuffer();
+                            const buffer = await response.arrayBuffer();
+                            bundleWindowBytes += buffer.byteLength;
+                            return buffer;
                         } catch (error) {
                             lastError = error;
                             console.warn(`Bundle chunk attempt ${attempt}/${BUNDLE_RETRIES} failed:`, error);
@@ -680,26 +724,26 @@
                     throw lastError;
                 }
 
-                // Group the listing into byte-budgeted runs. Sizes come from
-                // /image_list, which already reports them per frame.
-                function planChunks(infos) {
-                    const chunks = [];
-                    let start = 0;
-                    while (start < infos.length) {
-                        let bytes = 0;
-                        let count = 0;
-                        while (start + count < infos.length && count < BUNDLE_MAX_FILES) {
-                            const size = infos[start + count].size || 0;
-                            // A frame larger than the whole budget still gets a
-                            // chunk of its own rather than stalling the plan.
-                            if (count > 0 && bytes + size > BUNDLE_TARGET_BYTES) break;
-                            bytes += size;
-                            count++;
-                        }
-                        chunks.push({ start: start, count: count });
-                        start += count;
+                // Take as many frames as the budget allows right now. Chunks are cut
+                // at dequeue time rather than planned upfront so each one uses the
+                // newest speed estimate. Sizes come from /image_list, which already
+                // reports them per frame.
+                function nextChunk(stream) {
+                    if (stream.cursor >= stream.infos.length) return null;
+                    const budget = chunkBudget();
+                    const start = stream.cursor;
+                    let bytes = 0;
+                    let count = 0;
+                    while (start + count < stream.infos.length && count < BUNDLE_MAX_FILES) {
+                        const size = stream.infos[start + count].size || 0;
+                        // A frame larger than the whole budget still gets a chunk of
+                        // its own rather than stalling the queue.
+                        if (count > 0 && bytes + size > budget) break;
+                        bytes += size;
+                        count++;
                     }
-                    return chunks;
+                    stream.cursor = start + count;
+                    return { start: start, count: count };
                 }
 
                 // Cut one bundle body up into the cache. Resolves once every frame
@@ -747,31 +791,35 @@
                 // workers. Giving each set its own budget is what let six requests
                 // go out together and buried the metrics poll.
                 async function loadInBundles(sets) {
-                    const jobs = [];
-                    for (const set of sets) {
-                        for (const chunk of planChunks(set.infos)) {
-                            jobs.push({ imageType: set.imageType, chunk: chunk });
-                        }
-                    }
+                    const streams = sets.map(set => ({
+                        imageType: set.imageType, infos: set.infos, cursor: 0 }));
+                    const results = [];
+                    let at = 0;
 
-                    const jobResults = new Array(jobs.length);
-                    let nextJob = 0;
                     async function worker() {
-                        while (nextJob < jobs.length) {
-                            const index = nextJob++;
-                            const job = jobs[index];
+                        while (true) {
+                            // Cutting the chunk is synchronous, so two workers can
+                            // never be handed the same frames.
+                            let stream = null;
+                            let chunk = null;
+                            while (at < streams.length) {
+                                chunk = nextChunk(streams[at]);
+                                if (chunk) { stream = streams[at]; break; }
+                                at++;
+                            }
+                            if (!chunk) return;
                             const buffer = await fetchChunk(
-                                `ai_ship/image_bundle/${job.imageType}?start=${job.chunk.start}&count=${job.chunk.count}`);
-                            jobResults[index] = await unpackBundle(buffer, job.imageType);
+                                `ai_ship/image_bundle/${stream.imageType}?start=${chunk.start}&count=${chunk.count}`);
+                            results.push(await unpackBundle(buffer, stream.imageType));
                         }
                     }
 
                     const workers = [];
-                    for (let i = 0; i < Math.min(BUNDLE_PARALLEL, jobs.length); i++) {
+                    for (let i = 0; i < BUNDLE_PARALLEL; i++) {
                         workers.push(worker());
                     }
                     await Promise.all(workers);
-                    return [].concat.apply([], jobResults);
+                    return [].concat.apply([], results);
                 }
 
                 // Kept for a server that predates /image_bundle. Still one round
@@ -892,7 +940,7 @@
                     console.log("Command sent successfully:", data);
                     // startProgressPolling();
                     startAICoreMonitoring();  // wait for AI cores
-                    startCompletionPolling();
+                    startCompletionStream();
                 })
                 .catch(error => {
                     console.error("Error sending command:", error);
@@ -928,10 +976,10 @@
         window.stop_ai_ship = function() {
             if (!isRunning_aiShip) return;
 
-            // Tear the local loops down first: a completion poll or an AI-core
+            // Tear the local loops down first: a completion event or an AI-core
             // sample already in flight must not flip the buttons back to the
             // running state after we reset them.
-            stopProgressPolling();
+            stopProgressStream();
             stopAICoreMonitoring();
             stopLocalImageDisplay();
             stopProcessingTimer();
@@ -962,7 +1010,7 @@
         window.clear_ai_ship = function() {
             stopLocalImageDisplay();
             stopAICoreMonitoring();
-            stopProgressPolling();
+            stopProgressStream();
             isRunning_aiShip = false;
             startTime_aiShip = null;
             
@@ -1004,16 +1052,21 @@
         //     }, 30);
         // }
 
-        function startCompletionPolling() {
-            if (pollInterval_aiShip) clearInterval(pollInterval_aiShip);
-            
-            pollInterval_aiShip = setInterval(async () => {
+        // Unlike the small-object page this one does not draw anything from the
+        // target's updates -- the image pairs cycle locally off AI-core usage --
+        // so all we are waiting for is the one update that ends the run. The host
+        // pushes it the moment it lands instead of us asking twice a second.
+        function startCompletionStream() {
+            stopProgressStream();
+
+            progressStream_aiShip = new EventSource(`ai_ship/events`);
+
+            progressStream_aiShip.onmessage = (event) => {
                 try {
-                    const response = await fetch(`ai_ship/progress`);
-                    const data = await response.json();
+                    const data = JSON.parse(event.data);
 
                     console.log(`AI ship progress: ${data.type}`);
-                    
+
                     if (data.type === 'ai_ship_complete') {
                         console.log("AI ship application completed")
                         handleCompletion();
@@ -1024,15 +1077,24 @@
                         handleError(data.error);
                     }
                 } catch (error) {
-                    console.error('Error polling completion:', error);
+                    console.error('Error handling completion event:', error);
                 }
-            }, 500); // Poll every 500ms
+            };
+
+            // EventSource reconnects on its own; the host replays the cached
+            // update on connect, so a drop cannot lose the completion event.
+            progressStream_aiShip.onerror = () => {
+                if (progressStream_aiShip &&
+                    progressStream_aiShip.readyState === EventSource.CONNECTING) {
+                    console.warn('AI ship progress stream dropped; reconnecting');
+                }
+            };
         }
-        
-        function stopProgressPolling() {
-            if (pollInterval_aiShip) {
-                clearInterval(pollInterval_aiShip);
-                pollInterval_aiShip = null;
+
+        function stopProgressStream() {
+            if (progressStream_aiShip) {
+                progressStream_aiShip.close();
+                progressStream_aiShip = null;
             }
         }
 
@@ -1043,7 +1105,7 @@
             updateStatus_aiShip('Detection completed successfully', 'ready');
             isRunning_aiShip = false;
             updateButtons_aiShip();
-            stopProgressPolling();
+            stopProgressStream();
         }
 
         // The target confirming a Stop. Normally the poller is already down by the
@@ -1056,7 +1118,7 @@
             updateStatus_aiShip('AI ship stopped', 'ready');
             isRunning_aiShip = false;
             updateButtons_aiShip();
-            stopProgressPolling();
+            stopProgressStream();
         }
 
         function handleError(errorMsg) {
@@ -1066,7 +1128,7 @@
             updateStatus_aiShip(`Error: ${errorMsg}`, 'error');
             isRunning_aiShip = false;
             updateButtons_aiShip();
-            stopProgressPolling();
+            stopProgressStream();
         }
         
         function displayImagePair(inputFilename, outputFilename) {
