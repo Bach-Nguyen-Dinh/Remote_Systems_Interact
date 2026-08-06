@@ -231,7 +231,57 @@
         
         let isRunning = false;
         let startTime = null;
-        let pollInterval = null;
+        // Open EventSource on 'small_obj_detect/events' while a run is in flight.
+        // The host pushes each progress update once, so every frame the target
+        // reports is displayed exactly once -- unlike polling 'progress', which
+        // samples a last-value cache and so both misses and repeats updates.
+        let progressStream = null;
+
+        // Per-frame logging is itself a cost once DevTools is open -- three calls
+        // per update, one of them serialising an object, at the rate the target
+        // reports. Off by default; set sodVerboseLog = true in the console to get
+        // the old running commentary back.
+        let sodVerboseLog = false;
+
+        // Frame-rate diagnostics. In debug_logs/console-export-2026-8-5_11-16-19.txt
+        // all 712 updates arrived, in order, with no cache misses -- and the run
+        // still looked like a few fps. Nothing is being lost, so the cause is
+        // timing, and there are only two candidates:
+        //   * the updates reach us in clumps -> gaps are mostly ~0 with periodic
+        //     stalls, and each clump paints once, so most frames are never seen;
+        //   * they arrive evenly but we cannot paint them -> gaps are even and
+        //     'painted' comes out far below 'events'.
+        // Arrival gaps answer the first, the paint counter answers the second.
+        let sodDiag = null;
+
+        function sodDiagStart() {
+            sodDiag = { gaps: [], last: 0, events: 0, handlerMs: 0, paints: 0,
+                        t0: performance.now() };
+            // rAF fires once per composited frame, so this counts what the
+            // browser actually put on screen, not how often we touched the DOM.
+            const countPaint = () => {
+                if (!sodDiag) return;
+                sodDiag.paints++;
+                requestAnimationFrame(countPaint);
+            };
+            requestAnimationFrame(countPaint);
+        }
+
+        function sodDiagReport() {
+            if (!sodDiag || !sodDiag.events) { sodDiag = null; return; }
+            const g = sodDiag.gaps.slice().sort((a, b) => a - b);
+            const at = (p) => g.length ? g[Math.min(g.length - 1, Math.floor(p * g.length))].toFixed(1) : 'n/a';
+            const secs = (performance.now() - sodDiag.t0) / 1000;
+            console.log(
+                `[diag] ${sodDiag.events} events in ${secs.toFixed(1)}s = ${(sodDiag.events / secs).toFixed(1)}/s\n` +
+                `[diag] gap between events (ms): p50=${at(0.5)} p90=${at(0.9)} max=${g.length ? g[g.length - 1].toFixed(1) : 'n/a'}\n` +
+                `[diag] back-to-back (<5ms after previous): ${g.filter(x => x < 5).length} of ${g.length}\n` +
+                `[diag] stalls (>200ms with nothing): ${g.filter(x => x > 200).length}\n` +
+                `[diag] handler cost: ${sodDiag.handlerMs.toFixed(0)}ms total, ${(sodDiag.handlerMs / sodDiag.events).toFixed(2)}ms per event\n` +
+                `[diag] frames actually painted: ${sodDiag.paints} (${(sodDiag.paints / secs).toFixed(1)}/s)`
+            );
+            sodDiag = null;
+        }
 
         // Fetch is a one-shot per page load: it caches the input/output frames in
         // memory (sodInputImageCache/sodOutputImageCache) and everything else works
@@ -398,23 +448,62 @@
                 // Ask for a few hundred frames per request instead and cut the
                 // response up here. The probe is gone with it: /image_list only
                 // ever lists frames the server already stat'd as readable.
-                // Chunks are sized in BYTES, not frames, and the whole page shares
-                // one concurrency budget. This is what keeps the 1 s
-                // /system_metrics poll alive during a Fetch: every response on this
-                // origin shares a single HTTP/2 connection, so whatever frame data
-                // is already queued sits in front of that poll and delays it by
-                // however long the link needs to drain it. The link to a distant
-                // browser is narrow (~1.5 Mbps measured from the US west coast), so
-                // sizing by frame count made ~1 MB chunks and six of them at once —
-                // roughly 4.5 MB, about 24 s of pipe, and metrics polls stalled up
-                // to 13 s behind it. Capping the bytes in flight at
-                // TARGET x PARALLEL keeps that worst case near a couple of seconds.
-                // Two in flight still covers the bandwidth-delay product (~190 KB),
-                // so the transfer itself is no slower for being paced.
-                const BUNDLE_TARGET_BYTES = 192 * 1024;   // per request
+                // Chunks are paced, and the whole page shares one concurrency
+                // budget. This is what keeps the 1 s /system_metrics poll alive
+                // during a Fetch: every response on this origin shares a single
+                // HTTP/2 connection, so whatever frame data is already queued sits
+                // in front of that poll and delays it by however long the link needs
+                // to drain it.
+                //
+                // The budget is a TIME, not a byte count, because the link is not a
+                // fixed speed: the same page measured 105 KB/s from Oregon in one
+                // session and 6 KB/s in the next. 192 KB is a second of pipe on the
+                // first and half a minute on the second, which is how a fixed chunk
+                // size still let metrics polls stall 44 s. Size each chunk from the
+                // speed the previous ones actually achieved instead, so the bytes in
+                // flight stay near BUNDLE_TARGET_SECONDS x BUNDLE_PARALLEL of pipe
+                // time whatever the link is doing that day.
+                const BUNDLE_TARGET_SECONDS = 1.2;        // pipe time per request
+                const BUNDLE_MIN_BYTES = 8 * 1024;        // sanity floor, not a target
+                const BUNDLE_MAX_BYTES = 512 * 1024;      // must not devolve to per-frame
                 const BUNDLE_PARALLEL = 2;                // requests in flight, page-wide
                 const BUNDLE_MAX_FILES = 500;             // server's own per-request cap
                 const BUNDLE_RETRIES = 3;                 // attempts per chunk
+
+                // Speed is measured as plain goodput: bytes landed over wall clock.
+                // Deliberately NOT by timing one response body -- anything that
+                // buffers a small response and releases it in one burst (a proxy, a
+                // TLS record boundary) makes a single-body measurement read as
+                // instantaneous and the estimate runs away. Wall clock cannot be
+                // fooled that way, and because it charges the round trips to the
+                // link as well it only ever errs low, which costs a round trip
+                // rather than a stall.
+                //
+                // Settling point, with a round trip R and a link speed L: a chunk
+                // takes R + B/L, PARALLEL of them are in flight, so the measured
+                // rate is P*B/(R + B/L) and B = TARGET * that rate. For P = 2 and
+                // TARGET = 1.2 that solves to B = 1.4*L -- about 1.4 s of pipe per
+                // chunk and under 3 s in flight, whatever L turns out to be.
+                let bundleWindowAt = 0;                   // start of current window
+                let bundleWindowBytes = 0;
+                let bundleRate = 0;                       // bytes/sec, 0 until measured
+
+                function chunkBudget() {
+                    const elapsed = bundleWindowAt ? (performance.now() - bundleWindowAt) / 1000 : 0;
+                    // A window is worth believing once it spans a round trip and a
+                    // chunk. Roll it afterwards so the estimate follows the link's
+                    // current speed instead of averaging in the slow ramp at the
+                    // start.
+                    if (elapsed >= 2 && bundleWindowBytes >= BUNDLE_MIN_BYTES) {
+                        bundleRate = bundleWindowBytes / elapsed;
+                        bundleWindowAt = performance.now();
+                        bundleWindowBytes = 0;
+                    }
+                    if (!bundleRate) return BUNDLE_MIN_BYTES;
+                    return Math.max(BUNDLE_MIN_BYTES,
+                                    Math.min(BUNDLE_MAX_BYTES,
+                                             Math.round(bundleRate * BUNDLE_TARGET_SECONDS)));
+                }
 
                 // A dropped connection is routine on a long-haul link. Retrying the
                 // one chunk that failed costs a couple of hundred KB; letting the
@@ -422,6 +511,7 @@
                 // its ~1500 round trips, which is the slow path we came here to
                 // remove.
                 async function fetchChunk(url) {
+                    if (!bundleWindowAt) bundleWindowAt = performance.now();
                     let lastError;
                     for (let attempt = 1; attempt <= BUNDLE_RETRIES; attempt++) {
                         try {
@@ -429,7 +519,9 @@
                             if (!response.ok) {
                                 throw new Error(`Bundle request failed: ${response.status}`);
                             }
-                            return await response.arrayBuffer();
+                            const buffer = await response.arrayBuffer();
+                            bundleWindowBytes += buffer.byteLength;
+                            return buffer;
                         } catch (error) {
                             lastError = error;
                             console.warn(`Bundle chunk attempt ${attempt}/${BUNDLE_RETRIES} failed:`, error);
@@ -441,26 +533,26 @@
                     throw lastError;
                 }
 
-                // Group the listing into byte-budgeted runs. Sizes come from
-                // /image_list, which already reports them per frame.
-                function planChunks(infos) {
-                    const chunks = [];
-                    let start = 0;
-                    while (start < infos.length) {
-                        let bytes = 0;
-                        let count = 0;
-                        while (start + count < infos.length && count < BUNDLE_MAX_FILES) {
-                            const size = infos[start + count].size || 0;
-                            // A frame larger than the whole budget still gets a
-                            // chunk of its own rather than stalling the plan.
-                            if (count > 0 && bytes + size > BUNDLE_TARGET_BYTES) break;
-                            bytes += size;
-                            count++;
-                        }
-                        chunks.push({ start: start, count: count });
-                        start += count;
+                // Take as many frames as the budget allows right now. Chunks are cut
+                // at dequeue time rather than planned upfront so each one uses the
+                // newest speed estimate. Sizes come from /image_list, which already
+                // reports them per frame.
+                function nextChunk(stream) {
+                    if (stream.cursor >= stream.infos.length) return null;
+                    const budget = chunkBudget();
+                    const start = stream.cursor;
+                    let bytes = 0;
+                    let count = 0;
+                    while (start + count < stream.infos.length && count < BUNDLE_MAX_FILES) {
+                        const size = stream.infos[start + count].size || 0;
+                        // A frame larger than the whole budget still gets a chunk of
+                        // its own rather than stalling the queue.
+                        if (count > 0 && bytes + size > budget) break;
+                        bytes += size;
+                        count++;
                     }
-                    return chunks;
+                    stream.cursor = start + count;
+                    return { start: start, count: count };
                 }
 
                 // Cut one bundle body up into the cache. Resolves once every frame
@@ -508,31 +600,35 @@
                 // workers. Giving each set its own budget is what let six requests
                 // go out together and buried the metrics poll.
                 async function loadInBundles(sets) {
-                    const jobs = [];
-                    for (const set of sets) {
-                        for (const chunk of planChunks(set.infos)) {
-                            jobs.push({ imageType: set.imageType, chunk: chunk });
-                        }
-                    }
+                    const streams = sets.map(set => ({
+                        imageType: set.imageType, infos: set.infos, cursor: 0 }));
+                    const results = [];
+                    let at = 0;
 
-                    const jobResults = new Array(jobs.length);
-                    let nextJob = 0;
                     async function worker() {
-                        while (nextJob < jobs.length) {
-                            const index = nextJob++;
-                            const job = jobs[index];
+                        while (true) {
+                            // Cutting the chunk is synchronous, so two workers can
+                            // never be handed the same frames.
+                            let stream = null;
+                            let chunk = null;
+                            while (at < streams.length) {
+                                chunk = nextChunk(streams[at]);
+                                if (chunk) { stream = streams[at]; break; }
+                                at++;
+                            }
+                            if (!chunk) return;
                             const buffer = await fetchChunk(
-                                `small_obj_detect/image_bundle/${job.imageType}?start=${job.chunk.start}&count=${job.chunk.count}`);
-                            jobResults[index] = await unpackBundle(buffer, job.imageType);
+                                `small_obj_detect/image_bundle/${stream.imageType}?start=${chunk.start}&count=${chunk.count}`);
+                            results.push(await unpackBundle(buffer, stream.imageType));
                         }
                     }
 
                     const workers = [];
-                    for (let i = 0; i < Math.min(BUNDLE_PARALLEL, jobs.length); i++) {
+                    for (let i = 0; i < BUNDLE_PARALLEL; i++) {
                         workers.push(worker());
                     }
                     await Promise.all(workers);
-                    return [].concat.apply([], jobResults);
+                    return [].concat.apply([], results);
                 }
 
                 // Kept for a server that predates /image_bundle. Still one round
@@ -732,7 +828,7 @@
                 .then(response => response.json())
                 .then(data => {
                     console.log("Command sent successfully:", data);
-                    startProgressPolling();
+                    startProgressStream();
                 })
                 .catch(error => {
                     console.error("Error sending command:", error);
@@ -768,7 +864,7 @@
 
             // Stop polling first: a progress update already in flight must not
             // flip the buttons back to the running state after we reset them.
-            stopProgressPolling();
+            stopProgressStream();
             updateProcessingTime();   // freeze the elapsed time at the stop
             isRunning = false;
             startTime = null;
@@ -794,7 +890,7 @@
         }
 
         window.clear_small_obj_detect = function() {
-            stopProgressPolling();
+            stopProgressStream();
             isRunning = false;
             startTime = null;
             
@@ -817,32 +913,56 @@
             .catch(error => console.error("Error sending clear command:", error));
         }
         
-        function startProgressPolling() {
-            if (pollInterval) clearInterval(pollInterval);
-            
-            pollInterval = setInterval(async () => {
+        function startProgressStream() {
+            stopProgressStream();
+
+            // Relative URL, like every other call on this page, so it resolves
+            // against whatever prefix the page was served from.
+            progressStream = new EventSource(`small_obj_detect/events`);
+            sodDiagStart();
+
+            progressStream.onmessage = (event) => {
+                // Taken before the handler runs, so the gap measures when the
+                // event reached us and not how long we spent on the last one.
+                const arrived = performance.now();
                 try {
-                    const response = await fetch(`small_obj_detect/progress`);
-                    const data = await response.json();
-                    
+                    const data = JSON.parse(event.data);
                     if (data.type) {
                         handleProgressUpdate(data);
                     }
                 } catch (error) {
-                    console.error('Error polling progress:', error);
+                    console.error('Error handling progress event:', error);
                 }
-            }, 30);
+                if (sodDiag) {
+                    if (sodDiag.last) sodDiag.gaps.push(arrived - sodDiag.last);
+                    sodDiag.last = arrived;
+                    sodDiag.events++;
+                    sodDiag.handlerMs += performance.now() - arrived;
+                }
+            };
+
+            // Fired on any transport drop. EventSource reconnects on its own and
+            // the host replays the cached update on connect, so there is nothing
+            // to do here but note it -- the run on the target is unaffected.
+            progressStream.onerror = () => {
+                if (progressStream && progressStream.readyState === EventSource.CONNECTING) {
+                    console.warn('Progress stream dropped; reconnecting');
+                }
+            };
         }
-        
-        function stopProgressPolling() {
-            if (pollInterval) {
-                clearInterval(pollInterval);
-                pollInterval = null;
+
+        function stopProgressStream() {
+            if (progressStream) {
+                progressStream.close();
+                progressStream = null;
             }
+            // Every way a run ends -- complete, Stop, error -- comes through
+            // here, so the summary is printed exactly once per run.
+            sodDiagReport();
         }
         
         function handleProgressUpdate(data) {
-            console.log('Progress update:', data);
+            if (sodVerboseLog) console.log('Progress update:', data);
             
             switch (data.type) {
                 case 'small_obj_detect_start':
@@ -876,7 +996,7 @@
                     // document.getElementById('processStatus').textContent = 'Completed';
                     isRunning = false;
                     updateButtons();
-                    stopProgressPolling();
+                    stopProgressStream();
                     break;
                     
                 case 'small_obj_detect_stopped':
@@ -887,7 +1007,7 @@
                     updateStatus('Detection stopped', 'ready');
                     isRunning = false;
                     updateButtons();
-                    stopProgressPolling();
+                    stopProgressStream();
                     break;
 
                 case 'small_obj_detect_error':
@@ -895,13 +1015,13 @@
                     // document.getElementById('processStatus').textContent = 'Error';
                     isRunning = false;
                     updateButtons();
-                    stopProgressPolling();
+                    stopProgressStream();
                     break;
             }
         }
         
         function displayImagePair(inputFilename, outputFilename) {
-            console.log(`Displaying images: input=${inputFilename}, output=${outputFilename}`);
+            if (sodVerboseLog) console.log(`Displaying images: input=${inputFilename}, output=${outputFilename}`);
             const inputContainer = document.getElementById('inputImageContainer');
             const outputContainer = document.getElementById('outputImageContainer');
             const inputInfo = document.getElementById('inputImageInfo');
@@ -951,7 +1071,7 @@
             
             // Log display status
             if (inputDisplayed && outputDisplayed) {
-                console.log(`Successfully displayed both images: ${inputFilename} and ${outputFilename}`);
+                if (sodVerboseLog) console.log(`Successfully displayed both images: ${inputFilename} and ${outputFilename}`);
             } else {
                 console.warn(`Partial display: input=${inputDisplayed}, output=${outputDisplayed}`);
             }
