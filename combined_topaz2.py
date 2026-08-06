@@ -41,6 +41,7 @@ arrived on — a leading slash would escape the prefix. See set_up_proxy_server.
 import os
 import json
 import time
+import queue
 import socket
 import struct
 import hashlib
@@ -93,14 +94,10 @@ AI_SMOKE_FRONTEND = os.path.join(INDEX_DIR, "index_ai_smoke.html")
 SMALL_OBJ_INPUT_DIR = os.path.join(CURR_DIR, "small_obj_detect", "data1", "image")
 SMALL_OBJ_OUTPUT_DIR = os.path.join(CURR_DIR, "small_obj_detect", "data1", "predictions")
 
-# AI_SMOKE_INPUT_DIR = "/home/matthew/Downloads/SmokeNet-Data/validation/opt_web_img"
 AI_SMOKE_INPUT_DIR = os.path.join(CURR_DIR, "SmokeNet-Data/validation/opt_web_img")
-# AI_SMOKE_OUTPUT_DIR = "/home/matthew/Downloads/SmokeNet-Data/classification/opt_web_img"
 AI_SMOKE_OUTPUT_DIR = os.path.join(CURR_DIR, "SmokeNet-Data/classification/opt_web_img")
 
-# AI_SHIP_INPUT_DIR = "/home/matthew/modified_ai_ship/ship/short_example/opt_web_img"
 AI_SHIP_INPUT_DIR = os.path.join(CURR_DIR, "modified_ai_ship/ship/short_example/opt_web_img")
-# AI_SHIP_OUTPUT_DIR = "/home/matthew/modified_ai_ship/ship/output_segment/opt_web_img"
 AI_SHIP_OUTPUT_DIR = os.path.join(CURR_DIR, "modified_ai_ship/ship/output_segment/opt_web_img")
 
 AUTO_NAV_DIRS = {
@@ -132,6 +129,24 @@ latest_progress = {
     "ai_ship": {},
     "ai_smoke": {},
 }
+
+# Live SSE listeners per workload: one Queue per open '<workload>/events' request.
+# The '<workload>/progress' cache above only ever holds the *latest* update, so a
+# polling page silently loses any update overwritten between two polls (and
+# re-renders the surviving one on every poll in between). Pushing each update into
+# these queues instead delivers every update exactly once, in order.
+progress_subscribers = {key: set() for key in latest_progress}
+progress_subscribers_lock = threading.Lock()
+
+# Per-listener backlog. A run emits one update per frame, so this is many seconds
+# of slack; a client that falls this far behind is not reading at all and gets
+# dropped rather than growing the queue without bound.
+PROGRESS_QUEUE_MAX = 1000
+
+# How long a listener waits for an update before emitting an SSE comment. Keeps
+# proxies from closing an idle stream and surfaces vanished clients (the write
+# fails, the generator closes, the queue is unregistered).
+PROGRESS_HEARTBEAT_SECONDS = 15
 
 # PID of the program each workload currently has running *on the target*, learned
 # from the "<workload>_start" progress update and dropped when the run ends. A
@@ -358,6 +373,35 @@ def _track_workload_pid(key, update):
         workload_pids[key] = None
 
 
+def _subscribe_progress(key):
+    """Register a queue to receive every future update for `key`."""
+    q = queue.Queue(maxsize=PROGRESS_QUEUE_MAX)
+    with progress_subscribers_lock:
+        progress_subscribers[key].add(q)
+    return q
+
+
+def _unsubscribe_progress(key, q):
+    with progress_subscribers_lock:
+        progress_subscribers[key].discard(q)
+
+
+def _publish_progress(key, update):
+    """Hand `update` to every open listener on `key`.
+
+    Never blocks the socket thread: a listener whose backlog is full is one that
+    has stopped reading, so it is dropped from the fan-out and its stream ends on
+    the next heartbeat."""
+    with progress_subscribers_lock:
+        listeners = list(progress_subscribers[key])
+    for q in listeners:
+        try:
+            q.put_nowait(update)
+        except queue.Full:
+            print(f"Dropping stalled {key} progress listener")
+            _unsubscribe_progress(key, q)
+
+
 def receive_workload_updates():
     """Accept the target's workload-progress connections and cache each update.
 
@@ -389,6 +433,7 @@ def receive_workload_updates():
                 if key is not None:
                     latest_progress[key] = update
                     _track_workload_pid(key, update)
+                    _publish_progress(key, update)
         except json.JSONDecodeError:
             pass    # image bytes / non-JSON traffic on the same port — not ours
         except Exception as e:
@@ -680,6 +725,48 @@ def bundle_in(directories, image_type):
     return response
 
 
+def progress_event_stream(workload):
+    """Push `workload`'s progress updates to the page as Server-Sent Events.
+
+    The push counterpart to '<workload>/progress'. That endpoint serves a
+    last-value cache, so a page polling it samples the update stream: updates
+    arriving closer together than the poll interval are overwritten unseen, and
+    a poll landing between two updates re-delivers one already handled. Here the
+    receiver thread hands us every update exactly once, in order.
+
+    The connection opens with the cached update (if any) so a page that loads or
+    reconnects mid-run shows current state instead of waiting for the next frame.
+    Subscribing *before* reading that cache means an update landing right now is
+    delivered twice rather than lost — displaying one frame twice is harmless,
+    missing one is not."""
+    q = _subscribe_progress(workload)
+    snapshot = latest_progress[workload]
+
+    def generate():
+        try:
+            if snapshot:
+                yield f"data: {json.dumps(snapshot)}\n\n"
+            while True:
+                try:
+                    update = q.get(timeout=PROGRESS_HEARTBEAT_SECONDS)
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+                    continue
+                yield f"data: {json.dumps(update)}\n\n"
+        finally:
+            # Runs on client disconnect too: the WSGI server closes the
+            # generator, which raises GeneratorExit at the yield above.
+            _unsubscribe_progress(workload, q)
+
+    response = Response(generate(), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache"
+    # nginx buffers proxied responses by default, which would hold events back
+    # until the buffer fills. Asking for it here keeps the /topaz/ prefix block
+    # in set_up_proxy_server.md unchanged.
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
+
+
 def ai_core_usage_for(workload):
     """Live AI-engine usage plus the baseline captured when this workload's Run
     was pressed — the page starts displaying frames once the gap exceeds ~5%."""
@@ -718,6 +805,11 @@ def small_obj_output_image(filename):
 @app.route('/small_obj_detect/progress', methods=['GET'])
 def small_obj_progress():
     return jsonify(latest_progress["small_obj_detect"])
+
+
+@app.route('/small_obj_detect/events', methods=['GET'])
+def small_obj_events():
+    return progress_event_stream("small_obj_detect")
 
 
 # ---- autonomous navigation ----
@@ -788,6 +880,11 @@ def ai_ship_progress():
     return jsonify(latest_progress["ai_ship"])
 
 
+@app.route('/ai_ship/events', methods=['GET'])
+def ai_ship_events():
+    return progress_event_stream("ai_ship")
+
+
 @app.route('/ai_ship/ai_core_usage', methods=['GET'])
 def ai_ship_core_usage():
     return ai_core_usage_for("ai_ship")
@@ -822,6 +919,11 @@ def ai_smoke_output_image(filename):
 @app.route('/ai_smoke/progress', methods=['GET'])
 def ai_smoke_progress():
     return jsonify(latest_progress["ai_smoke"])
+
+
+@app.route('/ai_smoke/events', methods=['GET'])
+def ai_smoke_events():
+    return progress_event_stream("ai_smoke")
 
 
 @app.route('/ai_smoke/ai_core_usage', methods=['GET'])
