@@ -148,6 +148,22 @@ PROGRESS_QUEUE_MAX = 1000
 # fails, the generator closes, the queue is unregistered).
 PROGRESS_HEARTBEAT_SECONDS = 15
 
+# Accept queue for the target's per-frame progress connections (see
+# receive_workload_updates). The backlog is sized for the ~43 connections a
+# second a small-object run makes, with the queue giving several seconds of
+# slack on top.
+WORKLOAD_CONN_BACKLOG = 128
+WORKLOAD_CONN_QUEUE = 512
+# The target writes one small JSON object and closes immediately, so a
+# connection still unfinished after this is not going to finish. The old 5 s
+# meant one such peer could hold the whole progress pipeline for 5 s.
+WORKLOAD_READ_TIMEOUT = 1.0
+
+# Emit-cadence log for the progress pipeline (see _note_progress_timing).
+# Enable with TOPAZ_PROGRESS_TIMING=1 when investigating a stuttering run.
+PROGRESS_TIMING = bool(os.environ.get("TOPAZ_PROGRESS_TIMING"))
+_progress_timing = {}
+
 # PID of the program each workload currently has running *on the target*, learned
 # from the "<workload>_start" progress update and dropped when the run ends. A
 # page's Stop button posts "stop_<workload>"; we append the PID before forwarding
@@ -373,6 +389,37 @@ def _track_workload_pid(key, update):
         workload_pids[key] = None
 
 
+def _note_progress_timing(key, update):
+    """Record how evenly THIS HOST pushed `key`'s updates out, summarised when the
+    run ends.
+
+    The page's [diag] block says when updates reached the browser; this says when
+    the host let go of them. Comparing the two for the same run puts a stutter on
+    one side of the link or the other instead of leaving it to guesswork — a run
+    that is even here and ragged there is a delivery problem, and one that is
+    ragged here is the target's. Off unless TOPAZ_PROGRESS_TIMING is set, since
+    it costs a timestamp on every frame."""
+    if not PROGRESS_TIMING:
+        return
+    msg_type = str(update.get("type", ""))
+    now = time.perf_counter()
+    state = _progress_timing.get(key)
+    if msg_type.endswith("_start") or state is None:
+        _progress_timing[key] = {"t0": now, "last": now, "gaps": []}
+        return
+    state["gaps"].append((now - state["last"]) * 1000.0)
+    state["last"] = now
+    if msg_type.endswith(("_complete", "_stopped", "_error")):
+        _progress_timing.pop(key, None)
+        gaps = sorted(state["gaps"])
+        if not gaps:
+            return
+        at = lambda p: gaps[min(len(gaps) - 1, int(p * len(gaps)))]
+        print(f"[timing] {key}: {len(gaps) + 1} updates in {now - state['t0']:.1f}s, "
+              f"gap ms p50={at(0.5):.1f} p90={at(0.9):.1f} max={gaps[-1]:.1f}, "
+              f">200ms={sum(1 for g in gaps if g > 200)}")
+
+
 def _subscribe_progress(key):
     """Register a queue to receive every future update for `key`."""
     q = queue.Queue(maxsize=PROGRESS_QUEUE_MAX)
@@ -402,42 +449,80 @@ def _publish_progress(key, update):
             _unsubscribe_progress(key, q)
 
 
+def _read_workload_update(conn, addr):
+    """Drain one progress connection and file the update it carries.
+
+    Connection-per-message: the target dials in, writes one JSON object, and
+    hangs up — so read until EOF and parse the whole payload rather than
+    splitting on newlines."""
+    try:
+        with conn:
+            conn.settimeout(WORKLOAD_READ_TIMEOUT)
+            chunks = []
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            raw = b"".join(chunks).decode(errors="replace").strip()
+            if not raw:
+                return
+            update = json.loads(raw)
+            key = _progress_key(update)
+            if key is not None:
+                latest_progress[key] = update
+                _track_workload_pid(key, update)
+                _note_progress_timing(key, update)
+                _publish_progress(key, update)
+    except json.JSONDecodeError:
+        pass    # image bytes / non-JSON traffic on the same port — not ours
+    except Exception as e:
+        print(f"Workload-progress connection error ({addr}): {e}")
+
+
 def receive_workload_updates():
     """Accept the target's workload-progress connections and cache each update.
 
-    Unlike the metrics stream this is connection-per-message: the target dials in,
-    writes one JSON object, and hangs up — so read until EOF and parse the whole
-    payload rather than splitting on newlines."""
+    Accepting and reading in the same loop is what this deliberately avoids. A
+    small-object run reports one update per frame, each on its own short-lived
+    connection — about 43 a second — so a single peer that connects and then
+    dawdles blocks the accept loop for the whole read timeout. Measured against
+    the old inline loop: one idle peer held 300 frames back and then released
+    them in a burst once its 5 s timeout expired, which is exactly the "frames
+    arrive in clumps, so most are never seen" shape. The kernel's backlog
+    absorbs the connections meanwhile, so they are late rather than refused, but
+    late in a 5 s clump is what the eye reads as a stall.
+
+    Accepting into a queue keeps the accept loop free whatever a peer does, and
+    WORKLOAD_READ_TIMEOUT caps how long one bad connection can hold the reader.
+    Draining from ONE reader keeps updates in the order the target sent them —
+    frames going backwards would read as stutter just as badly as frames
+    arriving late."""
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_socket.bind((HOST_IP, DATA_PORT))
-    server_socket.listen(5)
+    server_socket.listen(WORKLOAD_CONN_BACKLOG)
     print(f"Workload-progress server listening on {HOST_IP}:{DATA_PORT}")
+
+    pending = queue.Queue(maxsize=WORKLOAD_CONN_QUEUE)
+
+    def reader():
+        while True:
+            conn, addr = pending.get()
+            _read_workload_update(conn, addr)
+
+    threading.Thread(target=reader, daemon=True).start()
 
     while True:
         conn, addr = server_socket.accept()
         try:
-            with conn:
-                conn.settimeout(5)
-                chunks = []
-                while True:
-                    chunk = conn.recv(4096)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                raw = b"".join(chunks).decode(errors="replace").strip()
-                if not raw:
-                    continue
-                update = json.loads(raw)
-                key = _progress_key(update)
-                if key is not None:
-                    latest_progress[key] = update
-                    _track_workload_pid(key, update)
-                    _publish_progress(key, update)
-        except json.JSONDecodeError:
-            pass    # image bytes / non-JSON traffic on the same port — not ours
-        except Exception as e:
-            print(f"Workload-progress connection error ({addr}): {e}")
+            pending.put_nowait((conn, addr))
+        except queue.Full:
+            # Only reachable if the reader is genuinely wedged. Closing the new
+            # connection keeps the accept loop honest rather than letting the
+            # queue grow without bound.
+            print("Workload-progress backlog full; dropping connection")
+            conn.close()
 
 
 def forward_message_to_target(message):
@@ -745,7 +830,13 @@ def progress_event_stream(workload):
     def generate():
         try:
             if snapshot:
-                yield f"data: {json.dumps(snapshot)}\n\n"
+                # Tagged so the page can tell replayed state from a live update.
+                # It matters because a page subscribes BEFORE sending its run
+                # command (otherwise the frames produced while that command is in
+                # flight are lost), and at that moment this cache still describes
+                # the PREVIOUS run — an untagged "…_complete" would end the run
+                # the page is only just starting.
+                yield f"data: {json.dumps(dict(snapshot, replay=True))}\n\n"
             while True:
                 try:
                     update = q.get(timeout=PROGRESS_HEARTBEAT_SECONDS)
