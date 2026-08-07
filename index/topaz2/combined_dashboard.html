@@ -20,6 +20,11 @@
            independently. Because all frames are same-origin the shell auto-sizes
            each to its content, so the whole dashboard scrolls as one page.
 
+           Orientation and System monitoring both render from the same
+           /system_metrics snapshot, so the shell polls that endpoint ONCE and
+           pushes each snapshot into the frames that subscribed (see the metrics
+           broker in the script below) instead of letting each frame poll it.
+
            The Vision model tabs stay MOUNTED once visited (hidden, not removed):
            each page runs its own polling/preload state, and tearing that down on
            every tab switch would abort an in-flight run. Only the first click on
@@ -233,6 +238,53 @@
             f.el.addEventListener("load", function () { refit(f); });
         });
         setInterval(function () { FRAMES.forEach(function (f) { fit(f.el, f.fallback); }); }, 1000);
+
+        // ---- one /system_metrics poll shared by every frame that wants it ----
+        // The Orientation and System monitoring pages render from the SAME
+        // snapshot, so while each ran its own poll this dashboard pulled the
+        // identical payload twice a second. Frames now subscribe by postMessage
+        // and the shell does the fetching, pushing each snapshot to all of them
+        // at the fastest rate any subscriber asked for (a frame wanting a slower
+        // refresh drops the extras itself). A page opened directly, outside this
+        // shell, never gets an ack and falls back to polling for itself.
+        var subs = [];                            // { win, interval }
+        var metricsTimer = null, metricsMs = 0, metricsInFlight = false;
+
+        function pushMetrics(msg) {
+            subs.forEach(function (s) {
+                try { s.win.postMessage(msg, window.location.origin); } catch (e) {}
+            });
+        }
+        function pollMetrics() {
+            if (metricsInFlight || !subs.length) return;
+            metricsInFlight = true;
+            fetch("system_metrics", { cache: "no-store" })
+                .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+                .then(function (d) { pushMetrics({ type: "metrics", data: d }); })
+                .catch(function () { pushMetrics({ type: "metrics-error" }); })
+                .finally(function () { metricsInFlight = false; });
+        }
+        function restartMetricsPoll() {
+            var ms = subs.reduce(function (m, s) { return Math.min(m, s.interval); }, 60000);
+            if (metricsTimer && ms === metricsMs) return;   // re-subscribe, same rate
+            metricsMs = ms;
+            if (metricsTimer) clearInterval(metricsTimer);
+            metricsTimer = setInterval(pollMetrics, ms);
+            pollMetrics();
+        }
+        window.addEventListener("message", function (e) {
+            if (e.origin !== window.location.origin) return;
+            var m = e.data;
+            if (!m || m.type !== "metrics-subscribe") return;
+            var known = subs.filter(function (s) { return s.win === e.source; })[0];
+            var ms = parseInt(m.interval, 10) || 1000;
+            if (known) known.interval = ms;             // frame changed its refresh
+            else subs.push({ win: e.source, interval: ms });
+            // Ack even when nothing changed: the ack is what tells the frame a
+            // host is feeding it, so it stops (or never starts) its own poll.
+            try { e.source.postMessage({ type: "metrics-subscribed" }, window.location.origin); } catch (err) {}
+            restartMetricsPoll();
+        });
 
         var resizeTimer = null;
         window.addEventListener("resize", function () {
