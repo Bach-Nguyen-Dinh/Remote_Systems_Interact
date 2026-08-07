@@ -237,6 +237,14 @@
         // samples a last-value cache and so both misses and repeats updates.
         let progressStream = null;
 
+        // The host opens every stream by replaying its cached update, so a page
+        // that reloads or reconnects mid-run picks up current state instead of
+        // waiting for the next frame. While a run is being STARTED that cache
+        // still describes the previous run, so its replay must be ignored until
+        // the target has been told to go; after that, replays are wanted again
+        // (EventSource reconnects on its own and that is how the page recovers).
+        let ignoreReplayedState = false;
+
         // Per-frame logging is itself a cost once DevTools is open -- three calls
         // per update, one of them serialising an object, at the rate the target
         // reports. Off by default; set sodVerboseLog = true in the console to get
@@ -254,14 +262,52 @@
         // Arrival gaps answer the first, the paint counter answers the second.
         let sodDiag = null;
 
+        // Counting rAF ticks alone cannot tell those apart from a third case that
+        // looks identical to the eye: the updates arrive on time and we swap the
+        // <img> on time, but the new frame is not decodable when the compositor
+        // next runs, so the panel holds the previous frame (or shows nothing) for
+        // several ticks. Sample what is actually on screen each tick instead --
+        // how many DISTINCT frames were displayed, how long one frame stayed up,
+        // and how often the panel had nothing paintable in it. Measured against
+        // the target's ~43 frames/s, a healthy run displays nearly all of them
+        // with a p90 hold under ~35 ms.
         function sodDiagStart() {
             sodDiag = { gaps: [], last: 0, events: 0, handlerMs: 0, paints: 0,
-                        t0: performance.now() };
+                        distinct: 0, holds: [], blankTicks: 0, worstBlank: 0,
+                        blankStreak: 0, t0: performance.now() };
+            const inputC = document.getElementById('inputImageContainer');
+            const outputC = document.getElementById('outputImageContainer');
+            let shown = null;
+            let shownAt = performance.now();
+
             // rAF fires once per composited frame, so this counts what the
             // browser actually put on screen, not how often we touched the DOM.
             const countPaint = () => {
                 if (!sodDiag) return;
                 sodDiag.paints++;
+
+                const img = inputC.firstElementChild;
+                const ready = img && img.tagName === 'IMG' && img.complete && img.naturalWidth > 0;
+                const outImg = outputC.firstElementChild;
+                const outReady = outImg && outImg.tagName === 'IMG' && outImg.complete && outImg.naturalWidth > 0;
+
+                if (ready && outReady) {
+                    sodDiag.blankStreak = 0;
+                    if (img.src !== shown) {
+                        const now = performance.now();
+                        if (shown !== null) sodDiag.holds.push(now - shownAt);
+                        shown = img.src;
+                        shownAt = now;
+                        sodDiag.distinct++;
+                    }
+                } else {
+                    // A tick where one of the panels could not be drawn: either
+                    // still on the placeholder, or a freshly swapped <img> that
+                    // has not decoded yet.
+                    sodDiag.blankTicks++;
+                    sodDiag.blankStreak++;
+                    if (sodDiag.blankStreak > sodDiag.worstBlank) sodDiag.worstBlank = sodDiag.blankStreak;
+                }
                 requestAnimationFrame(countPaint);
             };
             requestAnimationFrame(countPaint);
@@ -271,6 +317,8 @@
             if (!sodDiag || !sodDiag.events) { sodDiag = null; return; }
             const g = sodDiag.gaps.slice().sort((a, b) => a - b);
             const at = (p) => g.length ? g[Math.min(g.length - 1, Math.floor(p * g.length))].toFixed(1) : 'n/a';
+            const h = sodDiag.holds.slice().sort((a, b) => a - b);
+            const hat = (p) => h.length ? h[Math.min(h.length - 1, Math.floor(p * h.length))].toFixed(1) : 'n/a';
             const secs = (performance.now() - sodDiag.t0) / 1000;
             console.log(
                 `[diag] ${sodDiag.events} events in ${secs.toFixed(1)}s = ${(sodDiag.events / secs).toFixed(1)}/s\n` +
@@ -278,7 +326,11 @@
                 `[diag] back-to-back (<5ms after previous): ${g.filter(x => x < 5).length} of ${g.length}\n` +
                 `[diag] stalls (>200ms with nothing): ${g.filter(x => x > 200).length}\n` +
                 `[diag] handler cost: ${sodDiag.handlerMs.toFixed(0)}ms total, ${(sodDiag.handlerMs / sodDiag.events).toFixed(2)}ms per event\n` +
-                `[diag] frames actually painted: ${sodDiag.paints} (${(sodDiag.paints / secs).toFixed(1)}/s)`
+                `[diag] rAF ticks: ${sodDiag.paints} (${(sodDiag.paints / secs).toFixed(1)}/s)\n` +
+                `[diag] DISTINCT frames displayed: ${sodDiag.distinct} of ${sodDiag.events} events (${(sodDiag.distinct / secs).toFixed(1)}/s)\n` +
+                `[diag] one frame stayed on screen (ms): p50=${hat(0.5)} p90=${hat(0.9)} p99=${hat(0.99)} max=${h.length ? h[h.length - 1].toFixed(1) : 'n/a'}\n` +
+                `[diag] held >100ms: ${h.filter(x => x > 100).length}, >250ms: ${h.filter(x => x > 250).length}\n` +
+                `[diag] ticks with nothing paintable: ${sodDiag.blankTicks} (longest run ${sodDiag.worstBlank} ticks)`
             );
             sodDiag = null;
         }
@@ -663,8 +715,45 @@
                 
                 const successful = results.filter(r => r.status === 'fulfilled');
                 const failed = results.filter(r => r.status === 'rejected');
-                
+
                 console.log(`Load completed: ${successful.length} successful, ${failed.length} failed`);
+
+                // ---- warm the frames before the first Run, not during it ----
+                // A frame the browser has never put on screen costs far more to
+                // display than one it has: loading it (what the code above did)
+                // only gets the bytes into a Blob, and the work of turning that
+                // into something paintable happens on FIRST DISPLAY. Measured on
+                // the full 748-frame input set, first display averaged 0.66ms a
+                // frame against 0.04ms for the same frames a second time -- ~15x,
+                // and it lands entirely on run 1. That is the asymmetry behind
+                // "the first run stutters and later ones don't": every frame of
+                // run 1 pays it, no frame of run 2 does.
+                //
+                // decode() does that work on demand, so doing it here spends it
+                // where the user is already waiting for Fetch instead of inside a
+                // run with a ~23ms budget per frame. It cost ~140ms for 748
+                // frames here, and afterwards first display measured 0.05ms --
+                // i.e. run 1 starts as warm as run 2. Batched rather than all at
+                // once so a large set cannot tie up the decoder in one go, and
+                // failures are ignored: a frame that will not decode is one the
+                // display path already handles.
+                const PREWARM_BATCH = 32;
+                const toWarm = Object.values(sodInputImageCache)
+                                     .concat(Object.values(sodOutputImageCache));
+                if (toWarm.length) {
+                    updateStatus('Preparing frames for display...', 'running');
+                    const warmStarted = performance.now();
+                    for (let i = 0; i < toWarm.length; i += PREWARM_BATCH) {
+                        await Promise.all(toWarm.slice(i, i + PREWARM_BATCH).map(
+                            img => (img && img.decode) ? img.decode().catch(() => {})
+                                                       : Promise.resolve()));
+                        // Reported per batch, not per frame: large sets take
+                        // seconds here (the four auto-nav streams are ~8s), and a
+                        // silent pause at the end of Fetch reads as a hang.
+                        updateStatus(`Preparing frames for display ... ${Math.round(100 * (i + PREWARM_BATCH) / toWarm.length)}%`, 'running');
+                    }
+                    console.log(`Pre-warmed ${toWarm.length} frames in ${(performance.now() - warmStarted).toFixed(0)}ms`);
+                }
                 
                 // Log detailed failure information
                 if (failed.length > 0) {
@@ -816,8 +905,21 @@
             
             // Clear previous images
             clearImages();
-            
+
             try {
+                // Subscribe BEFORE asking the target to start, not in the POST's
+                // .then(). The run begins as soon as the command lands, and the
+                // target reports a frame roughly every 23 ms, but the host keeps
+                // only the single latest update for a stream that opens late --
+                // so every frame produced while the POST was still in flight is
+                // lost, not merely late. That is one round trip of the run
+                // skipped on a LAN and several seconds of it from further away:
+                // the capture in debug_logs/console-export-2026-8-5_11-16-19.txt
+                // opens on output_index 32, i.e. the first 32 frames never
+                // reached the page at all.
+                ignoreReplayedState = true;
+                startProgressStream();
+
                 fetch(`send_message`, {
                     method: "POST",
                     headers: {
@@ -828,16 +930,22 @@
                 .then(response => response.json())
                 .then(data => {
                     console.log("Command sent successfully:", data);
-                    startProgressStream();
+                    // The host cleared the progress cache when it handled this
+                    // command, so anything replayed from here on is this run's.
+                    ignoreReplayedState = false;
                 })
                 .catch(error => {
                     console.error("Error sending command:", error);
+                    // Nothing is going to run, so take the stream back down.
+                    ignoreReplayedState = false;
+                    stopProgressStream();
                     updateStatus('Error starting detection', 'error');
                     isRunning = false;
                     updateButtons();
                 });
             } catch (error) {
                 console.error("Error:", error);
+                stopProgressStream();
                 updateStatus('Error starting detection', 'error');
                 isRunning = false;
                 updateButtons();
@@ -963,7 +1071,16 @@
         
         function handleProgressUpdate(data) {
             if (sodVerboseLog) console.log('Progress update:', data);
-            
+
+            // Stale state from the run before this one — see ignoreReplayedState.
+            // The terminal-type test covers a host that predates the replay tag,
+            // and costs nothing on one that has it: within this window (the run
+            // command still in flight) a genuine end-of-run cannot have happened
+            // yet, while progress frames — the reason we subscribe this early —
+            // are still taken.
+            if (ignoreReplayedState &&
+                (data.replay || /_(complete|stopped|error)$/.test(data.type))) return;
+
             switch (data.type) {
                 case 'small_obj_detect_start':
                     updateStatus('Detection started', 'running');

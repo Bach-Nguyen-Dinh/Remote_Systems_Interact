@@ -856,7 +856,34 @@
                 const failed = results.filter(r => r.status === 'rejected');
                 
                 console.log(`Load completed: ${successful.length} successful, ${failed.length} failed`);
-                
+
+                // Warm the frames before the first Run, not during it. Loading a
+                // frame only gets its bytes into a Blob; the paintable form is
+                // built on FIRST display, so the whole cost lands on run 1 and
+                // none of it on run 2 — which is what makes a first run stutter
+                // while later ones look smooth. Measured on the small-object set:
+                // 0.66ms per frame first time vs 0.04ms after. decode() does that
+                // work on demand, so spend it here where the user is already
+                // waiting for Fetch. See the fuller note in
+                // index_grafana_topaz_small_object.html.
+                const PREWARM_BATCH = 32;
+                const toWarm = Object.values(ai_ship_InputImageCache)
+                                     .concat(Object.values(ai_ship_OutputImageCache));
+                if (toWarm.length) {
+                    updateStatus_aiShip('Preparing frames for display...', 'running');
+                    const warmStarted = performance.now();
+                    for (let i = 0; i < toWarm.length; i += PREWARM_BATCH) {
+                        await Promise.all(toWarm.slice(i, i + PREWARM_BATCH).map(
+                            img => (img && img.decode) ? img.decode().catch(() => {})
+                                                       : Promise.resolve()));
+                        // Reported per batch, not per frame: large sets take
+                        // seconds here (the four auto-nav streams are ~8s), and a
+                        // silent pause at the end of Fetch reads as a hang.
+                        updateStatus_aiShip(`Preparing frames for display ... ${Math.round(100 * (i + PREWARM_BATCH) / toWarm.length)}%`, 'running');
+                    }
+                    console.log(`Pre-warmed ${toWarm.length} frames in ${(performance.now() - warmStarted).toFixed(0)}ms`);
+                }
+
                 // Log detailed failure information
                 if (failed.length > 0) {
                     console.group('Failed image loads:');
