@@ -88,9 +88,12 @@
             margin-bottom: 8px;
         }
         .brand-header .bframe { width: 100%; border: none; display: block; background: transparent; }
-        .brand-insight { flex: 0 0 217px; min-height: 0; }
+        /* min-width: 0 is required on every iframe here: as replaced elements
+           they get an automatic minimum size of their 300px intrinsic width in
+           Chrome/Edge, which overrides any smaller flex-basis. */
+        .brand-insight { flex: 0 0 217px; min-width: 0; min-height: 0; }
         .brand-divider { flex: 0 0 1px; background: var(--border); align-self: center; height: 40px; }
-        .brand-aicraft { flex: 0 0 150px; min-height: 0; }
+        .brand-aicraft { flex: 0 0 150px; min-width: 0; min-height: 0; }
         .brand-spacer { flex: 1 1 auto; }
 
         /* ---- Server / Edge device tabs, right end of the branding row ----
