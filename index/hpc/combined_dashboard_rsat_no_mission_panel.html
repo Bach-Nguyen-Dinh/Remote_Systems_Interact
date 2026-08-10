@@ -82,7 +82,7 @@
             display: flex;
             align-items: stretch;
             /* gap: 12px; */
-            height: 80px;
+            height: 95px;
             /* padding: 6px 4px 10px; */
             border-bottom: 1px solid var(--border);
             margin-bottom: 8px;
@@ -90,10 +90,16 @@
         .brand-header .bframe { width: 100%; border: none; display: block; background: transparent; }
         /* Sized by the source image's own ratio (285x153) rather than a fixed
            width, so it fills the header height without letterboxing. */
-        .brand-header .brand-rsat { flex: 0 0 auto; width: auto; height: 100%; aspect-ratio: 285 / 153; min-width: 0; padding-right: 16px; }
-        .brand-insight { flex: 0 0 220px; min-height: 0; padding-left: 16px; padding-top: 4px; }
+        .brand-header .brand-rsat { flex: 0 0 190px; width: auto; height: 100%; aspect-ratio: 285 / 153; min-width: 0; 
+            /* padding-right: 12px;  */
+        }
+        /* min-width: 0 is required on every iframe here: as replaced elements
+           they get an automatic minimum size of their 300px intrinsic width in
+           Chrome/Edge, which overrides any smaller flex-basis. */
+        .brand-insight { flex: 0 0 250px; min-width: 0; min-height: 0; padding-left: 16px; padding-right: 16px; padding-top: 4px; }
+        /* .brand-mission { flex: 0 1 800px; aspect-ratio: 1270 / 148; min-width: 0; } */
+        .brand-aicraft { flex: 0 0 150px; min-width: 0; min-height: 0; padding-bottom: 3px; padding-left: 16px; }
         .brand-divider { flex: 0 0 1px; background: var(--border); align-self: center; height: 40px; }
-        .brand-aicraft { flex: 0 0 150px; min-height: 0; padding-bottom: 3px; }
         .brand-spacer { flex: 1 1 auto; }
 
         /* ---- Server / Edge device tabs, right end of the branding row ----
@@ -131,6 +137,9 @@
         <iframe class="bframe brand-rsat"     src="/branding/rsat_logo_panel.html"
                 title="RSAT" scrolling="no"></iframe>
         <div class="brand-divider"></div>
+        <!-- <iframe class="bframe brand-mission" src="/branding/rsat_mission_panel.html"
+                title="Trusted satellite systems for high data missions" scrolling="no"></iframe> -->
+        <!-- <div class="brand-divider"></div> -->
         <iframe class="bframe brand-insight"  src="/branding/insight_one_logo_panel.html"
                 title="Insight One" scrolling="no"></iframe>
         <div class="brand-divider"></div>
