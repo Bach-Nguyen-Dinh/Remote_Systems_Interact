@@ -98,6 +98,9 @@
            Chrome/Edge, which overrides any smaller flex-basis. */
         .brand-insight { flex: 0 0 250px; min-width: 0; min-height: 0; padding-left: 16px; padding-right: 16px; padding-top: 4px; }
         .brand-mission { flex: 0 1 800px; aspect-ratio: 1270 / 148; min-width: 0; }
+        /* Dropped by the script below once the row can no longer spare 300px
+           for it; the tagline is unreadable squeezed narrower than that. */
+        .brand-mission.brand-hidden { display: none; }
         .brand-aicraft { flex: 0 0 150px; min-width: 0; min-height: 0; padding-bottom: 3px; padding-left: 16px; }
         .brand-divider { flex: 0 0 1px; background: var(--border); align-self: center; height: 40px; }
         .brand-spacer { flex: 1 1 auto; }
@@ -339,6 +342,38 @@
                 refit(f);
             });
         };
+    })();
+
+    /* Drop the mission tagline from the branding row when the window is too
+       narrow to give it a usable width. Every other item in the row has
+       flex-shrink: 0, so the width left over for the mission panel can be
+       measured without depending on whether it is currently shown -- which is
+       what keeps this from oscillating once it has been hidden. */
+    (function () {
+        var header  = document.querySelector(".brand-header");
+        var mission = document.querySelector(".brand-mission");
+        if (!header || !mission) return;
+
+        var MIN_WIDTH = 400;
+
+        function apply() {
+            var used = 0;
+            Array.prototype.forEach.call(header.children, function (el) {
+                // The spacer only soaks up slack, so it never claims width the
+                // mission panel could have used.
+                if (el === mission || el.classList.contains("brand-spacer")) return;
+                used += el.offsetWidth;
+            });
+            var available = header.clientWidth - used;
+            mission.classList.toggle("brand-hidden", available < MIN_WIDTH);
+        }
+
+        apply();
+        window.addEventListener("resize", apply);
+        if (window.ResizeObserver) new ResizeObserver(apply).observe(header);
+        // The tab buttons are part of the measurement, so re-check once webfonts
+        // have settled and their width is final.
+        if (document.fonts && document.fonts.ready) document.fonts.ready.then(apply);
     })();
     </script>
 </body>
