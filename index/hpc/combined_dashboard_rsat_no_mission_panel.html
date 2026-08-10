@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Insight One</title>
+    <style>
+        /* ------------------------------------------------------------------
+           Combined HPC frontend, served by combined_hpc.py at '/test'. It is only
+           a thin shell: collapsible sections, each hosting one of the
+           existing standalone pages in a same-origin <iframe>:
+             * SAR application        -> /sar_app        (sar_process_upload.html)
+             * Vision language model  -> /vlm/
+             * Live system utilisation-> /system_monitor (system_monitor.html)
+             * Edge device            -> /topaz/         (the Topaz shell)
+
+           Those sections are split across two tabs selected from the branding
+           header: "Server" (everything running on this box) and "Edge device"
+           (the Topaz shell), with Server as the default. The Topaz frame is a
+           whole nested dashboard, so it is only loaded the first time its tab is
+           opened — and then stays mounted, since it polls and would restart from
+           scratch on every switch.
+           Keeping them as iframes means each page stays standalone and is edited
+           independently; nothing here touches their CSS/JS. Because both frames
+           are same-origin, the monitor frame is auto-sized to its content so the
+           whole dashboard scrolls as one page (no nested scrollbar). The SAR page
+           is a fixed-height (fill-the-box) design, so its frame keeps a set height.
+           The Grafana dark theme is reproduced here so the shell matches the
+           frames it hosts.
+           ------------------------------------------------------------------ */
+        :root {
+            --bg:        #020406;
+            --border:    #28292f;
+            --text:      rgba(204, 204, 220, 0.90);
+            --text-weak: rgba(204, 204, 220, 0.65);
+            --blue:      #3696ff;
+        }
+
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            font-size: 13px;
+            -webkit-font-smoothing: antialiased;
+            padding: 8px 10px 24px;
+        }
+
+        /* ---- collapsible section (Grafana row-header style) ---- */
+        .section-row { margin-bottom: 6px; }
+        .section-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none;
+            padding: 6px 4px;
+            color: var(--text-weak);
+            font-size: 15px;
+            font-weight: 400;
+        }
+        .section-header:hover { color: var(--text); }
+        .section-header .chev {
+            display: inline-block;
+            font-size: 11px;
+            transition: transform 0.15s ease;
+        }
+        .section-row.collapsed .chev { transform: rotate(-90deg); }
+        .section-row.collapsed .section-body { display: none; }
+
+        .frame {
+            width: 100%;
+            border: none;
+            display: block;
+            background: var(--bg);
+        }
+
+        /* ---- AICRAFT branding header ----------------------------------------
+           ------------------------------------------------------------------ */
+        .brand-header {
+            display: flex;
+            align-items: stretch;
+            /* gap: 12px; */
+            height: 80px;
+            /* padding: 6px 4px 10px; */
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 8px;
+        }
+        .brand-header .bframe { width: 100%; border: none; display: block; background: transparent; }
+        /* Sized by the source image's own ratio (285x153) rather than a fixed
+           width, so it fills the header height without letterboxing. */
+        .brand-header .brand-rsat { flex: 0 0 auto; width: auto; height: 100%; aspect-ratio: 285 / 153; min-width: 0; padding-right: 16px; }
+        .brand-insight { flex: 0 0 220px; min-height: 0; padding-left: 16px; padding-top: 4px; }
+        .brand-divider { flex: 0 0 1px; background: var(--border); align-self: center; height: 40px; }
+        .brand-aicraft { flex: 0 0 150px; min-height: 0; padding-bottom: 3px; }
+        .brand-spacer { flex: 1 1 auto; }
+
+        /* ---- Server / Edge device tabs, right end of the branding row ----
+           Pulled down 1px so the active tab's underline lands on the header's
+           own bottom border rather than floating above it. */
+        .brand-tabs {
+            flex: 0 0 auto;
+            display: flex;
+            align-items: flex-end;
+            gap: 4px;
+            margin-bottom: -1px;
+        }
+        .tab-btn {
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--text-weak);
+            padding: 10px 18px;
+            font-size: 14px;
+            font-family: inherit;
+            cursor: pointer;
+            transition: color .15s ease, border-color .15s ease;
+        }
+        .tab-btn:hover { color: var(--text); }
+        .tab-btn.active { color: var(--text); border-bottom-color: var(--blue); }
+
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+    </style>
+</head>
+<body>
+
+    <!-- ===================== AICRAFT branding header ===================== -->
+    <div class="brand-header">
+        <iframe class="bframe brand-rsat"     src="/branding/rsat_logo_panel.html"
+                title="RSAT" scrolling="no"></iframe>
+        <div class="brand-divider"></div>
+        <iframe class="bframe brand-insight"  src="/branding/insight_one_logo_panel.html"
+                title="Insight One" scrolling="no"></iframe>
+        <div class="brand-divider"></div>
+        <iframe class="bframe brand-aicraft" src="/branding/ai_craft_logo_panel.html"
+                title="Powered by AICRAFT" scrolling="no"></iframe>
+        <div class="brand-spacer"></div>
+        <div class="brand-tabs">
+            <button class="tab-btn active" data-tab="server" onclick="switchTab('server')">Server</button>
+            <button class="tab-btn" data-tab="edge" onclick="switchTab('edge')">Edge Device</button>
+        </div>
+    </div>
+
+    <!-- ===================== Server tab ===================== -->
+    <div class="tab-panel active" data-tab="server">
+
+    <!-- ===================== SAR application ===================== -->
+    <div class="section-row" id="sec-sar">
+        <div class="section-header" onclick="toggleSection('sec-sar')">
+            <span class="chev">&#9662;</span><span>Synthetic aperture radar</span>
+        </div>
+        <div class="section-body">
+            <iframe class="frame" id="frame-sar" src="/sar_app"
+                    title="Synthetic aperture radar" style="height: 720px;"></iframe>
+        </div>
+    </div>
+
+    <!-- ===================== VLM application ===================== -->
+    <div class="section-row" id="sec-vlm">
+        <div class="section-header" onclick="toggleSection('sec-vlm')">
+            <span class="chev">&#9662;</span><span>Vision language model</span>
+        </div>
+        <div class="section-body">
+            <iframe class="frame" id="frame-vlm" src="/vlm/"
+                    title="Vision language model" style="height: 800px;"></iframe>
+        </div>
+    </div>
+
+    <!-- ===================== CCTV application ===================== -->
+    <!-- <div class="section-row" id="sec-cctv">
+        <div class="section-header" onclick="toggleSection('sec-cctv')">
+            <span class="chev">&#9662;</span><span>CCTV analysis</span>
+        </div>
+        <div class="section-body">
+            <iframe class="frame" id="frame-cctv" src="/cctv_app"
+                    title="CCTV analysis" style="height: 720px;"></iframe>
+        </div>
+    </div> -->
+
+    <!-- ===================== Live system utilisation ===================== -->
+    <div class="section-row" id="sec-mon">
+        <div class="section-header" onclick="toggleSection('sec-mon')">
+            <span class="chev">&#9662;</span><span>Live system utilisation</span>
+        </div>
+        <div class="section-body">
+            <iframe class="frame" id="frame-mon" src="/system_monitor"
+                    title="Live system utilisation" style="height: 600px;"></iframe>
+        </div>
+    </div>
+
+    </div><!-- /Server tab -->
+
+    <!-- ===================== Edge device tab ===================== -->
+    <div class="tab-panel" data-tab="edge">
+
+    <!-- ===================== Topaz box ===================== -->
+    <div class="section-row" id="sec-topaz">
+        <div class="section-body">
+            <!-- data-src, not src: loaded on the first visit to this tab.
+                 scrolling="no": this frame is auto-sized to the Topaz shell's own
+                 content height, so it is never meant to scroll on its own -- the
+                 page scrolls as one. Without this, any moment where the fitted
+                 height trails the content (a tab switch, a workload growing the
+                 page between polls) shows a second scrollbar beside the window's.
+                 Only affects the framed instance; /topaz/ opened directly still
+                 scrolls normally. Frames with a FIXED height (SAR, VLM) keep their
+                 scrollbars -- those genuinely need them. -->
+            <iframe class="frame" id="frame-topaz" data-src="/topaz/" scrolling="no"
+                    title="Edge Device" style="height: 1900px;"></iframe>
+        </div>
+    </div>
+
+    </div><!-- /Edge device tab -->
+
+    <script>
+    (function () {
+        "use strict";
+
+        // Same-origin, auto-sized frames. The monitor builds its per-core grid a
+        // second or so after load (first /system_metrics response); the Topaz
+        // frame is itself a shell whose inner frames change height when its own
+        // vision tab is switched — so both are re-fitted on a 1s poll as well as
+        // on load/resize. Each entry: [element, fallback height, section id, tab].
+        var FRAMES = [
+            [document.getElementById("frame-mon"),   600,  "sec-mon",   "server"],
+            [document.getElementById("frame-topaz"), 1900, "sec-topaz", "edge"]
+        ];
+
+        function docOf(fr) {
+            try { return fr.contentWindow.document; } catch (e) { return null; }
+        }
+        // Measure the BODY, not documentElement: an auto-height body is exactly as
+        // tall as its content, while documentElement.scrollHeight is never smaller
+        // than the frame's own viewport (i.e. the height we already set). Measuring
+        // the body is what lets a frame SHRINK as well as grow — the Topaz frame is
+        // a shell whose vision tabs differ by ~1000px, and a grow-only fit kept the
+        // tallest tab's height forever, leaving a big empty gap under short tabs.
+        function contentHeight(d) {
+            if (!d) return 0;
+            var b = d.body;
+            if (b) {
+                var h = Math.max(b.scrollHeight, Math.ceil(b.getBoundingClientRect().height));
+                if (h) return h;
+            }
+            return d.documentElement ? d.documentElement.scrollHeight : 0;
+        }
+        // A frame in the inactive tab (or a collapsed section) measures as 0 and
+        // would snap to its fallback, so skip it: it is fitted when its tab is
+        // actually shown.
+        function isVisible(fr) {
+            return fr.offsetParent !== null;
+        }
+        // Size a frame to its content, in both directions. The deadband is
+        // deliberately one-sided: leaving the frame even 1px SHORT than its
+        // content makes the browser paint a scrollbar inside it -- e.g. the Topaz
+        // shell is 2544px tall on the Small object tab and 2545px on AI ship, and
+        // a symmetric 1px deadband swallowed that change, so the AI ship tab got a
+        // second scrollbar next to the window's. Any shortfall is corrected
+        // immediately; only shrinking is damped, which is all that is needed to
+        // stop sub-pixel noise rewriting the style on every tick.
+        function fit(fr, fallback) {
+            var d = docOf(fr);
+            if (!d || !isVisible(fr)) return;
+            var h = contentHeight(d) || fallback;
+            if (h > fr.offsetHeight || fr.offsetHeight - h > 1) fr.style.height = h + "px";
+        }
+
+        // Re-fit a frame a few times after a reveal/load: it needs a moment to
+        // lay out, and the pages build async grids from their first data response.
+        function refit(f) {
+            [0, 150, 400, 1000, 1500].forEach(function (ms) {
+                setTimeout(function () { fit(f[0], f[1]); }, ms);
+            });
+        }
+
+        FRAMES.forEach(function (f) {
+            f[0].addEventListener("load", function () { refit(f); });
+        });
+        setInterval(function () { FRAMES.forEach(function (f) { fit(f[0], f[1]); }); }, 1000);
+
+        var resizeTimer = null;
+        window.addEventListener("resize", function () {
+            if (resizeTimer) clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(function () {
+                FRAMES.forEach(function (f) { fit(f[0], f[1]); });
+            }, 200);
+        });
+
+        window.toggleSection = function (id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.classList.toggle("collapsed");
+            // Re-fit a frame when its section is revealed (it can't be measured
+            // while display:none), on the next frame so layout has settled.
+            if (!el.classList.contains("collapsed")) {
+                FRAMES.forEach(function (f) {
+                    if (f[2] !== id) return;
+                    loadFrame(f);
+                    refit(f);
+                });
+            }
+        };
+
+        // ---- Server / Edge device tabs ----
+        // The Topaz frame carries data-src and is given a real src the first time
+        // its tab is opened; after that it stays in the DOM, so its nested
+        // dashboard keeps polling instead of reloading on every switch.
+        function loadFrame(f) {
+            var fr = f[0];
+            if (!fr.getAttribute("src") && fr.getAttribute("data-src")) {
+                fr.src = fr.getAttribute("data-src");
+            }
+        }
+
+        window.switchTab = function (tab) {
+            document.querySelectorAll(".tab-btn").forEach(function (b) {
+                b.classList.toggle("active", b.dataset.tab === tab);
+            });
+            document.querySelectorAll(".tab-panel").forEach(function (p) {
+                p.classList.toggle("active", p.dataset.tab === tab);
+            });
+
+            // Now that the panel is visible its frames can be loaded and measured.
+            FRAMES.forEach(function (f) {
+                if (f[3] !== tab) return;
+                loadFrame(f);
+                refit(f);
+            });
+        };
+    })();
+    </script>
+</body>
+</html>
