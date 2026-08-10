@@ -32,7 +32,17 @@
         .panel.panel-transparent { background: transparent; border: none; }
 
         * { box-sizing: border-box; }
-        html, body { margin: 0; padding: 0; height: 100%; }
+        /* No height on <body>: the layout below is entirely intrinsic (the grids
+           step down at breakpoints, the panels carry their own heights), so a
+           full-height body bought nothing here -- and it broke the auto-sizing
+           shells that host this page in an iframe. A body pinned to 100% is by
+           definition exactly as tall as the frame it is in, so it measures as
+           "content == current height" and the frame can only ever grow: narrow
+           the window, the core grid wraps and the frame grows to fit; widen it
+           again and the content shrinks but the frame stays, leaving dead space
+           only a reload could clear. Letting body be auto-height makes the
+           measurement report the real content height in both directions. */
+        html, body { margin: 0; padding: 0; }
         body {
             background: var(--bg);
             color: var(--text);

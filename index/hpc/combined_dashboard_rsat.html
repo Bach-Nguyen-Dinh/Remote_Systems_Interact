@@ -293,12 +293,37 @@
         });
         setInterval(function () { FRAMES.forEach(function (f) { fit(f[0], f[1]); }); }, 1000);
 
+        // A resize re-measures each frame from its FALLBACK height rather than
+        // from the height it happens to be at. fit() alone is not enough here:
+        // it can only report a height the framed page is willing to give while
+        // sitting in a frame of the current size, and a page whose <body> is
+        // full-height (height:100%, or any fill-the-box design) is by definition
+        // exactly as tall as the frame it was handed -- so it grows and never
+        // shrinks. That is what left the dashboard stuck tall after narrowing
+        // the window and widening it again: the inner content had reflowed back
+        // into fewer, shorter rows, but the frame kept the height it needed
+        // while narrow and only a reload cleared it. Collapsing first puts the
+        // frame below its content so the content dictates the height again.
+        // Both writes happen in one synchronous task, so the intermediate
+        // (short) height is measured but never painted -- no flicker.
+        function remeasure() {
+            // Collapsing shortens the page, and the forced layout inside fit()
+            // clamps the window's scroll offset to the shorter document. Restore
+            // it afterwards so resizing while scrolled down doesn't jump the page.
+            var se = document.scrollingElement || document.documentElement;
+            var top = se.scrollTop;
+            FRAMES.forEach(function (f) {
+                if (!docOf(f[0]) || !isVisible(f[0])) return;
+                f[0].style.height = f[1] + "px";
+                fit(f[0], f[1]);
+            });
+            if (se.scrollTop !== top) se.scrollTop = top;
+        }
+
         var resizeTimer = null;
         window.addEventListener("resize", function () {
             if (resizeTimer) clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(function () {
-                FRAMES.forEach(function (f) { fit(f[0], f[1]); });
-            }, 200);
+            resizeTimer = setTimeout(remeasure, 200);
         });
 
         window.toggleSection = function (id) {
