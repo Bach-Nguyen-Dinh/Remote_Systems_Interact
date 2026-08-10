@@ -107,6 +107,7 @@ MONITOR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "system_monitor.html")
 # /system_monitor). Replaces the old Grafana frontend that iframed them separately.
 COMBINED_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "combined_dashboard.html")
 COMBINED_FRONTEND_RSAT = os.path.join(CURR_DIR, "index", "hpc", "combined_dashboard_rsat.html")
+# COMBINED_FRONTEND_RSAT = os.path.join(CURR_DIR, "index", "hpc", "combined_dashboard_rsat_no_mission_panel.html")
 COMBINED_FRONTEND_TESTING = os.path.join(CURR_DIR, "index", "hpc", "combined_dashboard_testing.html")
 BRANDING_DIR = os.path.join(CURR_DIR, "index", "branding")  # logo / mission-banner panels iframed by the RSAT header
 SAVE_DIR = os.path.join(CURR_DIR, "pictures")
