@@ -1,0 +1,25 @@
+# Dependencies for combined_topaz2.py (Topaz/RDB ARM box, 192.168.0.32).
+#
+# Install into the app's virtualenv, never system-wide:
+#     .venv-topaz2/bin/pip install -r requirements-topaz2.txt
+#
+# Versions are pinned exactly. Python 3.8 is end-of-life, so an unpinned
+# install drifts onto releases that have dropped 3.8 and either refuses to
+# resolve or silently installs an older build than the one tested here.
+#
+# This list is much shorter than requirements-hpc.txt on purpose. combined_topaz2
+# reads its system metrics off a socket the target pushes to (SYSINFO_PORT), so
+# it needs no psutil, no numpy, and no imaging stack -- it only ever moves bytes
+# that were handed to it. Keep it that way; it is what makes this installable on
+# the ARM box without a compiler.
+
+# --- ASGI stack -------------------------------------------------------------
+fastapi==0.124.4
+uvicorn[standard]==0.33.0    # extras bring uvloop + httptools (the fast loop/parser)
+starlette==0.44.0            # imported directly for StreamingResponse/Response
+anyio==4.5.2                 # imported directly to size the request threadpool
+pydantic==2.10.6
+
+# --- optional, guarded by try/except at import time -------------------------
+# combined_topaz2 sets InfluxDBClient = None and carries on without this.
+influxdb==5.3.2

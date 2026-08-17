@@ -1,0 +1,32 @@
+# Dependencies for combined_hpc.py (x86_64 HPC box, Python 3.8).
+#
+# Install into the app's virtualenv, never system-wide:
+#     .venv-hpc/bin/pip install -r requirements-hpc.txt
+#
+# Versions are pinned exactly. Python 3.8 is end-of-life, so an unpinned
+# install drifts onto releases that have dropped 3.8 and either refuses to
+# resolve or silently installs an older build than the one tested here.
+
+# --- ASGI stack -------------------------------------------------------------
+fastapi==0.124.4
+uvicorn[standard]==0.33.0    # extras bring uvloop + httptools (the fast loop/parser)
+starlette==0.44.0            # imported directly for run_in_threadpool
+anyio==4.5.2                 # imported directly to size the request threadpool
+pydantic==2.10.6
+
+# --- application dependencies ----------------------------------------------
+influxdb==5.3.2              # metrics sink
+psutil==7.1.0                # metrics collectors
+requests==2.32.3             # VLM sidecar calls
+Pillow==10.4.0               # thumbnails + GeoTIFF tag reads; last release supporting 3.8
+
+# --- optional, imported lazily ---------------------------------------------
+# sarpy powers CPHD metadata in get_metadata_from_cphd(). It is a lazy import
+# guarded by try/except, so the app still starts without it -- the CPHD
+# properties panel just comes back empty. Pulls in numpy/scipy.
+sarpy==1.3.61.1
+
+# GDAL (osgeo) is deliberately NOT listed. get_resolution_from_tif() tries it
+# first but falls back to PIL's GeoTIFF tags, and it is not installed on this
+# box today, so the app has always run the PIL path. Adding it means system
+# libgdal + a version-matched binding, not a plain pip install.

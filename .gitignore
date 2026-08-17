@@ -15,9 +15,23 @@
 !index/
 !index/*
 !set_up_proxy_server.md
+!installation.md
+
+# Dependency manifests + launchers for the per-app virtualenvs. Needed
+# explicitly because line 1 ignores everything by default.
+!requirements-*.txt
+!run_hpc.sh
+!run_topaz2.sh
+
+# The virtualenvs themselves are build output -- rebuild them from the
+# manifests above, never commit them. Listed after the allowlist so this
+# wins, and so a future "!*.py" style rule can't drag in their contents.
+.venv-*/
 
 # topaz_imu specific ignores
 topaz_imu/.claude
 topaz_imu/CLAUDE.md
 topaz_imu/main
 topaz_imu/sensor_iim42652/iim42652
+cphd.py
+cphdmeta.py
