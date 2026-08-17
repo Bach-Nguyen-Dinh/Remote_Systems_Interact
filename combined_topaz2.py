@@ -11,7 +11,7 @@ sends is:
   * best-effort written to InfluxDB for historical logging (optional; the frontend
     never reads InfluxDB — if it is down, the dashboard still works).
 
-The Flask app then serves the dashboard directly at '/':
+The app then serves the dashboard directly at '/':
 
   * '/'                     -> index/topaz2/combined_dashboard.html  (thin shell)
   * '/orientation'         -> index/topaz2/orientation.html         (IMU: gyro/accel/angles)
@@ -36,6 +36,28 @@ http://<this-box>:5001/, the same "streaming" pattern as the VLM box's /vlm/). F
 that to work the served pages use *relative* URLs only (iframe src="orientation",
 fetch("system_metrics"), …) so they resolve against whatever prefix the request
 arrived on — a leading slash would escape the prefix. See set_up_proxy_server.md.
+
+SERVER
+------
+This is an ASGI app served by uvicorn. `python3 combined_topaz2.py` starts it the
+same way it always did (same bind address, same port), and it can also be run under
+an external supervisor with:
+
+    uvicorn combined_topaz2:app --host 0.0.0.0 --port 5001
+
+This replaces the Werkzeug development server, which hard-coded "Connection: close"
+on every response (werkzeug/serving.py, "Always close the connection") and so forced
+the reverse proxy in front of us to open a fresh TCP connection per request — an
+extra round trip on every call over a long-haul link, unrecoverable from the nginx
+side. uvicorn keeps connections alive, so that cost is gone.
+
+Handlers are plain `def` (Starlette runs those in a worker thread, so their blocking
+directory and file work behaves as it did under Flask's threaded server) except the
+SSE endpoints, which are `async def`. That distinction matters here: an SSE stream
+sits idle for many seconds at a time between updates, so a thread-backed generator
+would hold a worker thread for the life of every open stream and a handful of open
+dashboards would exhaust the pool. The progress fan-out below therefore hands updates
+to asyncio queues on the event loop instead of blocking `queue.Queue.get()`.
 """
 
 import os
@@ -44,13 +66,26 @@ import time
 import queue
 import socket
 import struct
+import asyncio
 import hashlib
 import mimetypes
 import threading
 import subprocess
+from contextlib import asynccontextmanager
+from typing import Optional
 
-from flask import Flask, request, jsonify, send_file, send_from_directory, Response  # type: ignore
-from flask_cors import CORS  # type: ignore
+import anyio
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    Response,
+    StreamingResponse,
+)
+from pydantic import BaseModel
 
 try:
     from influxdb import InfluxDBClient  # type: ignore
@@ -60,13 +95,18 @@ except Exception:                        # influxdb client is optional
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
-HOST_IP = "0.0.0.0"          # Flask + metrics-socket bind address
-FLASK_PORT = 5001
+HOST_IP = "0.0.0.0"          # uvicorn + metrics-socket bind address
+SERVER_PORT = 5001
 SYSINFO_PORT = 12346         # target -> host system-metrics stream (JSON per line)
 DATA_PORT = 55556            # target -> host workload updates (one JSON object per connection)
 
 TARGET_IP = "10.42.0.7"      # embedded Topaz target (for /send_message forwarding)
 TARGET_PORT = 54322
+
+# Worker threads available to the `def` request handlers. Starlette's default is
+# 40; the image-bundle handlers walk large directories and stream hundreds of
+# megabytes, so give the dashboard's frequent pollers headroom behind them.
+REQUEST_THREAD_LIMIT = 100
 
 INFLUXDB_HOST = "localhost"
 INFLUXDB_PORT = 8086
@@ -115,8 +155,8 @@ AUTO_NAV_VALIDATE_DIRS = {k + "_img": v for k, v in AUTO_NAV_DIRS.items()}
 # ----------------------------------------------------------------------------
 # Latest snapshot the target sent, refreshed in-place by the metrics receiver so
 # the two frontend pages can pull every live value in one /system_metrics call.
-# Guarded by a lock because the receiver (writer) and Flask threads (readers)
-# touch it concurrently.
+# Guarded by a lock because the receiver (writer) and request handler threads
+# (readers) touch it concurrently.
 latest_metrics = {}
 latest_metrics_lock = threading.Lock()
 
@@ -130,13 +170,22 @@ latest_progress = {
     "ai_smoke": {},
 }
 
-# Live SSE listeners per workload: one Queue per open '<workload>/events' request.
-# The '<workload>/progress' cache above only ever holds the *latest* update, so a
-# polling page silently loses any update overwritten between two polls (and
-# re-renders the surviving one on every poll in between). Pushing each update into
-# these queues instead delivers every update exactly once, in order.
+# Live SSE listeners per workload: one asyncio.Queue per open '<workload>/events'
+# request. The '<workload>/progress' cache above only ever holds the *latest*
+# update, so a polling page silently loses any update overwritten between two polls
+# (and re-renders the surviving one on every poll in between). Pushing each update
+# into these queues instead delivers every update exactly once, in order.
+#
+# The queues are asyncio queues, not queue.Queue: the socket reader thread hands
+# updates over with loop.call_soon_threadsafe (see _publish_progress) and each
+# stream awaits its own queue on the event loop, so an open-but-idle stream costs
+# no thread at all.
 progress_subscribers = {key: set() for key in latest_progress}
 progress_subscribers_lock = threading.Lock()
+
+# The event loop uvicorn is running, captured at startup so the metrics/progress
+# socket threads can hand work to it. None until lifespan runs.
+main_loop: Optional[asyncio.AbstractEventLoop] = None
 
 # Per-listener backlog. A run emits one update per frame, so this is many seconds
 # of slack; a client that falls this far behind is not reading at all and gets
@@ -177,8 +226,33 @@ workload_pids = {key: None for key in latest_progress}
 latest_ai_core_usage = 0.0
 ai_baseline_usage = {"ai_ship": 0.0, "ai_smoke": 0.0}
 
-app = Flask(__name__)
-CORS(app)
+
+# ----------------------------------------------------------------------------
+# Application setup
+# ----------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Capture the running loop (the socket threads publish onto it) and start the
+    receivers. Doing it here rather than in __main__ means an external
+    `uvicorn combined_topaz2:app` gets the metrics and progress receivers too."""
+    global main_loop
+    main_loop = asyncio.get_running_loop()
+    anyio.to_thread.current_default_thread_limiter().total_tokens = REQUEST_THREAD_LIMIT
+    threading.Thread(target=receive_metrics, daemon=True).start()
+    threading.Thread(target=receive_workload_updates, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Combined Topaz2 dashboard", lifespan=lifespan)
+
+# Matches the old flask_cors CORS(app) default: every origin, method and header
+# allowed, credentials not allowed.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Python's mimetypes table doesn't always know .webp, and without this every
 # frame goes out as application/octet-stream.
@@ -188,6 +262,35 @@ mimetypes.add_type("image/webp", ".webp")
 # well under this; the cap is only here so a hand-made request can't make the
 # server build a single multi-hundred-megabyte response.
 BUNDLE_MAX_FILES = 500
+
+
+class CommandMessage(BaseModel):
+    """Body of POST /send_message."""
+    message: str = ""
+
+
+# ----------------------------------------------------------------------------
+# Static-file helpers (stand-ins for Flask's send_file / send_from_directory)
+# ----------------------------------------------------------------------------
+def send_file(path, media_type=None):
+    """Serve one known file, 404 if it has gone missing.
+
+    Flask's send_file raised NotFound for a missing path; FileResponse would only
+    fail when the body is already being written, so the check is explicit here."""
+    if not os.path.isfile(path):
+        return PlainTextResponse("File not found", status_code=404)
+    return FileResponse(path, media_type=media_type)
+
+
+def send_from_directory(directory, filename, media_type=None):
+    """Serve `filename` from inside `directory`, refusing anything that resolves
+    outside it (Flask's send_from_directory did the containment check for us)."""
+    base = os.path.abspath(directory)
+    full = os.path.abspath(os.path.join(base, filename))
+    if os.path.commonpath([base, full]) != base:
+        return PlainTextResponse("Not found", status_code=404)
+    return send_file(full, media_type=media_type)
+
 
 # ----------------------------------------------------------------------------
 # Helpers
@@ -421,8 +524,11 @@ def _note_progress_timing(key, update):
 
 
 def _subscribe_progress(key):
-    """Register a queue to receive every future update for `key`."""
-    q = queue.Queue(maxsize=PROGRESS_QUEUE_MAX)
+    """Register a queue to receive every future update for `key`.
+
+    Called from the event loop (the SSE handler), so the queue is bound to the
+    loop that will await it."""
+    q = asyncio.Queue(maxsize=PROGRESS_QUEUE_MAX)
     with progress_subscribers_lock:
         progress_subscribers[key].add(q)
     return q
@@ -433,20 +539,33 @@ def _unsubscribe_progress(key, q):
         progress_subscribers[key].discard(q)
 
 
+def _deliver_progress(key, q, update):
+    """Put one update on one listener's queue. Runs ON the event loop, handed over
+    by _publish_progress, because asyncio.Queue is not thread-safe."""
+    try:
+        q.put_nowait(update)
+    except asyncio.QueueFull:
+        print(f"Dropping stalled {key} progress listener")
+        _unsubscribe_progress(key, q)
+
+
 def _publish_progress(key, update):
     """Hand `update` to every open listener on `key`.
 
-    Never blocks the socket thread: a listener whose backlog is full is one that
-    has stopped reading, so it is dropped from the fan-out and its stream ends on
-    the next heartbeat."""
+    Never blocks the socket thread: the actual queue writes are scheduled onto the
+    event loop, and a listener whose backlog is full is one that has stopped
+    reading, so it is dropped from the fan-out and its stream ends on the next
+    heartbeat."""
+    loop = main_loop
+    if loop is None:      # an update arrived before the server finished starting
+        return
     with progress_subscribers_lock:
         listeners = list(progress_subscribers[key])
     for q in listeners:
         try:
-            q.put_nowait(update)
-        except queue.Full:
-            print(f"Dropping stalled {key} progress listener")
-            _unsubscribe_progress(key, q)
+            loop.call_soon_threadsafe(_deliver_progress, key, q, update)
+        except RuntimeError:
+            pass          # loop closed (shutting down)
 
 
 def _read_workload_update(conn, addr):
@@ -532,68 +651,68 @@ def forward_message_to_target(message):
             s.settimeout(5)
             s.connect((TARGET_IP, TARGET_PORT))
             s.sendall(message.encode())
-        return jsonify({"status": "success", "message": message})
+        return JSONResponse({"status": "success", "message": message})
     except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 
 # ----------------------------------------------------------------------------
-# Flask routes
+# Routes
 # ----------------------------------------------------------------------------
-@app.route('/')
+@app.get('/')
 def combined_frontend():
     """Thin shell: two collapsible sections, each an <iframe> onto a standalone
     page below (Orientation + System monitoring), same-origin so both auto-size."""
     return send_file(COMBINED_FRONTEND)
 
 
-@app.route('/orientation')
+@app.get('/orientation')
 def orientation_frontend():
     """IMU orientation page (gyroscope, accelerometer, integrated angles)."""
     return send_file(ORIENTATION_FRONTEND)
 
 
-@app.route('/monitor')
-@app.route('/system_monitor')
+@app.get('/monitor')
+@app.get('/system_monitor')
 def monitor_frontend():
     """Live system-utilisation page (CPU / AI cores / memory / disk / network)."""
     return send_file(MONITOR_FRONTEND)
 
 
-@app.route('/small_obj_app')
+@app.get('/small_obj_app')
 def small_obj_frontend():
     """Small object detection page (Vision model tab)."""
     return send_file(SMALL_OBJ_FRONTEND)
 
 
-@app.route('/auto_nav_app')
+@app.get('/auto_nav_app')
 def auto_nav_frontend():
     """Autonomous navigation page (Vision model tab)."""
     return send_file(AUTO_NAV_FRONTEND)
 
 
-@app.route('/ai_ship_app')
+@app.get('/ai_ship_app')
 def ai_ship_frontend():
     """AI ship detection page (Vision model tab)."""
     return send_file(AI_SHIP_FRONTEND)
 
 
-@app.route('/ai_smoke_app')
+@app.get('/ai_smoke_app')
 def ai_smoke_frontend():
     """AI smoke detection page (Vision model tab)."""
     return send_file(AI_SMOKE_FRONTEND)
 
 
-@app.route('/system_metrics', methods=['GET'])
+@app.get('/system_metrics')
 def system_metrics():
     """The whole live snapshot the two dashboard pages need, in one call. Served
     straight from the in-memory cache the metrics receiver fills."""
     with latest_metrics_lock:
-        return jsonify(latest_metrics)
+        return JSONResponse(latest_metrics)
 
 
-@app.route('/send_message', methods=['POST'])
-def send_message():
+@app.post('/send_message')
+def send_message(payload: Optional[CommandMessage] = None):
     """Forward a control command to the embedded target.
 
     Three families of command need host-side bookkeeping before (or instead of)
@@ -606,8 +725,7 @@ def send_message():
       * "stop_<workload>" — append the PID the target reported for the run in
         flight, so it kills that run and not a newer one.
       * "clear_<workload>" — purely host-side; nothing to tell the target."""
-    data = request.get_json(silent=True) or {}
-    message = data.get("message", "")
+    message = payload.message if payload else ""
     print(f"Command: {message}")
 
     for workload in latest_progress:
@@ -629,12 +747,12 @@ def send_message():
             break
         if message == f"clear_{workload}":
             latest_progress[workload] = {}
-            return jsonify({"status": "cleared", "workload": workload})
+            return JSONResponse({"status": "cleared", "workload": workload})
 
     return forward_message_to_target(message)
 
 
-@app.route('/imu/recalibrate', methods=['POST'])
+@app.post('/imu/recalibrate')
 def recalibrate_imu():
     """Trigger IMU recalibration on the target device."""
     return forward_message_to_target("recalibrate_imu")
@@ -684,7 +802,7 @@ def pair_image_list(input_dir, output_dir):
     front, so they can pre-load every frame into the browser cache before a run."""
     input_images = list_webp(input_dir)
     output_images = list_webp(output_dir)
-    return jsonify({
+    return JSONResponse({
         "input_images": [img["filename"] for img in input_images],
         "output_images": [img["filename"] for img in output_images],
         "input_images_info": [dict(img, type="input") for img in input_images],
@@ -699,25 +817,25 @@ def validate_in(directories, image_type, filename):
     it. `directories` maps the page's image-type name to a directory."""
     directory = directories.get(image_type)
     if directory is None:
-        return jsonify({"valid": False, "error": "Invalid image type"}), 400
+        return JSONResponse({"valid": False, "error": "Invalid image type"}, status_code=400)
 
     # send_from_directory does this too, but do it here as well so a crafted
     # filename can never escape the directory even in this cheap probe.
     filepath = os.path.normpath(os.path.join(directory, filename))
     if not filepath.startswith(os.path.abspath(directory) + os.sep):
-        return jsonify({"valid": False, "error": "Invalid filename"}), 400
+        return JSONResponse({"valid": False, "error": "Invalid filename"}, status_code=400)
 
     if os.path.isfile(filepath) and os.access(filepath, os.R_OK):
-        return jsonify({
+        return JSONResponse({
             "valid": True,
             "filename": filename,
             "size": os.path.getsize(filepath),
             "path": filepath,
         })
-    return jsonify({"valid": False, "error": "File not accessible"}), 404
+    return JSONResponse({"valid": False, "error": "File not accessible"}, status_code=404)
 
 
-def bundle_in(directories, image_type):
+def bundle_in(directories, image_type, request):
     """Return many frames in a single response.
 
     Fetching frames one <img> at a time costs one round trip each, which is
@@ -743,13 +861,13 @@ def bundle_in(directories, image_type):
     """
     directory = directories.get(image_type)
     if directory is None:
-        return jsonify({"error": "Invalid image type"}), 400
+        return JSONResponse({"error": "Invalid image type"}, status_code=400)
 
     try:
-        start = max(0, int(request.args.get("start", 0)))
-        count = int(request.args.get("count", BUNDLE_MAX_FILES))
+        start = max(0, int(request.query_params.get("start", 0)))
+        count = int(request.query_params.get("count", BUNDLE_MAX_FILES))
     except ValueError:
-        return jsonify({"error": "start and count must be integers"}), 400
+        return JSONResponse({"error": "start and count must be integers"}, status_code=400)
     count = max(0, min(count, BUNDLE_MAX_FILES))
 
     names = [img["filename"] for img in list_webp(directory)][start:start + count]
@@ -773,10 +891,7 @@ def bundle_in(directories, image_type):
     # extra round trip per chunk (a few dozen, against the ~1500 this saves).
     etag = '"' + fingerprint.hexdigest() + '"'
     if request.headers.get("If-None-Match") == etag:
-        response = Response(status=304)
-        response.headers["ETag"] = etag
-        response.headers["Cache-Control"] = "no-cache"
-        return response
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
 
     header = json.dumps({"files": header_files}).encode("utf-8")
     prefix = struct.pack(">I", len(header)) + header
@@ -803,14 +918,21 @@ def bundle_in(directories, image_type):
                 # every later offset in the header stays correct.
                 yield b"\0" * (size - sent)
 
-    response = Response(generate(), mimetype="application/octet-stream")
-    response.headers["Content-Length"] = str(total)
-    response.headers["ETag"] = etag
-    response.headers["Cache-Control"] = "no-cache"
-    return response
+    # The generator is synchronous, so Starlette pulls it on a worker thread: each
+    # 64 KB read borrows a thread only for the read itself, never for the life of
+    # the response.
+    return StreamingResponse(
+        generate(),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(total),
+            "ETag": etag,
+            "Cache-Control": "no-cache",
+        },
+    )
 
 
-def progress_event_stream(workload):
+async def progress_event_stream(workload):
     """Push `workload`'s progress updates to the page as Server-Sent Events.
 
     The push counterpart to '<workload>/progress'. That endpoint serves a
@@ -823,11 +945,16 @@ def progress_event_stream(workload):
     reconnects mid-run shows current state instead of waiting for the next frame.
     Subscribing *before* reading that cache means an update landing right now is
     delivered twice rather than lost — displaying one frame twice is harmless,
-    missing one is not."""
+    missing one is not.
+
+    Async on purpose: a stream spends nearly all its life waiting, so awaiting the
+    queue costs nothing while it idles. A blocking `queue.Queue.get()` in a sync
+    generator would instead hold one of the server's worker threads for as long as
+    the page stays open."""
     q = _subscribe_progress(workload)
     snapshot = latest_progress[workload]
 
-    def generate():
+    async def generate():
         try:
             if snapshot:
                 # Tagged so the page can tell replayed state from a live update.
@@ -839,72 +966,76 @@ def progress_event_stream(workload):
                 yield f"data: {json.dumps(dict(snapshot, replay=True))}\n\n"
             while True:
                 try:
-                    update = q.get(timeout=PROGRESS_HEARTBEAT_SECONDS)
-                except queue.Empty:
+                    update = await asyncio.wait_for(q.get(), PROGRESS_HEARTBEAT_SECONDS)
+                except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
                     continue
                 yield f"data: {json.dumps(update)}\n\n"
         finally:
-            # Runs on client disconnect too: the WSGI server closes the
-            # generator, which raises GeneratorExit at the yield above.
+            # Runs on client disconnect too: the server closes the generator,
+            # which raises GeneratorExit at the yield above.
             _unsubscribe_progress(workload, q)
 
-    response = Response(generate(), mimetype="text/event-stream")
-    response.headers["Cache-Control"] = "no-cache"
-    # nginx buffers proxied responses by default, which would hold events back
-    # until the buffer fills. Asking for it here keeps the /topaz/ prefix block
-    # in set_up_proxy_server.md unchanged.
-    response.headers["X-Accel-Buffering"] = "no"
-    return response
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            # nginx buffers proxied responses by default, which would hold events
+            # back until the buffer fills. Asking for it here keeps the /topaz/
+            # prefix block in set_up_proxy_server.md unchanged.
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def ai_core_usage_for(workload):
     """Live AI-engine usage plus the baseline captured when this workload's Run
     was pressed — the page starts displaying frames once the gap exceeds ~5%."""
-    return jsonify({
+    return JSONResponse({
         "total_ai_usage": latest_ai_core_usage,
         "baseline": ai_baseline_usage.get(workload, 0.0),
     })
 
 
 # ---- small object detection ----
-@app.route('/small_obj_detect/image_list', methods=['GET'])
+@app.get('/small_obj_detect/image_list')
 def small_obj_image_list():
     return pair_image_list(SMALL_OBJ_INPUT_DIR, SMALL_OBJ_OUTPUT_DIR)
 
 
-@app.route('/small_obj_detect/validate_image/<image_type>/<filename>')
-def small_obj_validate_image(image_type, filename):
+@app.get('/small_obj_detect/validate_image/{image_type}/{filename}')
+def small_obj_validate_image(image_type: str, filename: str):
     return validate_in({"input": SMALL_OBJ_INPUT_DIR, "output": SMALL_OBJ_OUTPUT_DIR}, image_type, filename)
 
 
-@app.route('/small_obj_detect/image_bundle/<image_type>')
-def small_obj_image_bundle(image_type):
-    return bundle_in({"input": SMALL_OBJ_INPUT_DIR, "output": SMALL_OBJ_OUTPUT_DIR}, image_type)
+@app.get('/small_obj_detect/image_bundle/{image_type}')
+def small_obj_image_bundle(image_type: str, request: Request):
+    return bundle_in({"input": SMALL_OBJ_INPUT_DIR, "output": SMALL_OBJ_OUTPUT_DIR}, image_type, request)
 
 
-@app.route('/small_obj_detect/images/input/<filename>')
-def small_obj_input_image(filename):
+@app.get('/small_obj_detect/images/input/{filename}')
+def small_obj_input_image(filename: str):
     return send_from_directory(SMALL_OBJ_INPUT_DIR, filename)
 
 
-@app.route('/small_obj_detect/images/output/<filename>')
-def small_obj_output_image(filename):
+@app.get('/small_obj_detect/images/output/{filename}')
+def small_obj_output_image(filename: str):
     return send_from_directory(SMALL_OBJ_OUTPUT_DIR, filename)
 
 
-@app.route('/small_obj_detect/progress', methods=['GET'])
+@app.get('/small_obj_detect/progress')
 def small_obj_progress():
-    return jsonify(latest_progress["small_obj_detect"])
+    return JSONResponse(latest_progress["small_obj_detect"])
 
 
-@app.route('/small_obj_detect/events', methods=['GET'])
-def small_obj_events():
-    return progress_event_stream("small_obj_detect")
+@app.get('/small_obj_detect/events')
+async def small_obj_events():
+    return await progress_event_stream("small_obj_detect")
 
 
 # ---- autonomous navigation ----
-@app.route('/auto_nav/image_list', methods=['GET'])
+@app.get('/auto_nav/image_list')
 def auto_nav_image_list():
     """Four independent streams (GPS / features / depth / LIDAR) rather than the
     input+output pair the other three pages use."""
@@ -914,131 +1045,120 @@ def auto_nav_image_list():
         payload[f"{kind}_images"] = [img["filename"] for img in images]
         payload[f"{kind}_images_info"] = images
         payload[f"total_{kind}"] = len(images)
-    return jsonify(payload)
+    return JSONResponse(payload)
 
 
-@app.route('/auto_nav/validate_image/<image_type>/<filename>')
-def auto_nav_validate_image(image_type, filename):
+@app.get('/auto_nav/validate_image/{image_type}/{filename}')
+def auto_nav_validate_image(image_type: str, filename: str):
     return validate_in(AUTO_NAV_VALIDATE_DIRS, image_type, filename)
 
 
-@app.route('/auto_nav/image_bundle/<image_type>')
-def auto_nav_image_bundle(image_type):
-    return bundle_in(AUTO_NAV_VALIDATE_DIRS, image_type)
+@app.get('/auto_nav/image_bundle/{image_type}')
+def auto_nav_image_bundle(image_type: str, request: Request):
+    return bundle_in(AUTO_NAV_VALIDATE_DIRS, image_type, request)
 
 
-@app.route('/auto_nav/images/<kind>/<filename>')
-def auto_nav_image(kind, filename):
+@app.get('/auto_nav/images/{kind}/{filename}')
+def auto_nav_image(kind: str, filename: str):
     directory = AUTO_NAV_DIRS.get(kind)
     if directory is None:
-        return jsonify({"error": "Invalid image type"}), 404
+        return JSONResponse({"error": "Invalid image type"}, status_code=404)
     return send_from_directory(directory, filename)
 
 
-@app.route('/auto_nav/progress', methods=['GET'])
+@app.get('/auto_nav/progress')
 def auto_nav_progress():
-    return jsonify(latest_progress["auto_nav"])
+    return JSONResponse(latest_progress["auto_nav"])
 
 
 # ---- AI ship ----
-@app.route('/ai_ship/image_list', methods=['GET'])
+@app.get('/ai_ship/image_list')
 def ai_ship_image_list():
     return pair_image_list(AI_SHIP_INPUT_DIR, AI_SHIP_OUTPUT_DIR)
 
 
-@app.route('/ai_ship/validate_image/<image_type>/<filename>')
-def ai_ship_validate_image(image_type, filename):
+@app.get('/ai_ship/validate_image/{image_type}/{filename}')
+def ai_ship_validate_image(image_type: str, filename: str):
     return validate_in({"input": AI_SHIP_INPUT_DIR, "output": AI_SHIP_OUTPUT_DIR}, image_type, filename)
 
 
-@app.route('/ai_ship/image_bundle/<image_type>')
-def ai_ship_image_bundle(image_type):
-    return bundle_in({"input": AI_SHIP_INPUT_DIR, "output": AI_SHIP_OUTPUT_DIR}, image_type)
+@app.get('/ai_ship/image_bundle/{image_type}')
+def ai_ship_image_bundle(image_type: str, request: Request):
+    return bundle_in({"input": AI_SHIP_INPUT_DIR, "output": AI_SHIP_OUTPUT_DIR}, image_type, request)
 
 
-@app.route('/ai_ship/images/input/<filename>')
-def ai_ship_input_image(filename):
+@app.get('/ai_ship/images/input/{filename}')
+def ai_ship_input_image(filename: str):
     return send_from_directory(AI_SHIP_INPUT_DIR, filename)
 
 
-@app.route('/ai_ship/images/output/<filename>')
-def ai_ship_output_image(filename):
+@app.get('/ai_ship/images/output/{filename}')
+def ai_ship_output_image(filename: str):
     return send_from_directory(AI_SHIP_OUTPUT_DIR, filename)
 
 
-@app.route('/ai_ship/progress', methods=['GET'])
+@app.get('/ai_ship/progress')
 def ai_ship_progress():
-    return jsonify(latest_progress["ai_ship"])
+    return JSONResponse(latest_progress["ai_ship"])
 
 
-@app.route('/ai_ship/events', methods=['GET'])
-def ai_ship_events():
-    return progress_event_stream("ai_ship")
+@app.get('/ai_ship/events')
+async def ai_ship_events():
+    return await progress_event_stream("ai_ship")
 
 
-@app.route('/ai_ship/ai_core_usage', methods=['GET'])
+@app.get('/ai_ship/ai_core_usage')
 def ai_ship_core_usage():
     return ai_core_usage_for("ai_ship")
 
 
 # ---- AI smoke ----
-@app.route('/ai_smoke/image_list', methods=['GET'])
+@app.get('/ai_smoke/image_list')
 def ai_smoke_image_list():
     return pair_image_list(AI_SMOKE_INPUT_DIR, AI_SMOKE_OUTPUT_DIR)
 
 
-@app.route('/ai_smoke/validate_image/<image_type>/<filename>')
-def ai_smoke_validate_image(image_type, filename):
+@app.get('/ai_smoke/validate_image/{image_type}/{filename}')
+def ai_smoke_validate_image(image_type: str, filename: str):
     return validate_in({"input": AI_SMOKE_INPUT_DIR, "output": AI_SMOKE_OUTPUT_DIR}, image_type, filename)
 
 
-@app.route('/ai_smoke/image_bundle/<image_type>')
-def ai_smoke_image_bundle(image_type):
-    return bundle_in({"input": AI_SMOKE_INPUT_DIR, "output": AI_SMOKE_OUTPUT_DIR}, image_type)
+@app.get('/ai_smoke/image_bundle/{image_type}')
+def ai_smoke_image_bundle(image_type: str, request: Request):
+    return bundle_in({"input": AI_SMOKE_INPUT_DIR, "output": AI_SMOKE_OUTPUT_DIR}, image_type, request)
 
 
-@app.route('/ai_smoke/images/input/<filename>')
-def ai_smoke_input_image(filename):
+@app.get('/ai_smoke/images/input/{filename}')
+def ai_smoke_input_image(filename: str):
     return send_from_directory(AI_SMOKE_INPUT_DIR, filename)
 
 
-@app.route('/ai_smoke/images/output/<filename>')
-def ai_smoke_output_image(filename):
+@app.get('/ai_smoke/images/output/{filename}')
+def ai_smoke_output_image(filename: str):
     return send_from_directory(AI_SMOKE_OUTPUT_DIR, filename)
 
 
-@app.route('/ai_smoke/progress', methods=['GET'])
+@app.get('/ai_smoke/progress')
 def ai_smoke_progress():
-    return jsonify(latest_progress["ai_smoke"])
+    return JSONResponse(latest_progress["ai_smoke"])
 
 
-@app.route('/ai_smoke/events', methods=['GET'])
-def ai_smoke_events():
-    return progress_event_stream("ai_smoke")
+@app.get('/ai_smoke/events')
+async def ai_smoke_events():
+    return await progress_event_stream("ai_smoke")
 
 
-@app.route('/ai_smoke/ai_core_usage', methods=['GET'])
+@app.get('/ai_smoke/ai_core_usage')
 def ai_smoke_core_usage():
     return ai_core_usage_for("ai_smoke")
-
-
-def run_flask_server():
-    # NOTE: the Werkzeug development server hard-codes "Connection: close" on
-    # every response (werkzeug/serving.py, "Always close the connection"), so the
-    # reverse proxy in front of us opens a fresh TCP connection per request. Over
-    # a long-haul link that is an extra round trip on every call, and no amount of
-    # nginx-side keepalive can recover it. Serving this app under waitress or
-    # gunicorn instead is what would fix that; it cannot be fixed from here.
-    print(f"Running Flask server on {HOST_IP}:{FLASK_PORT} ...")
-    app.run(host=HOST_IP, port=FLASK_PORT, debug=False, use_reloader=False)
 
 
 # ----------------------------------------------------------------------------
 # Startup
 # ----------------------------------------------------------------------------
 if __name__ == "__main__":
-    threading.Thread(target=receive_metrics, daemon=True).start()
-    threading.Thread(target=receive_workload_updates, daemon=True).start()
-    threading.Thread(target=run_flask_server, daemon=True).start()
-    while True:
-        time.sleep(1)
+    print(f"Running uvicorn server on {HOST_IP}:{SERVER_PORT} ...")
+    # The metrics / workload-progress receivers start from `lifespan` above, so
+    # they come up whether the app is launched from here or by an external
+    # `uvicorn combined_topaz2:app`.
+    uvicorn.run(app, host=HOST_IP, port=SERVER_PORT, log_level="info")
