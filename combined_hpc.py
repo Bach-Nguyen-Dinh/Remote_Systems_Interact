@@ -6,13 +6,31 @@ programs into one process that runs entirely on the target machine, alongside
 InfluxDB and Grafana. Because collector and backend now share one process:
 
   * system metrics are written straight to InfluxDB in-process (no metrics socket)
-  * the Flask control API calls the SAR / CPHD / network handlers directly
+  * the FastAPI control API calls the SAR / CPHD / network handlers directly
     (no :54321 command socket, no image / sar-log / sar-ctrl / net-test sockets)
   * SAR output tiffs and log plots are optimized straight into the served
     directories (pictures/, sar_logs/) instead of being streamed to a host
 
 Network (iperf3) tests: only the target<->RDB / adapter paths are kept. The old
 onboard host<->target tests were pure loopback on a single box and are disabled.
+
+SERVER
+------
+This is an ASGI app served by uvicorn. `python3 combined_hpc.py` still starts it
+the same way it always did (same bind address, same port), and it can also be run
+under an external supervisor with:
+
+    uvicorn combined_hpc:app --host 0.0.0.0 --port 5000
+
+Unlike the old Werkzeug development server, uvicorn keeps connections alive, so
+the nginx reverse proxy in front of us reuses one TCP connection across requests
+instead of paying a fresh handshake per call.
+
+Request handlers are deliberately plain `def` (not `async def`) except where a
+handler genuinely needs the event loop (`/upload_cphd`, which streams its request
+body). Starlette runs `def` handlers in a worker thread, so the blocking psutil /
+subprocess / file work inside them behaves exactly as it did under Flask's
+threaded server and can never stall the event loop.
 """
 
 from PIL import Image
@@ -25,19 +43,33 @@ import psutil
 import time
 import json
 import os
+import re
 import glob
 import shutil
 import signal
+import unicodedata
 import requests
-from flask import Flask, request, jsonify, send_from_directory, send_file  # type: ignore
-from flask_cors import CORS  # type: ignore
-from werkzeug.utils import secure_filename  # type: ignore
+from contextlib import asynccontextmanager
+from typing import Optional
+
+import anyio
+import uvicorn
+from fastapi import FastAPI, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
-HOST_IP = "0.0.0.0"          # Flask bind address
-FLASK_PORT = 5000
+HOST_IP = "0.0.0.0"          # uvicorn bind address
+SERVER_PORT = 5000
+
+# Worker threads available to the `def` request handlers. Starlette's default is
+# 40; the SAR/CPHD handlers can block for a while on subprocess and disk work, so
+# give the dashboard's frequent pollers plenty of headroom behind them.
+REQUEST_THREAD_LIMIT = 100
 
 INFLUXDB_HOST = "localhost"
 INFLUXDB_PORT = 8086
@@ -63,6 +95,12 @@ USER_DATA_PATH = os.path.join(DEMO_PATH, USER_DATA_DIRNAME)
 # Refuse an upload that would leave the filesystem with less than this much free
 # space, so a large CPHD can't fill the disk out from under SAR processing.
 UPLOAD_FREE_SPACE_MARGIN = 2 * 1024 * 1024 * 1024  # 2 GB headroom
+# How much of an upload to accumulate before touching the disk. uvicorn hands the
+# request body over in far smaller pieces than the 8 MB the old Werkzeug-side
+# `request.stream.read(...)` returned, and the free-space check below runs once per
+# written block — batching back up to 8 MB keeps both the write pattern and the
+# check cadence exactly as they were.
+UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
 OUT_TIF_PATH = "/home/sarthak/workspace/SAR_codebase/output_immediate"
 SAR_DIR = "/home/sarthak/workspace/SAR_codebase"
 SAR_PROG = os.path.join(SAR_DIR, "cphd_aic.py")
@@ -144,12 +182,90 @@ sar_error = None               # set to a user-facing message when a run fails (
 # Latest system snapshot, refreshed in-place by metrics_loop so the monitoring
 # frontend can pull every live value in a single /system_metrics request instead
 # of querying InfluxDB / Grafana. Guarded by a lock because metrics_loop (writer)
-# and Flask request threads (readers) touch it concurrently.
+# and request handler threads (readers) touch it concurrently.
 latest_metrics = {}
 latest_metrics_lock = threading.Lock()
 
-app = Flask(__name__)
-CORS(app)
+
+# ----------------------------------------------------------------------------
+# Application setup
+# ----------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Start the background workers once the server is up, stop nothing on the way
+    down — they are daemon threads with no cleanup of their own, exactly as when
+    __main__ started them. Doing it here means an external `uvicorn combined_hpc:app`
+    gets the collector and iperf3 server too, not just `python3 combined_hpc.py`."""
+    anyio.to_thread.current_default_thread_limiter().total_tokens = REQUEST_THREAD_LIMIT
+    scan_cphd_files()  # populate the CPHD list at boot
+    threading.Thread(target=run_iperf3_server, daemon=True).start()
+    threading.Thread(target=poll_ai_card_diagnostics, daemon=True).start()
+    threading.Thread(target=metrics_loop, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Combined HPC dashboard", lifespan=lifespan)
+
+# Matches the old flask_cors CORS(app) default: every origin, method and header
+# allowed, credentials not allowed.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class CommandMessage(BaseModel):
+    """Body of POST /send_message."""
+    message: str = "Default message"
+
+
+class DeleteUploadRequest(BaseModel):
+    """Body of POST /delete_upload."""
+    filename: str = ""
+
+
+# ----------------------------------------------------------------------------
+# Static-file helpers (stand-ins for Flask's send_file / send_from_directory)
+# ----------------------------------------------------------------------------
+_FILENAME_STRIP_RE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def secure_filename(filename):
+    """Reduce a client-supplied name to a safe bare filename.
+
+    Local stand-in for werkzeug.utils.secure_filename, which left with Flask:
+    fold to ASCII, flatten path separators and whitespace to underscores, drop
+    anything outside [A-Za-z0-9_.-], and trim leading/trailing dots so the result
+    can never be a path, a traversal, or a dotfile."""
+    filename = unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode("ascii")
+    for sep in (os.sep, os.path.altsep):
+        if sep:
+            filename = filename.replace(sep, " ")
+    filename = "_".join(filename.split())
+    return _FILENAME_STRIP_RE.sub("", filename).strip("._")
+
+
+def send_file(path, media_type=None):
+    """Serve one known file, 404 if it has gone missing.
+
+    Flask's send_file raised NotFound for a missing path; FileResponse would only
+    fail when the body is already being written, so the check is explicit here."""
+    if not os.path.isfile(path):
+        return PlainTextResponse("File not found", status_code=404)
+    return FileResponse(path, media_type=media_type)
+
+
+def send_from_directory(directory, filename, media_type=None):
+    """Serve `filename` from inside `directory`, refusing anything that resolves
+    outside it (Flask's send_from_directory did the containment check for us)."""
+    base = os.path.abspath(directory)
+    full = os.path.abspath(os.path.join(base, filename))
+    if os.path.commonpath([base, full]) != base:
+        return PlainTextResponse("Not found", status_code=404)
+    return send_file(full, media_type=media_type)
+
 
 # ----------------------------------------------------------------------------
 # Image / SAR helpers (from target)
@@ -585,24 +701,24 @@ def delete_all_files():
 # Command dispatch (replaces host /send_message forwarding + target listener)
 # ----------------------------------------------------------------------------
 def handle_command(message):
-    """Execute a control command in-process. Returns a Flask JSON response tuple."""
+    """Execute a control command in-process. Returns the JSON response to send."""
     global current_run_cphd, tif_file_properties, sar_error
 
     if message == "3":
         delete_all_files()
-        return jsonify({"status": "success", "message": "cleared"})
+        return JSONResponse({"status": "success", "message": "cleared"})
 
     if message == "4":
         scan_cphd_files()
-        return jsonify({"status": "success", "message": "cphd list refreshed"})
+        return JSONResponse({"status": "success", "message": "cphd list refreshed"})
 
     if message == "STOPSAR" or message.startswith("STOPSAR:"):
         stop_sar_process(message)
-        return jsonify({"status": "success", "message": "stop requested"})
+        return JSONResponse({"status": "success", "message": "stop requested"})
 
     if message.startswith("SIZE:"):
         compute_cphd_properties(message.split(":", 1)[1])
-        return jsonify({"status": "success", "message": "size computed"})
+        return JSONResponse({"status": "success", "message": "size computed"})
 
     if message.startswith("RUN:"):
         filename = message[4:]
@@ -618,27 +734,27 @@ def handle_command(message):
             # point a new run has actually started.
             threading.Thread(target=notify_vlm_reset, daemon=True).start()
             threading.Thread(target=process_cphd_file, args=(filePath, filename), daemon=True).start()
-            return jsonify({"status": "success", "message": f"processing {filename}"})
-        return jsonify({"status": "error", "error": f"CPHD not found: {filename}"}), 404
+            return JSONResponse({"status": "success", "message": f"processing {filename}"})
+        return JSONResponse({"status": "error", "error": f"CPHD not found: {filename}"}, status_code=404)
 
     if message.startswith("NETRUN:"):
         _, netTestDuration, netTestInterface = message.split(":", 2)
         if netTestInterface in ("LwEthOnb", "UpEthOnb"):
-            return jsonify({"status": "skipped",
-                            "message": "onboard net tests disabled in single-box mode"})
+            return JSONResponse({"status": "skipped",
+                                 "message": "onboard net tests disabled in single-box mode"})
         threading.Thread(target=handle_netrun_test,
                          args=(netTestDuration, netTestInterface), daemon=True).start()
-        return jsonify({"status": "success", "message": "net test started"})
+        return JSONResponse({"status": "success", "message": "net test started"})
 
     if message.startswith("BW:"):
         parts = message.split(":")
         if len(parts) != 3:
-            return jsonify({"status": "error", "error": "invalid BW format"}), 400
+            return JSONResponse({"status": "error", "error": "invalid BW format"}, status_code=400)
         set_bandwidth(parts[1], parts[2])
-        return jsonify({"status": "success", "message": "bandwidth set"})
+        return JSONResponse({"status": "success", "message": "bandwidth set"})
 
     print(f"Unknown command: {message}")
-    return jsonify({"status": "success", "message": message})
+    return JSONResponse({"status": "success", "message": message})
 
 # ----------------------------------------------------------------------------
 # Metrics collection (from target) + InfluxDB write (from host), in-process
@@ -861,9 +977,9 @@ def metrics_loop():
         time.sleep(METRICS_INTERVAL)
 
 # ----------------------------------------------------------------------------
-# Flask API (from host)
+# HTTP API (from host)
 # ----------------------------------------------------------------------------
-@app.route('/')
+@app.get('/')
 def combined_frontend():
     """Serve the combined dashboard shell (replaces the old Grafana frontend).
 
@@ -873,43 +989,43 @@ def combined_frontend():
     from '/sar_app' and '/system_monitor'."""
     return send_file(COMBINED_FRONTEND)
 
-@app.route('/rsat')
+@app.get('/rsat')
 def combined_frontend_rsat():
     return send_file(COMBINED_FRONTEND_RSAT)
 
-@app.route('/test')
+@app.get('/test')
 def combined_frontend_testing():
     return send_file(COMBINED_FRONTEND_TESTING)
 
-@app.route('/sar_app')
+@app.get('/sar_app')
 def sar_frontend():
     """Serve the standalone SAR-process page (upload + delete). Hosted in the
     combined dashboard via a same-origin <iframe>, and still reachable directly."""
     return send_file(SAR_FRONTEND)
 
-@app.route('/sar_app_rsat')
+@app.get('/sar_app_rsat')
 def sar_frontend_rsat():
     return send_file(SAR_FRONTEND_RSAT)
 
-@app.route('/cctv_app')
+@app.get('/cctv_app')
 def cctv_frontend():
     return send_file(CCTV_FRONTEND)
 
-@app.route('/branding/<path:filename>')
-def branding_panel(filename):
+@app.get('/branding/{filename:path}')
+def branding_panel(filename: str):
     """Serve a standalone branding panel (RSAT logo, mission banner, Insight One
     logo, 'Powered by AICRAFT') from index/branding/. The RSAT dashboard header
     iframes these same-origin so the logo assets stay single-source files."""
     return send_from_directory(BRANDING_DIR, filename)
 
-@app.route('/monitor')
-@app.route('/system_monitor')
+@app.get('/monitor')
+@app.get('/system_monitor')
 def monitor_frontend():
     """Serve the live system-utilisation page (embeddable in Grafana via iframe,
     same as the SAR page). It refreshes itself from /system_metrics."""
     return send_file(MONITOR_FRONTEND)
 
-@app.route('/system_metrics', methods=['GET'])
+@app.get('/system_metrics')
 def system_metrics():
     """Return the whole live snapshot the monitoring dashboard needs in one call.
 
@@ -917,15 +1033,15 @@ def system_metrics():
     (or faster) refresh from any number of viewers costs nothing beyond a dict
     copy — there is no per-request psutil sampling or InfluxDB query."""
     with latest_metrics_lock:
-        return jsonify(latest_metrics)
+        return JSONResponse(latest_metrics)
 
-@app.route('/storage_info', methods=['GET'])
+@app.get('/storage_info')
 def storage_info():
     """Report free/total disk space on the filesystem that holds the CPHD store,
     so the frontend can refuse an upload that won't fit before sending it."""
     try:
         usage = shutil.disk_usage(DEMO_PATH)
-        return jsonify({
+        return JSONResponse({
             "free": usage.free,
             "total": usage.total,
             "used": usage.used,
@@ -933,112 +1049,133 @@ def storage_info():
             "usable": max(0, usage.free - UPLOAD_FREE_SPACE_MARGIN),
         })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return JSONResponse({"error": str(e)}, status_code=500)
 
-@app.route('/upload_cphd', methods=['POST'])
-def upload_cphd():
+@app.post('/upload_cphd')
+async def upload_cphd(request: Request, filename: str = Query("")):
     """Stream an uploaded .cphd file into DEMO_PATH/user_data.
 
-    The body is the raw file bytes (not multipart), so nginx/Flask can stream it
-    straight to disk in chunks instead of buffering multi-GB files in memory or a
-    temp file. The target filename comes from the ?filename= query parameter.
+    The body is the raw file bytes (not multipart), so nginx and this app can
+    stream it straight to disk in chunks instead of buffering multi-GB files in
+    memory or a temp file. The target filename comes from the ?filename= query
+    parameter.
+
+    This is the one `async def` handler in the file: reading the body as it
+    arrives needs the event loop. Every blocking step (write, disk_usage, the
+    rescan afterwards) is pushed to a worker thread so a multi-GB upload never
+    stalls the metrics endpoint the dashboard is polling.
     """
-    raw_name = request.args.get('filename', '')
-    name = secure_filename(raw_name)
+    name = secure_filename(filename)
     if not name:
-        return jsonify({"status": "error", "error": "missing filename"}), 400
+        return JSONResponse({"status": "error", "error": "missing filename"}, status_code=400)
     if not name.lower().endswith('.cphd'):
-        return jsonify({"status": "error", "error": "only .cphd files are allowed"}), 400
+        return JSONResponse({"status": "error", "error": "only .cphd files are allowed"}, status_code=400)
 
     # Pre-flight space check against the declared upload size.
-    declared = request.content_length or 0
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
     try:
         free = shutil.disk_usage(DEMO_PATH).free
     except Exception as e:
-        return jsonify({"status": "error", "error": f"cannot stat storage: {e}"}), 500
+        return JSONResponse({"status": "error", "error": f"cannot stat storage: {e}"}, status_code=500)
     if declared and declared + UPLOAD_FREE_SPACE_MARGIN > free:
-        return jsonify({
+        return JSONResponse({
             "status": "error", "error": "not enough space",
             "free": free, "needed": declared, "margin": UPLOAD_FREE_SPACE_MARGIN,
-        }), 507  # Insufficient Storage
+        }, status_code=507)  # Insufficient Storage
 
     try:
         os.makedirs(USER_DATA_PATH, exist_ok=True)
     except Exception as e:
-        return jsonify({"status": "error",
-                        "error": f"upload folder not writable: {e}"}), 500
+        return JSONResponse({"status": "error",
+                             "error": f"upload folder not writable: {e}"}, status_code=500)
 
     dest = os.path.join(USER_DATA_PATH, name)
+
+    def write_block(handle, block):
+        # Guard against the disk filling mid-stream (e.g. no Content-Length).
+        if shutil.disk_usage(DEMO_PATH).free < UPLOAD_FREE_SPACE_MARGIN:
+            raise IOError("ran out of space during upload")
+        handle.write(block)
+
     written = 0
     try:
-        with open(dest, 'wb') as out:
-            while True:
-                chunk = request.stream.read(8 * 1024 * 1024)  # 8 MB chunks
+        out = await run_in_threadpool(open, dest, 'wb')
+        try:
+            buffered = bytearray()
+            async for chunk in request.stream():
                 if not chunk:
-                    break
-                written += len(chunk)
-                # Guard against the disk filling mid-stream (e.g. no Content-Length).
-                if shutil.disk_usage(DEMO_PATH).free < UPLOAD_FREE_SPACE_MARGIN:
-                    raise IOError("ran out of space during upload")
-                out.write(chunk)
+                    continue
+                buffered.extend(chunk)
+                if len(buffered) >= UPLOAD_CHUNK_SIZE:
+                    block = bytes(buffered)
+                    buffered.clear()
+                    written += len(block)
+                    await run_in_threadpool(write_block, out, block)
+            if buffered:
+                block = bytes(buffered)
+                written += len(block)
+                await run_in_threadpool(write_block, out, block)
+        finally:
+            await run_in_threadpool(out.close)
     except Exception as e:
         if os.path.exists(dest):
             os.remove(dest)  # don't leave a truncated file in the picker
-        return jsonify({"status": "error", "error": str(e)}), 507
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=507)
 
-    scan_cphd_files()  # make the new file appear in the picker
+    await run_in_threadpool(scan_cphd_files)  # make the new file appear in the picker
     rel = os.path.relpath(dest, DEMO_PATH)
     print(f"Uploaded CPHD '{rel}' ({written} bytes)")
-    return jsonify({"status": "success", "filename": rel,
-                    "display": name, "size": written})
+    return JSONResponse({"status": "success", "filename": rel,
+                         "display": name, "size": written})
 
-@app.route('/delete_upload', methods=['POST'])
-def delete_upload():
+@app.post('/delete_upload')
+def delete_upload(payload: Optional[DeleteUploadRequest] = None):
     """Delete a single user-uploaded CPHD. Only files under user_data/ may be
     removed — the bundled demo files and anything outside the folder are refused."""
-    data = request.get_json(silent=True) or {}
-    rel = data.get('filename', '')
+    rel = payload.filename if payload else ''
     prefix = USER_DATA_DIRNAME + '/'
     if not rel.startswith(prefix):
-        return jsonify({"status": "error", "error": "only uploaded files can be deleted"}), 403
+        return JSONResponse({"status": "error", "error": "only uploaded files can be deleted"}, status_code=403)
 
     # Resolve and confirm the path stays inside USER_DATA_PATH (no traversal).
     full = os.path.normpath(os.path.join(DEMO_PATH, rel))
     base = os.path.abspath(USER_DATA_PATH)
     if os.path.commonpath([base, os.path.abspath(full)]) != base:
-        return jsonify({"status": "error", "error": "invalid path"}), 403
+        return JSONResponse({"status": "error", "error": "invalid path"}, status_code=403)
 
     if os.path.isfile(full):
         try:
             os.remove(full)
             print(f"Deleted uploaded CPHD '{rel}'")
         except Exception as e:
-            return jsonify({"status": "error", "error": str(e)}), 500
+            return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
     scan_cphd_files()
-    return jsonify({"status": "success", "filename": rel})
+    return JSONResponse({"status": "success", "filename": rel})
 
-@app.route('/send_message', methods=['POST'])
-def send_message():
-    data = request.get_json()
-    message = data.get("message", "Default message")
+@app.post('/send_message')
+def send_message(payload: Optional[CommandMessage] = None):
+    message = payload.message if payload else "Default message"
     print(f"Command: {message}")
     return handle_command(message)
 
-@app.route('/get_cphd_files', methods=['GET'])
+@app.get('/get_cphd_files')
 def get_cphd_files():
-    return jsonify({"files": cphd_file_list})
+    return JSONResponse({"files": cphd_file_list})
 
-@app.route('/get_cphd_file_properties', methods=['GET'])
+@app.get('/get_cphd_file_properties')
 def get_cphd_file_properties():
-    return jsonify({"files": cphd_file_properties})
+    return JSONResponse({"files": cphd_file_properties})
 
-@app.route('/get_tif_file_properties', methods=['GET'])
+@app.get('/get_tif_file_properties')
 def get_tif_file_properties():
-    return jsonify({"files": tif_file_properties, "cphd_filename": current_run_cphd, "error": sar_error})
+    return JSONResponse({"files": tif_file_properties, "cphd_filename": current_run_cphd, "error": sar_error})
 
-@app.route('/images/<filename>')
-def serve_image(filename):
+@app.get('/images/{filename}')
+def serve_image(filename: str):
     return send_from_directory(SAVE_DIR, filename)
 
 SAR_LOG_IMAGE_TYPES = {
@@ -1050,75 +1187,60 @@ SAR_LOG_IMAGE_TYPES = {
     "memory_usage":         "memory_usage_",
 }
 
-@app.route('/sar_log/image/<image_type>')
-def serve_sar_log_image(image_type):
+@app.get('/sar_log/image/{image_type}')
+def serve_sar_log_image(image_type: str):
     if image_type not in SAR_LOG_IMAGE_TYPES:
-        return "Unknown image type", 400
+        return PlainTextResponse("Unknown image type", status_code=400)
     try:
         folders = sorted(d for d in os.listdir(SAR_LOGS_DIR)
                          if os.path.isdir(os.path.join(SAR_LOGS_DIR, d)))
     except FileNotFoundError:
-        return "No log data", 404
+        return PlainTextResponse("No log data", status_code=404)
     if not folders:
-        return "No log data", 404
+        return PlainTextResponse("No log data", status_code=404)
     folder_path = os.path.join(SAR_LOGS_DIR, folders[-1])
     prefix = SAR_LOG_IMAGE_TYPES[image_type]
     try:
         matches = [f for f in os.listdir(folder_path) if f.startswith(prefix) and f.endswith('.webp')]
     except FileNotFoundError:
-        return "Log folder not found", 404
+        return PlainTextResponse("Log folder not found", status_code=404)
     if not matches:
-        return "Image not found", 404
+        return PlainTextResponse("Image not found", status_code=404)
     return send_from_directory(folder_path, matches[0])
 
-@app.route('/sar_log/status')
+@app.get('/sar_log/status')
 def sar_log_status():
-    return jsonify({"version": sar_log_version})
+    return JSONResponse({"version": sar_log_version})
 
-@app.route('/sar_colored_image')
-def serve_sar_colored_image():
-    cphd_filename = request.args.get('filename', '')
-    if not cphd_filename:
-        return "No filename provided", 400
+@app.get('/sar_colored_image')
+def serve_sar_colored_image(filename: str = Query("")):
+    if not filename:
+        return PlainTextResponse("No filename provided", status_code=400)
     # Colored images are stored flat by basename; strip any "user_data/" prefix
     # that an uploaded file's relative name carries.
-    base_name = os.path.basename(cphd_filename)
+    base_name = os.path.basename(filename)
     if base_name.lower().endswith('.cphd'):
         base_name = base_name[:-5]
     colored_image_name = f"{base_name}_colered_img.webp"
-    try:
-        if os.path.exists(os.path.join(SAR_COLORED_IMAGE_PATH, colored_image_name)):
-            return send_from_directory(SAR_COLORED_IMAGE_PATH, colored_image_name)
-        return "No image found", 404
-    except FileNotFoundError:
-        return "Directory not found", 404
+    if os.path.exists(os.path.join(SAR_COLORED_IMAGE_PATH, colored_image_name)):
+        return send_from_directory(SAR_COLORED_IMAGE_PATH, colored_image_name)
+    return PlainTextResponse("No image found", status_code=404)
 
-@app.route('/iperf3/lw_eth_adt_results', methods=['GET'])
+@app.get('/iperf3/lw_eth_adt_results')
 def iperf_lw_eth_adt_results():
-    try:
-        return send_file(SAVE_PATH_IPERF_LW_ETH_ADT, mimetype='application/json', as_attachment=False)
-    except FileNotFoundError:
-        return "File not found", 404
+    return send_file(SAVE_PATH_IPERF_LW_ETH_ADT, media_type='application/json')
 
-@app.route('/iperf3/up_eth_adt_results', methods=['GET'])
+@app.get('/iperf3/up_eth_adt_results')
 def iperf_up_eth_adt_results():
-    try:
-        return send_file(SAVE_PATH_IPERF_UP_ETH_ADT, mimetype='application/json', as_attachment=False)
-    except FileNotFoundError:
-        return "File not found", 404
+    return send_file(SAVE_PATH_IPERF_UP_ETH_ADT, media_type='application/json')
 
-def run_flask_server():
-    print(f"Running Flask server on {HOST_IP}:{FLASK_PORT}...")
-    app.run(host=HOST_IP, port=FLASK_PORT, debug=False, use_reloader=False)
 
 # ----------------------------------------------------------------------------
 # Startup
 # ----------------------------------------------------------------------------
 if __name__ == "__main__":
-    scan_cphd_files()  # populate the CPHD list at boot
-    threading.Thread(target=run_iperf3_server, daemon=True).start()
-    threading.Thread(target=poll_ai_card_diagnostics, daemon=True).start()
-    threading.Thread(target=metrics_loop, daemon=True).start()
-    threading.Thread(target=run_flask_server, daemon=True).start()
-    while True:
-        time.sleep(1)
+    print(f"Running uvicorn server on {HOST_IP}:{SERVER_PORT}...")
+    # The collector / iperf3 / AI-card threads start from `lifespan` above, so
+    # they come up whether the app is launched from here or by an external
+    # `uvicorn combined_hpc:app`.
+    uvicorn.run(app, host=HOST_IP, port=SERVER_PORT, log_level="info")
