@@ -118,9 +118,11 @@ curl -I http://127.0.0.1:8086     # InfluxDB → expect 404 + X-Influxdb-Version
 
 ### 3a. Run combined_hpc.py (the port-5000 app)
 
+Each app runs from its own virtualenv, so use the launcher rather than a bare
+`python3` — see [§3c](#3c-virtualenvs-one-per-app) for how the venvs are built:
+
 ```bash
-pip3 install flask flask_cors influxdb psutil pillow werkzeug
-python3 /home/sarthak/Remote_Systems_Interact/combined_hpc.py
+/home/sarthak/Remote_Systems_Interact/run_hpc.sh
 ```
 
 It binds `0.0.0.0:5000`, writes metrics straight into InfluxDB, and serves the
@@ -144,6 +146,46 @@ so create the subfolder once and give this app's user write access:
 sudo mkdir -p /home/public/sar/sar-server/data/cphd/user_data
 sudo chown "$(whoami)" /home/public/sar/sar-server/data/cphd/user_data
 ```
+
+### 3c. Virtualenvs (one per app)
+
+Each app has its own venv and its own pinned manifest. They are deliberately
+separate: `combined_hpc` needs an imaging + numeric stack (Pillow, sarpy, numpy,
+scipy, psutil), while `combined_topaz2` reads its metrics off a socket and needs
+none of that — keeping them apart is what lets the Topaz ARM box install without
+a compiler.
+
+| App | Venv | Manifest | Launcher |
+|---|---|---|---|
+| `combined_hpc.py` (:5000) | `.venv-hpc` | `requirements-hpc.txt` | `run_hpc.sh` |
+| `combined_topaz2.py` (:5001) | `.venv-topaz2` | `requirements-topaz2.txt` | `run_topaz2.sh` |
+
+Build them with:
+
+```bash
+sudo apt install python3-pip python3.8-venv      # once per machine; see note below
+cd /home/sarthak/Remote_Systems_Interact
+python3 -m venv .venv-hpc
+.venv-hpc/bin/pip install --upgrade pip setuptools wheel
+.venv-hpc/bin/pip install -r requirements-hpc.txt
+```
+
+Same shape for `.venv-topaz2` with `requirements-topaz2.txt`.
+
+> `python3.8-venv` is required because Debian/Ubuntu strip `ensurepip` out of the
+> base `python3` package — without it, `python3 -m venv` fails with *"ensurepip
+> is not available"*. The `pip` upgrade matters too: `ensurepip` seeds pip 20.0.2,
+> which predates the modern dependency resolver.
+
+The venvs are build output and are gitignored; the manifests and launchers are
+committed. They are **not portable** — a venv bakes in absolute paths and the
+host's architecture, so never copy `.venv-*` between machines. Rebuilding from
+the manifest is the only supported move.
+
+📖 **Full detail — prerequisites, external tools, dependency policy, lockfiles,
+venv activation, the ARM/wheelhouse path, and troubleshooting — is in
+[`installation.md`](installation.md).** That file is the authority; this section
+is just enough to get the backend up before configuring nginx.
 
 ---
 
@@ -182,7 +224,7 @@ server {
         proxy_pass http://127.0.0.1:5000;
         proxy_set_header Host $host;
         client_max_body_size 0;        # nginx default is 1 MB → without this, uploads 413
-        proxy_request_buffering off;   # stream multi-GB bodies straight to Flask
+        proxy_request_buffering off;   # stream multi-GB bodies straight to the app
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
     }
@@ -216,14 +258,14 @@ nginx matches `location` by **specificity**, not file order:
 
 - `location = /upload_cphd` — an **exact** match, so it wins over the catch-all for
   that one URL. The body cap is removed and request buffering is off so a multi-GB
-  CPHD streams straight through to Flask instead of being buffered or rejected (413).
+  CPHD streams straight through to the app instead of being buffered or rejected (413).
 - `location /` (no `=`) — the **catch-all**: the frontend pages (`/`, `/monitor`,
   `/sar_app`), every API path (`/system_metrics`, `/storage_info`, `/send_message`,
   the `/images/…`, `/sar_log/…`, `/iperf3/…` families, …), and all static assets fall
   through here to combined_hpc on **:5000**.
 
 Because there is a single backend, you **no longer need a per-route `location` for
-each Flask endpoint** — anything the app adds is automatically reached through the
+each endpoint** — anything the app adds is automatically reached through the
 catch-all. Only routes that need *different proxy behaviour* (like the upload's
 un-buffered, uncapped body) need their own block. The proxied header notes:
 - `Host $host` — the backend sees the real hostname.
@@ -377,7 +419,7 @@ should see the combined dashboard with a valid padlock, and the SAR panel (with 
 
 **Reading errors:**
 - **401** everywhere → that's the login gate working; supply credentials.
-- **502 Bad Gateway** → the backend is down. Start `combined_hpc.py` (`:5000`).
+- **502 Bad Gateway** → the backend is down. Start it with `./run_hpc.sh` (`:5000`).
 - **413 on upload** → the `/upload_cphd` block (or its `client_max_body_size 0`) is missing.
 - **certbot 404 on the acme-challenge** (during Step 6) → normal on the first run; just
   re-run `certbot --nginx …` (see the note in Step 6).
@@ -403,7 +445,7 @@ sudo certbot renew --dry-run              # must succeed
 2. ☐ DNS `nexon.aicraft.com.au` → your public IP (`dig` to confirm)
 3. ☐ Router: forward TCP **80** and **443** → **192.168.0.18**; open host firewall
 4. ☐ Install & start **InfluxDB** ([`native_install_grafana_influxdb.md`](native_install_grafana_influxdb.md) — Grafana half optional/unused)
-5. ☐ Start **combined_hpc.py** (`:5000`); create `user_data/` with correct ownership (Step 3b)
+5. ☐ Build `.venv-hpc` from `requirements-hpc.txt` (Step 3c); start it with **`./run_hpc.sh`** (`:5000`); create `user_data/` with correct ownership (Step 3b)
 6. ☐ `apt install nginx`
 7. ☐ Write HTTP-only `nexon-ssl.conf`, symlink into `sites-enabled/`, remove `default`
 8. ☐ `nginx -t && systemctl reload nginx`
@@ -413,7 +455,7 @@ sudo certbot renew --dry-run              # must succeed
 
 ---
 
-## Appendix A — Flask routes (all reached via the catch-all `/`)
+## Appendix A — HTTP routes (all reached via the catch-all `/`)
 
 Everything below is served by [`combined_hpc.py`](combined_hpc.py) on `:5000` and
 reaches the browser through the single `location /` proxy. Only `/upload_cphd` needs
