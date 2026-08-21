@@ -282,6 +282,23 @@
         document.addEventListener("visibilitychange", function () {
             if (!document.hidden) poll();
         });
+
+        // The dashboard starts this row collapsed, which puts this frame inside a
+        // display:none subtree -- it still loads, but a hidden frame is not a
+        // dependable place to leave a timer running, so the plots could be as old
+        // as the page load by the time the row is opened. Nothing tells us the
+        // row was opened, but the frame going from zero-sized to laid-out says it
+        // for us, and unlike visibilitychange (which is tab-level) it fires for a
+        // reveal inside the page. Poll once on that edge so an opened row is
+        // always showing current data.
+        if (typeof ResizeObserver === "function") {
+            var wasSized = false;
+            new ResizeObserver(function () {
+                var sized = document.body.clientHeight > 0 && document.body.clientWidth > 0;
+                if (sized && !wasSized) poll();
+                wasSized = sized;
+            }).observe(document.body);
+        }
     })();
     </script>
 </body>
