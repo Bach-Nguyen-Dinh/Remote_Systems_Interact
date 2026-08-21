@@ -26,11 +26,15 @@
 
            So instead this page polls GET /sar_log/status and re-fetches whenever
            the reported log folder changes. That makes it self-sufficient: it
-           picks up a finished run on its own no matter which page started it, and
-           it shows the last run's plots straight after a reload or a backend
-           restart. It also means a SAR reset no longer blanks the plots -- the
-           completed run they came from is still the latest one, and the run label
-           in the top bar says which run that is.
+           picks up a finished run on its own, no matter which page started it,
+           and it needs no cooperation from the SAR page.
+
+           Clearing rides on the same one endpoint. A Reset ("3" ->
+           delete_all_files()) makes /sar_log/status report no run at all, so the
+           poll below blanks every tile without needing a signal of its own. The
+           SAR page also calls resetMenu() at boot, so this panel starts empty on
+           every dashboard load and fills in when a run completes -- the same
+           lifecycle as the SAR output image.
            ------------------------------------------------------------------ */
         :root {
             --bg:            #020406;
@@ -264,6 +268,11 @@
         }
 
         poll();
+        // The SAR frame's boot-time reset lands at the backend a moment after
+        // this frame's first poll, so a load right after a completed run can
+        // catch the old plots and would otherwise sit on them for a whole
+        // interval before blanking. Two quick catch-up polls close that window.
+        [1200, 3000].forEach(function (ms) { setTimeout(poll, ms); });
         setInterval(function () {
             // Nothing to keep up to date while the browser tab is in the
             // background; visibilitychange below catches up on the way back.

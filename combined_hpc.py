@@ -175,6 +175,7 @@ tif_file_properties = {}       # processed-image properties (served to the front
 current_run_cphd = None        # CPHD filename currently being / last processed
 sar_run_pid = None             # PID of the running SAR program (None when idle)
 sar_log_version = 0            # bumped whenever a new SAR log folder is collected
+sar_log_cleared = False        # True between a Reset and the next completed run
 bwValue = 0
 sar_proc_time = 0
 ai_card_power_cache = None
@@ -346,7 +347,7 @@ def notify_vlm_reset():
 def collect_sar_logs():
     """Merged send_sar_logs()+host sar-log receiver: optimize the latest SAR log folder's
     PNG plots to webp into the served SAR_LOGS_DIR and bump the version counter."""
-    global sar_log_version
+    global sar_log_version, sar_log_cleared
     if not os.path.exists(SAR_LOGS):
         print("SAR_LOGS directory not found, skipping log collection")
         return
@@ -376,6 +377,7 @@ def collect_sar_logs():
             except Exception as e:
                 print(f"Error copying SAR log csv {fname}: {e}")
     if produced:
+        sar_log_cleared = False   # this run's plots supersede whatever Reset hid
         sar_log_version += 1
         print(f"Collected SAR log folder '{latest}' into {dest_dir} (version {sar_log_version})")
 
@@ -687,6 +689,13 @@ def delete_all_files():
     per Reset click -- the natural hook to also tell the VLM box to drop its
     SAR image and end any SAR chat session."""
     global cphd_file_list, cphd_file_properties, tif_file_properties, current_run_cphd, progress_update, sar_error
+    global sar_log_cleared
+    # The profiler plots belong to the same result set as the output images this
+    # clears, so they go with them: the performance-analysis panel polls
+    # /sar_log/status and blanks itself as soon as this makes it report no run.
+    # Note the SAR page also calls resetMenu() at boot, so a dashboard load lands
+    # here too -- the panel is deliberately empty until a run completes.
+    sar_log_cleared = True
     cphd_file_list = []
     cphd_file_properties = {}
     tif_file_properties = {}
@@ -1199,11 +1208,17 @@ SAR_LOG_IMAGE_TYPES = {
     "memory_usage":         "memory_usage_",
 }
 
-def latest_sar_log_folder():
-    """Name of the newest collected SAR log folder, or None when there is none.
+def current_sar_log_folder():
+    """Name of the SAR log folder the dashboard should be showing, or None.
 
-    collect_sar_logs() names each folder after the profiler run's start time
-    (YYYYmmdd_HHMMSS), so a plain sort puts the newest last."""
+    That is the newest collected folder -- collect_sar_logs() names each one
+    after the profiler run's start time (YYYYmmdd_HHMMSS), so a plain sort puts
+    the newest last -- except between a Reset and the next completed run, where
+    it is None. The folders themselves are never deleted; sar_log_cleared only
+    hides them from the API so the analysis panel blanks along with the SAR
+    output images that Reset wipes."""
+    if sar_log_cleared:
+        return None
     try:
         folders = sorted(d for d in os.listdir(SAR_LOGS_DIR)
                          if os.path.isdir(os.path.join(SAR_LOGS_DIR, d)))
@@ -1215,7 +1230,7 @@ def latest_sar_log_folder():
 def serve_sar_log_image(image_type: str):
     if image_type not in SAR_LOG_IMAGE_TYPES:
         return PlainTextResponse("Unknown image type", status_code=400)
-    folder = latest_sar_log_folder()
+    folder = current_sar_log_folder()
     if folder is None:
         return PlainTextResponse("No log data", status_code=404)
     folder_path = os.path.join(SAR_LOGS_DIR, folder)
@@ -1239,8 +1254,14 @@ def sar_log_status():
     identifies the run and survives a restart (unlike version, which resets to
     0), so the panel re-fetches exactly when it changes, and `images` says which
     of SAR_LOG_IMAGE_TYPES that folder actually holds so the panel never asks for
-    a plot that is not there."""
-    folder = latest_sar_log_folder()
+    a plot that is not there.
+
+    After a Reset both go empty (folder null, images []) until the next run is
+    collected, which is what makes the panel clear itself -- see
+    current_sar_log_folder(). `version` deliberately does NOT move on a Reset:
+    sar_process_image_panel.html polls it against a pre-run baseline to spot its
+    own run's logs, and a Reset-driven bump would fire that early."""
+    folder = current_sar_log_folder()
     images = []
     if folder is not None:
         try:
