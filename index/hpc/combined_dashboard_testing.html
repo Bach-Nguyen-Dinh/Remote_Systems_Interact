@@ -12,6 +12,8 @@
              * SAR application        -> /sar_app        (sar_process_upload.html)
              * Vision language model  -> /vlm/
              * Live system utilisation-> /system_monitor (system_monitor.html)
+             * Performance analysis   -> /performance_analysis
+                                                       (performance_analysis.html)
              * Edge device            -> /topaz/         (the Topaz shell)
 
            Those sections are split across two tabs selected from the branding
@@ -154,6 +156,20 @@
         </div>
     </div>
 
+    <!-- ===================== Performance analysis ===================== -->
+    <div class="section-row" id="sec-perf">
+        <div class="section-header" onclick="toggleSection('sec-perf')">
+            <span class="chev">&#9662;</span><span>Performance analysis</span>
+        </div>
+        <div class="section-body">
+            <!-- scrolling="no": auto-sized to its own content (see FRAMES below),
+                 so like the Topaz frame it is never meant to scroll on its own. -->
+            <iframe class="frame" id="frame-perf" src="/performance_analysis"
+                    scrolling="no" title="Performance analysis"
+                    style="height: 1400px;"></iframe>
+        </div>
+    </div>
+
     <!-- ===================== VLM application ===================== -->
     <div class="section-row" id="sec-vlm">
         <div class="section-header" onclick="toggleSection('sec-vlm')">
@@ -222,6 +238,7 @@
         // on load/resize. Each entry: [element, fallback height, section id, tab].
         var FRAMES = [
             [document.getElementById("frame-mon"),   600,  "sec-mon",   "server"],
+            [document.getElementById("frame-perf"),  1400, "sec-perf",  "server"],
             [document.getElementById("frame-topaz"), 1900, "sec-topaz", "edge"]
         ];
 

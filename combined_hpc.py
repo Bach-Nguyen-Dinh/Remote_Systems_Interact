@@ -140,6 +140,10 @@ SAR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "sar_process_combined.html
 SAR_FRONTEND_RSAT = os.path.join(CURR_DIR, "index", "hpc", "sar_process_combined.html")
 CCTV_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "cctv_process.html")
 MONITOR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "system_monitor.html")         # live system-utilisation page
+# Post-run profiler plots (CPU / power / thermal / memory) of the latest SAR run,
+# read out of SAR_LOGS_DIR. Its own standalone page so the combined shell can host
+# it as one more collapsible row, exactly like the SAR and monitor pages.
+PERFORMANCE_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "performance_analysis.html")
 # Combined shell served at '/': two collapsible sections, each an <iframe> onto
 # one of the pages above (SAR_FRONTEND via /sar_app, MONITOR_FRONTEND via
 # /system_monitor). Replaces the old Grafana frontend that iframed them separately.
@@ -1025,6 +1029,14 @@ def monitor_frontend():
     same as the SAR page). It refreshes itself from /system_metrics."""
     return send_file(MONITOR_FRONTEND)
 
+@app.get('/performance_analysis')
+def performance_analysis_frontend():
+    """Serve the post-run performance-analysis page (the profiler plots of the
+    latest SAR run). Hosted as its own collapsible row in the combined dashboard
+    the same way the SAR and monitor pages are, and still reachable directly. It
+    drives itself from /sar_log/status and /sar_log/image/<type>."""
+    return send_file(PERFORMANCE_FRONTEND)
+
 @app.get('/system_metrics')
 def system_metrics():
     """Return the whole live snapshot the monitoring dashboard needs in one call.
@@ -1187,18 +1199,26 @@ SAR_LOG_IMAGE_TYPES = {
     "memory_usage":         "memory_usage_",
 }
 
-@app.get('/sar_log/image/{image_type}')
-def serve_sar_log_image(image_type: str):
-    if image_type not in SAR_LOG_IMAGE_TYPES:
-        return PlainTextResponse("Unknown image type", status_code=400)
+def latest_sar_log_folder():
+    """Name of the newest collected SAR log folder, or None when there is none.
+
+    collect_sar_logs() names each folder after the profiler run's start time
+    (YYYYmmdd_HHMMSS), so a plain sort puts the newest last."""
     try:
         folders = sorted(d for d in os.listdir(SAR_LOGS_DIR)
                          if os.path.isdir(os.path.join(SAR_LOGS_DIR, d)))
     except FileNotFoundError:
+        return None
+    return folders[-1] if folders else None
+
+@app.get('/sar_log/image/{image_type}')
+def serve_sar_log_image(image_type: str):
+    if image_type not in SAR_LOG_IMAGE_TYPES:
+        return PlainTextResponse("Unknown image type", status_code=400)
+    folder = latest_sar_log_folder()
+    if folder is None:
         return PlainTextResponse("No log data", status_code=404)
-    if not folders:
-        return PlainTextResponse("No log data", status_code=404)
-    folder_path = os.path.join(SAR_LOGS_DIR, folders[-1])
+    folder_path = os.path.join(SAR_LOGS_DIR, folder)
     prefix = SAR_LOG_IMAGE_TYPES[image_type]
     try:
         matches = [f for f in os.listdir(folder_path) if f.startswith(prefix) and f.endswith('.webp')]
@@ -1210,7 +1230,26 @@ def serve_sar_log_image(image_type: str):
 
 @app.get('/sar_log/status')
 def sar_log_status():
-    return JSONResponse({"version": sar_log_version})
+    """Describe the profiler plots currently on offer, in one call.
+
+    `version` counts the collections THIS process has made; the SAR page uses it
+    to spot the logs of a run it just started, and it stays first in the payload
+    because that page has always read it. `folder` and `images` are what let the
+    standalone performance-analysis panel drive itself: the folder timestamp
+    identifies the run and survives a restart (unlike version, which resets to
+    0), so the panel re-fetches exactly when it changes, and `images` says which
+    of SAR_LOG_IMAGE_TYPES that folder actually holds so the panel never asks for
+    a plot that is not there."""
+    folder = latest_sar_log_folder()
+    images = []
+    if folder is not None:
+        try:
+            names = os.listdir(os.path.join(SAR_LOGS_DIR, folder))
+        except OSError:
+            names = []
+        images = [t for t, prefix in SAR_LOG_IMAGE_TYPES.items()
+                  if any(n.startswith(prefix) and n.endswith('.webp') for n in names)]
+    return JSONResponse({"version": sar_log_version, "folder": folder, "images": images})
 
 @app.get('/sar_colored_image')
 def serve_sar_colored_image(filename: str = Query("")):
