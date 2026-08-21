@@ -131,6 +131,44 @@ VLM_BASE_URL = f"http://{VLM_HOST}:{VLM_PORT}"
 VLM_UPLOAD_TIMEOUT = 30      # seconds -- generous for a large SAR tiff over Ethernet
 VLM_RESET_TIMEOUT = 5
 
+# Topaz edge device -- the box behind nginx's /topaz/ prefix. Only the health
+# probe below talks to it from here; the dashboard itself reaches it through
+# nginx, never through this process.
+TOPAZ_HOST = "192.168.0.32"
+TOPAZ_PORT = 5001
+TOPAZ_BASE_URL = f"http://{TOPAZ_HOST}:{TOPAZ_PORT}"
+
+# ---- remote device health --------------------------------------------------
+# Two of the dashboard's panels stream from OTHER boxes and reach the browser
+# only through nginx (/vlm/ -> the VLM box, /topaz/ -> the Topaz box). When one
+# of those boxes is off, its <iframe> would show nginx's raw 502 page, so the
+# shell instead asks us whether each box is answering and paints its own
+# "disconnected" placeholder.
+#
+# The probe lives here rather than in the browser for three reasons: one probe
+# serves every open dashboard instead of one per tab; the timeout is ours to set
+# rather than nginx's 60s default; and this process sits on the same box nginx
+# proxies from, so what we can reach is exactly what nginx can reach.
+#
+# Each device's probe URL is picked to be cheap and to prove the *app* is alive,
+# not merely that the port is open:
+#   * Topaz -> /system_metrics, ~1.5 KB of JSON the app has to assemble.
+#   * VLM   -> /health. If that box turns out not to serve it, no change is
+#     needed: a 404 still means an HTTP server answered, and classify_probe()
+#     below reads that as up. Only a refused/timed-out connection, a 5xx or an
+#     auth rejection count as down.
+DEVICE_HEALTH_INTERVAL = 5.0     # seconds between rounds of probes
+DEVICE_HEALTH_TIMEOUT = 3.0      # per probe (connect + read)
+# Consecutive failures before a device is called down. Two rounds (~10s) is the
+# whole safety margin against a false positive: the shell blanks a device's
+# frame when it goes down, so a single dropped packet must not be enough to tear
+# down a panel somebody is using.
+DEVICE_HEALTH_FAIL_STREAK = 2
+DEVICES = {
+    "vlm":   {"label": "Vision language model", "url": f"{VLM_BASE_URL}/health"},
+    "topaz": {"label": "Edge device",           "url": f"{TOPAZ_BASE_URL}/system_metrics"},
+}
+
 # Host-side served directories / files (unchanged from host_no_chunking.py)
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 # Which SAR frontend to serve. To go back to the older no-upload index, comment the
@@ -191,6 +229,17 @@ sar_error = None               # set to a user-facing message when a run fails (
 latest_metrics = {}
 latest_metrics_lock = threading.Lock()
 
+# Per-device health verdict served by /device_health, refreshed by
+# device_health_loop. Seeded as "unknown" rather than "down" so a dashboard
+# opened in the first few seconds after a restart shows "Connecting..." instead
+# of accusing a perfectly healthy box of being offline.
+device_health = {
+    name: {"status": "unknown", "detail": "not probed yet", "label": cfg["label"],
+           "since": None, "checked": None}
+    for name, cfg in DEVICES.items()
+}
+device_health_lock = threading.Lock()
+
 
 # ----------------------------------------------------------------------------
 # Application setup
@@ -206,6 +255,7 @@ async def lifespan(_app: FastAPI):
     threading.Thread(target=run_iperf3_server, daemon=True).start()
     threading.Thread(target=poll_ai_card_diagnostics, daemon=True).start()
     threading.Thread(target=metrics_loop, daemon=True).start()
+    threading.Thread(target=device_health_loop, daemon=True).start()
     yield
 
 
@@ -966,6 +1016,77 @@ def build_influx_point(system_info):
         "time": int(time.time() * 1e9),
     }
 
+# ----------------------------------------------------------------------------
+# Remote device health
+# ----------------------------------------------------------------------------
+def classify_probe(url):
+    """Probe one device over HTTP and say whether the dashboard can show it.
+
+    Returns (ok, detail); detail is the short phrase the shell prints under
+    "disconnected", so it is written for whoever is looking at the screen.
+
+    Down is deliberately narrow -- the states you cannot see past: the box does
+    not answer at all, it answers with a server error (nginx would turn that into
+    the 502 page the placeholder replaces), or it refuses us. Anything else,
+    including a 404, means an HTTP server is alive on the other end and the
+    panel is worth loading, so the exact health path never has to be right."""
+    try:
+        resp = requests.get(url, timeout=DEVICE_HEALTH_TIMEOUT, allow_redirects=False)
+    except requests.exceptions.Timeout:
+        return False, f"no response within {DEVICE_HEALTH_TIMEOUT:g}s"
+    except requests.exceptions.ConnectionError:
+        # Covers both failure modes that look different on the wire but identical
+        # on screen: the app is not listening (connection refused) and the box is
+        # off the network entirely (the connect attempt goes nowhere).
+        return False, "unreachable - connection refused or host down"
+    except requests.exceptions.RequestException as e:
+        return False, f"probe failed: {type(e).__name__}"
+
+    code = resp.status_code
+    if code in (401, 403):
+        return False, f"permission denied (HTTP {code})"
+    if code >= 500:
+        return False, f"device returned HTTP {code}"
+    return True, f"HTTP {code}"
+
+
+def device_health_loop():
+    """Probe every device in DEVICES on a fixed interval and publish the verdict.
+
+    Failures have to repeat DEVICE_HEALTH_FAIL_STREAK times before a device flips
+    to down; a success flips it back immediately, because a box that just
+    answered is not a box worth waiting on. `since` records when the current
+    status was entered so the shell can say how long something has been out."""
+    streaks = {name: 0 for name in DEVICES}
+    while True:
+        for name, cfg in DEVICES.items():
+            ok, detail = classify_probe(cfg["url"])
+            if ok:
+                streaks[name] = 0
+                status = "up"
+            else:
+                streaks[name] += 1
+                # Hold the previous status until the streak is long enough. A
+                # device that has never reported stays "unknown", which the shell
+                # paints as "Connecting..." rather than as an outage.
+                if streaks[name] < DEVICE_HEALTH_FAIL_STREAK:
+                    with device_health_lock:
+                        device_health[name]["checked"] = time.time()
+                    continue
+                status = "down"
+
+            now = time.time()
+            with device_health_lock:
+                entry = device_health[name]
+                if entry["status"] != status:
+                    entry["since"] = now
+                    print(f"Device '{name}' is {status}: {detail}")
+                entry["status"] = status
+                entry["detail"] = detail
+                entry["checked"] = now
+        time.sleep(DEVICE_HEALTH_INTERVAL)
+
+
 def metrics_loop():
     """Collect metrics and write them straight to InfluxDB (no socket round-trip).
 
@@ -1055,6 +1176,18 @@ def system_metrics():
     copy — there is no per-request psutil sampling or InfluxDB query."""
     with latest_metrics_lock:
         return JSONResponse(latest_metrics)
+
+@app.get('/device_health')
+def device_health_status():
+    """Whether each box behind an nginx prefix is answering, for the shell page.
+
+    Polled by the combined dashboard every few seconds. It is served from the
+    cache device_health_loop maintains, so it never blocks on a dead box no
+    matter how many dashboards are open."""
+    with device_health_lock:
+        devices = {name: dict(entry) for name, entry in device_health.items()}
+    return JSONResponse({"devices": devices})
+
 
 @app.get('/storage_info')
 def storage_info():
