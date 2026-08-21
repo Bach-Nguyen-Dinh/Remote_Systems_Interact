@@ -1038,7 +1038,7 @@ def classify_probe(url):
         # Covers both failure modes that look different on the wire but identical
         # on screen: the app is not listening (connection refused) and the box is
         # off the network entirely (the connect attempt goes nowhere).
-        return False, "unreachable - connection refused or host down"
+        return False, "Unreachable - connection refused or host down"
     except requests.exceptions.RequestException as e:
         return False, f"probe failed: {type(e).__name__}"
 

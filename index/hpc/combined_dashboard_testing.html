@@ -42,7 +42,7 @@
             --text-weak: rgba(204, 204, 220, 0.65);
             --blue:      #3696ff;
             --warn:      #f2cc0c;
-            --panel:     #0b0c0e;
+            --panel:     #111217;
         }
 
         * { box-sizing: border-box; }
@@ -159,7 +159,15 @@
         .device-offline .dev-icon { font-size: 26px; line-height: 1; color: var(--text-weak); }
         .device-offline.is-down .dev-icon { color: var(--warn); }
         .device-offline .dev-title { font-size: 15px; color: var(--text); }
-        .device-offline .dev-detail { font-size: 12px; color: var(--text-weak); max-width: 460px; }
+        /* pre-line: the detail is two sentences joined by a newline in
+           paintPlaceholder -- the verdict, then what happens next -- and each
+           gets its own line. Still wraps within max-width like normal text. */
+        .device-offline .dev-detail {
+            font-size: 12px;
+            color: var(--text-weak);
+            max-width: 460px;
+            white-space: pre-line;
+        }
         .device-offline .dev-retry {
             margin-top: 4px;
             background: transparent;
@@ -526,7 +534,7 @@
                 ? dev.name + " is disconnected"
                 : "Connecting to " + dev.name + "\u2026";
             dev.ph.querySelector(".dev-detail").textContent = down
-                ? dev.detail + ". This panel will reappear on its own once the device answers."
+                ? dev.detail + ".\nThis panel will reappear on its own once the device answers."
                 : "";
         }
 
