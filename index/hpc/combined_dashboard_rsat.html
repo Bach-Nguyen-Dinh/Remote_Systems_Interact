@@ -12,6 +12,8 @@
              * SAR application        -> /sar_app        (sar_process_upload.html)
              * Vision language model  -> /vlm/
              * Live system utilisation-> /system_monitor (system_monitor.html)
+             * Performance analysis   -> /performance_analysis
+                                                       (performance_analysis.html)
              * Edge device            -> /topaz/         (the Topaz shell)
 
            Those sections are split across two tabs selected from the branding
@@ -20,6 +22,11 @@
            whole nested dashboard, so it is only loaded the first time its tab is
            opened — and then stays mounted, since it polls and would restart from
            scratch on every switch.
+           Two of those sections stream from OTHER boxes and reach us only via
+           nginx: the VLM app (/vlm/) and the Topaz edge device (/topaz/). When
+           one of those boxes is off its frame would show nginx's raw 502 page,
+           so both are health-gated -- see "device health" in the script below.
+
            Keeping them as iframes means each page stays standalone and is edited
            independently; nothing here touches their CSS/JS. Because both frames
            are same-origin, the monitor frame is auto-sized to its content so the
@@ -34,6 +41,8 @@
             --text:      rgba(204, 204, 220, 0.90);
             --text-weak: rgba(204, 204, 220, 0.65);
             --blue:      #3696ff;
+            --warn:      #f2cc0c;
+            --panel:     #111217;
         }
 
         * { box-sizing: border-box; }
@@ -131,6 +140,56 @@
 
         .tab-panel { display: none; }
         .tab-panel.active { display: block; }
+
+        /* ---- disconnected-device placeholder ----------------------------
+           Stands in for a health-gated frame while its box is unreachable.
+           .frame[hidden] needs the explicit rule because the `hidden`
+           attribute is a UA-stylesheet declaration and loses to .frame's own
+           display:block; the attribute selector outranks it. */
+        .frame[hidden] { display: none; }
+
+        .device-offline {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            /* Keeps the section the size of a panel rather than letting it
+               collapse to nothing, so the page does not jump when a device
+               drops out and comes back. */
+            min-height: 220px;
+            padding: 32px 20px;
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            background: var(--panel);
+            text-align: center;
+        }
+        .device-offline.show { display: flex; }
+        .device-offline .dev-icon { font-size: 26px; line-height: 1; color: var(--text-weak); }
+        .device-offline.is-down .dev-icon { color: var(--warn); }
+        .device-offline .dev-title { font-size: 15px; color: var(--text); }
+        /* pre-line: the detail is two sentences joined by a newline in
+           paintPlaceholder -- the verdict, then what happens next -- and each
+           gets its own line. Still wraps within max-width like normal text. */
+        .device-offline .dev-detail {
+            font-size: 12px;
+            color: var(--text-weak);
+            max-width: 460px;
+            white-space: pre-line;
+        }
+        .device-offline .dev-retry {
+            margin-top: 4px;
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: 2px;
+            color: var(--text-weak);
+            font-family: inherit;
+            font-size: 12px;
+            padding: 6px 14px;
+            cursor: pointer;
+            transition: color .15s ease, border-color .15s ease;
+        }
+        .device-offline .dev-retry:hover { color: var(--text); border-color: var(--text-weak); }
     </style>
 </head>
 <body>
@@ -170,14 +229,48 @@
         </div>
     </div>
 
+    <!-- ===================== Performance analysis ===================== -->
+    <!-- Starts collapsed: it is a post-run view, so there is nothing to look at
+         until a SAR run has finished. -->
+    <div class="section-row collapsed" id="sec-perf">
+        <div class="section-header" onclick="toggleSection('sec-perf')">
+            <span class="chev">&#9662;</span><span>Performance analysis</span>
+        </div>
+        <div class="section-body">
+            <!-- A plain src, loaded with the page even though the row starts
+                 collapsed. Deferring it would need a mount step, and the only
+                 one here is the /device_health gate, which exists for the two
+                 REMOTE boxes that can be unreachable -- this panel is served by
+                 our own backend, so gating it would be inventing a failure mode
+                 it does not have. The panel is cheap (one small JSON poll, plus
+                 six ~10-40 KB plots that only refetch when the run changes), and
+                 it re-polls itself when the row is opened.
+                 scrolling="no": auto-sized to its own content (see FRAMES
+                 below), so it is never meant to scroll on its own. -->
+            <iframe class="frame" id="frame-perf" src="/performance_analysis"
+                    scrolling="no" title="Performance analysis"
+                    style="height: 1400px;"></iframe>
+        </div>
+    </div>
+
     <!-- ===================== VLM application ===================== -->
     <div class="section-row" id="sec-vlm">
         <div class="section-header" onclick="toggleSection('sec-vlm')">
             <span class="chev">&#9662;</span><span>Vision language model</span>
         </div>
         <div class="section-body">
-            <iframe class="frame" id="frame-vlm" src="/vlm/"
+            <!-- data-src, not src: health-gated, so the frame is only ever
+                 pointed at /vlm/ once the VLM box is known to be answering.
+                 Loading it unconditionally would paint nginx's 502 page here
+                 whenever that box is down. -->
+            <iframe class="frame" id="frame-vlm" data-src="/vlm/" hidden
                     title="Vision language model" style="height: 800px;"></iframe>
+            <div class="device-offline show" id="off-vlm">
+                <div class="dev-icon">&#9679;</div>
+                <div class="dev-title">Connecting&hellip;</div>
+                <div class="dev-detail"></div>
+                <button class="dev-retry" type="button" onclick="checkDevices()">Check again</button>
+            </div>
         </div>
     </div>
 
@@ -220,8 +313,14 @@
                  Only affects the framed instance; /topaz/ opened directly still
                  scrolls normally. Frames with a FIXED height (SAR, VLM) keep their
                  scrollbars -- those genuinely need them. -->
-            <iframe class="frame" id="frame-topaz" data-src="/topaz/" scrolling="no"
+            <iframe class="frame" id="frame-topaz" data-src="/topaz/" scrolling="no" hidden
                     title="Edge Device" style="height: 1900px;"></iframe>
+            <div class="device-offline show" id="off-topaz">
+                <div class="dev-icon">&#9679;</div>
+                <div class="dev-title">Connecting&hellip;</div>
+                <div class="dev-detail"></div>
+                <button class="dev-retry" type="button" onclick="checkDevices()">Check again</button>
+            </div>
         </div>
     </div>
 
@@ -231,13 +330,18 @@
     (function () {
         "use strict";
 
-        // Same-origin, auto-sized frames. The monitor builds its per-core grid a
+        // Same-origin, auto-sized frames. The Topaz frame is also health-gated
+        // (see "device health" below), so it is mounted by render() rather than
+        // here; once mounted it stays in the DOM, and its nested dashboard keeps
+        // polling instead of reloading on every tab switch.
+        // The monitor builds its per-core grid a
         // second or so after load (first /system_metrics response); the Topaz
         // frame is itself a shell whose inner frames change height when its own
         // vision tab is switched — so both are re-fitted on a 1s poll as well as
         // on load/resize. Each entry: [element, fallback height, section id, tab].
         var FRAMES = [
             [document.getElementById("frame-mon"),   600,  "sec-mon",   "server"],
+            [document.getElementById("frame-perf"),  1400, "sec-perf",  "server"],
             [document.getElementById("frame-topaz"), 1900, "sec-topaz", "edge"]
         ];
 
@@ -333,25 +437,18 @@
             // Re-fit a frame when its section is revealed (it can't be measured
             // while display:none), on the next frame so layout has settled.
             if (!el.classList.contains("collapsed")) {
+                // A revealed section can now be measured -- and, if it holds a
+                // health-gated frame that has been waiting for somewhere visible
+                // to load into, mounted.
+                DEVICES.forEach(function (d) { if (d.sec === id) render(d); });
                 FRAMES.forEach(function (f) {
                     if (f[2] !== id) return;
-                    loadFrame(f);
                     refit(f);
                 });
             }
         };
 
         // ---- Server / Edge device tabs ----
-        // The Topaz frame carries data-src and is given a real src the first time
-        // its tab is opened; after that it stays in the DOM, so its nested
-        // dashboard keeps polling instead of reloading on every switch.
-        function loadFrame(f) {
-            var fr = f[0];
-            if (!fr.getAttribute("src") && fr.getAttribute("data-src")) {
-                fr.src = fr.getAttribute("data-src");
-            }
-        }
-
         window.switchTab = function (tab) {
             document.querySelectorAll(".tab-btn").forEach(function (b) {
                 b.classList.toggle("active", b.dataset.tab === tab);
@@ -360,13 +457,157 @@
                 p.classList.toggle("active", p.dataset.tab === tab);
             });
 
-            // Now that the panel is visible its frames can be loaded and measured.
+            // Now that the panel is visible its frames can be mounted and measured.
+            DEVICES.forEach(function (d) { if (d.tab === tab) render(d); });
             FRAMES.forEach(function (f) {
                 if (f[3] !== tab) return;
-                loadFrame(f);
                 refit(f);
             });
         };
+
+        // ================= device health =================================
+        // The VLM and Topaz panels stream from separate boxes that the browser
+        // only reaches through nginx, so when one is off its frame would fill
+        // with nginx's 502 page. combined_hpc.py probes both from the box nginx
+        // proxies from and publishes the verdict at /device_health; this polls
+        // that and swaps each frame against a "disconnected" placeholder.
+        //
+        // Why this can recover a panel WITHOUT reloading the page: each panel is
+        // its own browsing context, so pointing #frame-vlm at a new URL
+        // re-navigates that frame and nothing else. A SAR run in #frame-sar, the
+        // monitor, the profiler plots -- none of them observe it. The only thing
+        // that would disturb them is reloading this shell, which nothing here
+        // ever does.
+        //
+        // And the rule that makes the reload itself safe: a frame is only ever
+        // mounted out of the placeholder state. A frame that is loaded and whose
+        // device is up is never touched, however often the poll runs, so a
+        // recovery cannot interrupt somebody mid-conversation in the VLM panel.
+        // A frame showing the placeholder holds no state to lose, because the
+        // box behind it was unreachable.
+        var DEVICES = [
+            { key: "vlm",   sec: "sec-vlm",   tab: "server",
+              name: "Vision language model", src: "/vlm/",
+              frame: document.getElementById("frame-vlm"),
+              ph:    document.getElementById("off-vlm") },
+            { key: "topaz", sec: "sec-topaz", tab: "edge",
+              name: "Edge device", src: "/topaz/",
+              frame: document.getElementById("frame-topaz"),
+              ph:    document.getElementById("off-topaz") }
+        ];
+        DEVICES.forEach(function (d) {
+            d.loaded = false;             // is the frame currently showing the real page?
+            d.status = "unknown";         // last verdict from /device_health
+            d.detail = "";
+            d.body   = d.frame.parentNode;  // the .section-body wrapping both
+        });
+
+        var HEALTH_INTERVAL = 5000;
+        var healthTimer = null;
+
+        // The FRAMES entry for a device's frame, if it has one (Topaz is
+        // auto-sized, the VLM frame has a fixed height), so a freshly mounted
+        // frame gets the same post-load re-fit as one that loaded normally.
+        function fitEntryFor(dev) {
+            for (var i = 0; i < FRAMES.length; i++) {
+                if (FRAMES[i][0] === dev.frame) return FRAMES[i];
+            }
+            return null;
+        }
+
+        // Is there anywhere on screen for this frame to load into? A collapsed
+        // section and an inactive tab are both display:none, and a frame mounted
+        // into one measures as 0 and cannot be fitted -- so mounting waits until
+        // toggleSection/switchTab reveals it.
+        function sectionVisible(dev) {
+            return dev.body.offsetParent !== null;
+        }
+
+        function mount(dev) {
+            dev.frame.src = dev.src;
+            dev.loaded = true;
+            dev.ph.classList.remove("show");
+            dev.frame.removeAttribute("hidden");
+            var f = fitEntryFor(dev);
+            if (f) refit(f);
+        }
+
+        // Point the frame at about:blank rather than leaving the dead page up:
+        // it stops that page's own pollers from hammering an upstream nginx can
+        // no longer reach, and it guarantees the frame holds nothing when the
+        // placeholder goes over it.
+        function unmount(dev) {
+            dev.loaded = false;
+            dev.frame.setAttribute("hidden", "");
+            dev.frame.src = "about:blank";
+        }
+
+        function paintPlaceholder(dev) {
+            var down = dev.status === "down";
+            dev.ph.classList.toggle("is-down", down);
+            dev.ph.classList.add("show");
+            dev.ph.querySelector(".dev-title").textContent = down
+                ? dev.name + " is disconnected"
+                : "Connecting to " + dev.name + "\u2026";
+            dev.ph.querySelector(".dev-detail").textContent = down
+                ? dev.detail + ".\nThis panel will reappear on its own once the device answers."
+                : "";
+        }
+
+        function render(dev) {
+            if (dev.status === "up") {
+                // Already up and mounted: leave it strictly alone.
+                if (dev.loaded) return;
+                if (sectionVisible(dev)) mount(dev);
+                else paintPlaceholder(dev);   // mounts when its tab/section opens
+                return;
+            }
+            if (dev.loaded) unmount(dev);
+            paintPlaceholder(dev);
+        }
+
+        // Give up on gating and just load both frames, as the shell did before
+        // health checks existed. Used when the backend has no /device_health at
+        // all -- an unreachable device is a much better outcome than two panels
+        // stuck on "Connecting..." because the server is older than this page.
+        function disableGate() {
+            if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
+            DEVICES.forEach(function (dev) {
+                dev.status = "up";
+                render(dev);
+            });
+        }
+
+        // Poll the cached verdict. A failure here means OUR backend hiccuped,
+        // which says nothing about the remote boxes, so the last verdict stands
+        // rather than every panel dropping out at once.
+        window.checkDevices = function () {
+            fetch("/device_health", { cache: "no-store" })
+                .then(function (r) {
+                    if (r.status === 404) { disableGate(); return null; }
+                    return r.ok ? r.json() : null;
+                })
+                .then(function (j) {
+                    if (!j || !j.devices) return;
+                    DEVICES.forEach(function (dev) {
+                        var d = j.devices[dev.key];
+                        if (!d) return;
+                        dev.status = d.status;
+                        dev.detail = d.detail || "";
+                        render(dev);
+                    });
+                })
+                .catch(function () { /* keep the last verdict */ });
+        };
+
+        checkDevices();
+        healthTimer = setInterval(checkDevices, HEALTH_INTERVAL);
+        // Browsers throttle timers in a backgrounded tab to about one a minute,
+        // so a device that recovered while you were elsewhere would take that
+        // long to reappear. Re-check the moment the dashboard is looked at again.
+        document.addEventListener("visibilitychange", function () {
+            if (!document.hidden) checkDevices();
+        });
     })();
 
     /* Drop the mission tagline from the branding row when the window is too
