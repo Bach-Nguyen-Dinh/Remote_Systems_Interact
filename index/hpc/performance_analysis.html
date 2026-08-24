@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Performance analysis</title>
+    <style>
+        /* ------------------------------------------------------------------
+           Performance-analysis panel, served by combined_hpc.py at
+           '/performance_analysis' and hosted as one collapsible row of the
+           combined dashboard, exactly like /sar_app and /system_monitor.
+
+           It shows the profiler plots of the most recently collected SAR run:
+           collect_sar_logs() converts that run's PNG plots to webp under
+           sar_logs/<timestamp>/, and this page pulls them from
+           GET /sar_log/image/<type>.
+
+           STANDALONE BY DESIGN. The Grafana original (process_analysis_panel.html,
+           still in this folder for that dashboard) was one text panel among many
+           in a SINGLE document, so the SAR panel could tell it to refresh with a
+           window CustomEvent ('update_analysis' / 'clear_analysis') and had to
+           persist a flag through Grafana's row collapse/expand, which re-ran the
+           whole script against a fresh DOM. Neither applies here: each page is
+           its own same-origin <iframe>, those events do not cross frames, and the
+           shell collapses a row with display:none without destroying the frame.
+
+           So instead this page polls GET /sar_log/status and re-fetches whenever
+           the reported log folder changes. That makes it self-sufficient: it
+           picks up a finished run on its own, no matter which page started it,
+           and it needs no cooperation from the SAR page.
+
+           Clearing rides on the same one endpoint. A Reset ("3" ->
+           delete_all_files()) makes /sar_log/status report no run at all, so the
+           poll below blanks every tile without needing a signal of its own. The
+           SAR page also calls resetMenu() at boot, so this panel starts empty on
+           every dashboard load and fills in when a run completes -- the same
+           lifecycle as the SAR output image.
+           ------------------------------------------------------------------ */
+        :root {
+            --bg:            #020406;
+            --panel-bg:      #111217;
+            --border:        #28292f;
+            --text:          rgba(204, 204, 220, 0.90);
+            --text-weak:     rgba(204, 204, 220, 0.65);
+            --text-faint:    rgba(204, 204, 220, 0.40);
+        }
+
+        * { box-sizing: border-box; }
+        /* No height on <body>: the layout below is intrinsic (the tiles carry
+           their own aspect ratio) so the combined dashboard can measure the body
+           and size this row's iframe to it. A full-height body would be by
+           definition exactly as tall as the frame it was handed, so it always
+           measures as "content == current height" and the frame could only ever
+           grow -- the same trap system_monitor.html documents. */
+        html, body { margin: 0; padding: 0; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            font-size: 13px;
+            -webkit-font-smoothing: antialiased;
+            padding: 10px 12px 16px;
+        }
+
+        /* ---- top bar: what the plots are, and which run they came from ---- */
+        .topbar {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 8px;
+            min-height: 18px;
+        }
+        .tb-label { color: var(--text-weak); }
+        .tb-run   { color: var(--text-faint); white-space: nowrap; }
+
+        /* ---- plot grid ---- */
+        .plot-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+        @media (max-width: 900px) {
+            .plot-grid { grid-template-columns: minmax(0, 1fr); }
+        }
+
+        .plot {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            padding: 8px 10px;
+            min-width: 0;
+        }
+        .plot-title {
+            font-size: 12px;
+            color: var(--text-weak);
+            margin-bottom: 6px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        /* The profiler plots are ~800x455 webp. Pinning that ratio on the frame
+           is what gives this page a real content height at any width, which is
+           what the shell measures to size the row. */
+        .plot-frame {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 800 / 455;
+        }
+        .plot-frame img {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            /* contain, not cover: these are charts, and cover cropped the axis
+               labels and the legend off the edges of the tile. */
+            object-fit: contain;
+            object-position: center;
+            display: none;
+        }
+        .no-data {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-faint);
+            font-size: 14px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="topbar">
+        <div class="tb-label">Profiler plots from the most recent SAR run</div>
+        <div class="tb-run" id="runLabel">No run recorded</div>
+    </div>
+
+    <div class="plot-grid" id="plotGrid"></div>
+
+    <script>
+    (function () {
+        "use strict";
+
+        // This page is served by combined_hpc.py itself, so its endpoints are
+        // always same-origin: root-relative paths are correct both behind the
+        // nginx reverse proxy and on a direct :5000 visit. (The Grafana original
+        // had to rebuild an absolute base because it was inlined into a Grafana
+        // document on :3000 -- that no longer happens.)
+        var STATUS_URL = "/sar_log/status";
+        var IMAGE_URL  = "/sar_log/image/";
+
+        // Rendered in this order, two per row. `type` is the key
+        // combined_hpc.py's SAR_LOG_IMAGE_TYPES maps to the plot's filename.
+        var PLOTS = [
+            { type: "overall_cpu_usage",   label: "Overall CPU usage"   },
+            { type: "cpu_power",           label: "CPU power"           },
+            { type: "cpu_cores_usage",     label: "CPU cores usage"     },
+            { type: "cpu_cores_frequency", label: "CPU cores frequency" },
+            { type: "cpu_temperature",     label: "CPU temperature"     },
+            { type: "memory_usage",        label: "Memory usage"        }
+        ];
+
+        var POLL_MS = 5000;
+        var tiles = {};        // type -> { img, empty }
+        var currentKey = null; // signature of the run currently on screen
+
+        // ---- build the tiles once; only their images change afterwards ----
+        (function build() {
+            var grid = document.getElementById("plotGrid");
+            PLOTS.forEach(function (p) {
+                var cell = document.createElement("div");
+                cell.className = "plot";
+
+                var title = document.createElement("div");
+                title.className = "plot-title";
+                title.textContent = p.label;
+
+                var frame = document.createElement("div");
+                frame.className = "plot-frame";
+
+                var empty = document.createElement("div");
+                empty.className = "no-data";
+                empty.textContent = "No data";
+
+                var img = document.createElement("img");
+                img.alt = p.label;
+                img.onload = function () {
+                    img.style.display = "block";
+                    empty.style.display = "none";
+                };
+                img.onerror = function () {
+                    img.removeAttribute("src");
+                    img.style.display = "none";
+                    empty.style.display = "flex";
+                };
+
+                frame.appendChild(empty);
+                frame.appendChild(img);
+                cell.appendChild(title);
+                cell.appendChild(frame);
+                grid.appendChild(cell);
+
+                tiles[p.type] = { img: img, empty: empty };
+            });
+        })();
+
+        function clearTile(t) {
+            t.img.removeAttribute("src");
+            t.img.style.display = "none";
+            t.empty.style.display = "flex";
+        }
+
+        // Log folders are named for the profiler run's start time
+        // (YYYYmmdd_HHMMSS). Show it as a readable timestamp rather than the
+        // raw folder name.
+        function formatRun(folder) {
+            var m = /^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/.exec(folder || "");
+            if (!m) return folder || "";
+            return m[1] + "-" + m[2] + "-" + m[3] + " " + m[4] + ":" + m[5] + ":" + m[6];
+        }
+
+        // Re-point every tile at the run described by `status`. The cache-buster
+        // is the run signature, not a timestamp: within one run the plots never
+        // change, so the browser may reuse them across polls, and a new run
+        // changes the signature and therefore the URL.
+        function render(status, key) {
+            var available = status.images || [];
+            var folder = status.folder;
+
+            document.getElementById("runLabel").textContent =
+                folder ? formatRun(folder) : "No run recorded";
+
+            PLOTS.forEach(function (p) {
+                var t = tiles[p.type];
+                if (!folder || available.indexOf(p.type) === -1) {
+                    clearTile(t);
+                    return;
+                }
+                // Assign even if the URL is unchanged only when the key moved --
+                // render() is called solely on a key change, so this always is a
+                // genuinely new image.
+                t.img.src = IMAGE_URL + p.type + "?run=" + encodeURIComponent(key);
+            });
+        }
+
+        // /sar_log/status reports both the newest log folder and the number of
+        // collections this backend process has made. The folder alone identifies
+        // a run and survives a restart; version is kept in the signature so a
+        // re-collection into the same folder still counts as a change.
+        function poll() {
+            fetch(STATUS_URL, { cache: "no-store" })
+                .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+                .then(function (status) {
+                    var key = (status.folder || "none") + "|" + (status.version || 0);
+                    if (key === currentKey) return;
+                    currentKey = key;
+                    render(status, key);
+                })
+                // A failed poll leaves the current plots alone: a restart or a
+                // proxy blip should not blank a perfectly good analysis.
+                .catch(function () {});
+        }
+
+        poll();
+        // The SAR frame's boot-time reset lands at the backend a moment after
+        // this frame's first poll, so a load right after a completed run can
+        // catch the old plots and would otherwise sit on them for a whole
+        // interval before blanking. Two quick catch-up polls close that window.
+        [1200, 3000].forEach(function (ms) { setTimeout(poll, ms); });
+        setInterval(function () {
+            // Nothing to keep up to date while the browser tab is in the
+            // background; visibilitychange below catches up on the way back.
+            if (document.hidden) return;
+            poll();
+        }, POLL_MS);
+        document.addEventListener("visibilitychange", function () {
+            if (!document.hidden) poll();
+        });
+
+        // The dashboard starts this row collapsed, which puts this frame inside a
+        // display:none subtree -- it still loads, but a hidden frame is not a
+        // dependable place to leave a timer running, so the plots could be as old
+        // as the page load by the time the row is opened. Nothing tells us the
+        // row was opened, but the frame going from zero-sized to laid-out says it
+        // for us, and unlike visibilitychange (which is tab-level) it fires for a
+        // reveal inside the page. Poll once on that edge so an opened row is
+        // always showing current data.
+        if (typeof ResizeObserver === "function") {
+            var wasSized = false;
+            new ResizeObserver(function () {
+                var sized = document.body.clientHeight > 0 && document.body.clientWidth > 0;
+                if (sized && !wasSized) poll();
+                wasSized = sized;
+            }).observe(document.body);
+        }
+    })();
+    </script>
+</body>
+</html>

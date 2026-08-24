@@ -131,6 +131,44 @@ VLM_BASE_URL = f"http://{VLM_HOST}:{VLM_PORT}"
 VLM_UPLOAD_TIMEOUT = 30      # seconds -- generous for a large SAR tiff over Ethernet
 VLM_RESET_TIMEOUT = 5
 
+# Topaz edge device -- the box behind nginx's /topaz/ prefix. Only the health
+# probe below talks to it from here; the dashboard itself reaches it through
+# nginx, never through this process.
+TOPAZ_HOST = "192.168.0.32"
+TOPAZ_PORT = 5001
+TOPAZ_BASE_URL = f"http://{TOPAZ_HOST}:{TOPAZ_PORT}"
+
+# ---- remote device health --------------------------------------------------
+# Two of the dashboard's panels stream from OTHER boxes and reach the browser
+# only through nginx (/vlm/ -> the VLM box, /topaz/ -> the Topaz box). When one
+# of those boxes is off, its <iframe> would show nginx's raw 502 page, so the
+# shell instead asks us whether each box is answering and paints its own
+# "disconnected" placeholder.
+#
+# The probe lives here rather than in the browser for three reasons: one probe
+# serves every open dashboard instead of one per tab; the timeout is ours to set
+# rather than nginx's 60s default; and this process sits on the same box nginx
+# proxies from, so what we can reach is exactly what nginx can reach.
+#
+# Each device's probe URL is picked to be cheap and to prove the *app* is alive,
+# not merely that the port is open:
+#   * Topaz -> /system_metrics, ~1.5 KB of JSON the app has to assemble.
+#   * VLM   -> /health. If that box turns out not to serve it, no change is
+#     needed: a 404 still means an HTTP server answered, and classify_probe()
+#     below reads that as up. Only a refused/timed-out connection, a 5xx or an
+#     auth rejection count as down.
+DEVICE_HEALTH_INTERVAL = 5.0     # seconds between rounds of probes
+DEVICE_HEALTH_TIMEOUT = 3.0      # per probe (connect + read)
+# Consecutive failures before a device is called down. Two rounds (~10s) is the
+# whole safety margin against a false positive: the shell blanks a device's
+# frame when it goes down, so a single dropped packet must not be enough to tear
+# down a panel somebody is using.
+DEVICE_HEALTH_FAIL_STREAK = 2
+DEVICES = {
+    "vlm":   {"label": "Vision language model", "url": f"{VLM_BASE_URL}/health"},
+    "topaz": {"label": "Edge device",           "url": f"{TOPAZ_BASE_URL}/system_metrics"},
+}
+
 # Host-side served directories / files (unchanged from host_no_chunking.py)
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 # Which SAR frontend to serve. To go back to the older no-upload index, comment the
@@ -140,6 +178,10 @@ SAR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "sar_process_combined.html
 SAR_FRONTEND_RSAT = os.path.join(CURR_DIR, "index", "hpc", "sar_process_combined.html")
 CCTV_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "cctv_process.html")
 MONITOR_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "system_monitor.html")         # live system-utilisation page
+# Post-run profiler plots (CPU / power / thermal / memory) of the latest SAR run,
+# read out of SAR_LOGS_DIR. Its own standalone page so the combined shell can host
+# it as one more collapsible row, exactly like the SAR and monitor pages.
+PERFORMANCE_FRONTEND = os.path.join(CURR_DIR, "index", "hpc", "performance_analysis.html")
 # Combined shell served at '/': two collapsible sections, each an <iframe> onto
 # one of the pages above (SAR_FRONTEND via /sar_app, MONITOR_FRONTEND via
 # /system_monitor). Replaces the old Grafana frontend that iframed them separately.
@@ -171,6 +213,7 @@ tif_file_properties = {}       # processed-image properties (served to the front
 current_run_cphd = None        # CPHD filename currently being / last processed
 sar_run_pid = None             # PID of the running SAR program (None when idle)
 sar_log_version = 0            # bumped whenever a new SAR log folder is collected
+sar_log_cleared = False        # True between a Reset and the next completed run
 bwValue = 0
 sar_proc_time = 0
 ai_card_power_cache = None
@@ -185,6 +228,17 @@ sar_error = None               # set to a user-facing message when a run fails (
 # and request handler threads (readers) touch it concurrently.
 latest_metrics = {}
 latest_metrics_lock = threading.Lock()
+
+# Per-device health verdict served by /device_health, refreshed by
+# device_health_loop. Seeded as "unknown" rather than "down" so a dashboard
+# opened in the first few seconds after a restart shows "Connecting..." instead
+# of accusing a perfectly healthy box of being offline.
+device_health = {
+    name: {"status": "unknown", "detail": "not probed yet", "label": cfg["label"],
+           "since": None, "checked": None}
+    for name, cfg in DEVICES.items()
+}
+device_health_lock = threading.Lock()
 
 
 # ----------------------------------------------------------------------------
@@ -201,6 +255,7 @@ async def lifespan(_app: FastAPI):
     threading.Thread(target=run_iperf3_server, daemon=True).start()
     threading.Thread(target=poll_ai_card_diagnostics, daemon=True).start()
     threading.Thread(target=metrics_loop, daemon=True).start()
+    threading.Thread(target=device_health_loop, daemon=True).start()
     yield
 
 
@@ -342,7 +397,7 @@ def notify_vlm_reset():
 def collect_sar_logs():
     """Merged send_sar_logs()+host sar-log receiver: optimize the latest SAR log folder's
     PNG plots to webp into the served SAR_LOGS_DIR and bump the version counter."""
-    global sar_log_version
+    global sar_log_version, sar_log_cleared
     if not os.path.exists(SAR_LOGS):
         print("SAR_LOGS directory not found, skipping log collection")
         return
@@ -372,6 +427,7 @@ def collect_sar_logs():
             except Exception as e:
                 print(f"Error copying SAR log csv {fname}: {e}")
     if produced:
+        sar_log_cleared = False   # this run's plots supersede whatever Reset hid
         sar_log_version += 1
         print(f"Collected SAR log folder '{latest}' into {dest_dir} (version {sar_log_version})")
 
@@ -683,6 +739,13 @@ def delete_all_files():
     per Reset click -- the natural hook to also tell the VLM box to drop its
     SAR image and end any SAR chat session."""
     global cphd_file_list, cphd_file_properties, tif_file_properties, current_run_cphd, progress_update, sar_error
+    global sar_log_cleared
+    # The profiler plots belong to the same result set as the output images this
+    # clears, so they go with them: the performance-analysis panel polls
+    # /sar_log/status and blanks itself as soon as this makes it report no run.
+    # Note the SAR page also calls resetMenu() at boot, so a dashboard load lands
+    # here too -- the panel is deliberately empty until a run completes.
+    sar_log_cleared = True
     cphd_file_list = []
     cphd_file_properties = {}
     tif_file_properties = {}
@@ -953,6 +1016,77 @@ def build_influx_point(system_info):
         "time": int(time.time() * 1e9),
     }
 
+# ----------------------------------------------------------------------------
+# Remote device health
+# ----------------------------------------------------------------------------
+def classify_probe(url):
+    """Probe one device over HTTP and say whether the dashboard can show it.
+
+    Returns (ok, detail); detail is the short phrase the shell prints under
+    "disconnected", so it is written for whoever is looking at the screen.
+
+    Down is deliberately narrow -- the states you cannot see past: the box does
+    not answer at all, it answers with a server error (nginx would turn that into
+    the 502 page the placeholder replaces), or it refuses us. Anything else,
+    including a 404, means an HTTP server is alive on the other end and the
+    panel is worth loading, so the exact health path never has to be right."""
+    try:
+        resp = requests.get(url, timeout=DEVICE_HEALTH_TIMEOUT, allow_redirects=False)
+    except requests.exceptions.Timeout:
+        return False, f"no response within {DEVICE_HEALTH_TIMEOUT:g}s"
+    except requests.exceptions.ConnectionError:
+        # Covers both failure modes that look different on the wire but identical
+        # on screen: the app is not listening (connection refused) and the box is
+        # off the network entirely (the connect attempt goes nowhere).
+        return False, "Unreachable - connection refused or host down"
+    except requests.exceptions.RequestException as e:
+        return False, f"probe failed: {type(e).__name__}"
+
+    code = resp.status_code
+    if code in (401, 403):
+        return False, f"permission denied (HTTP {code})"
+    if code >= 500:
+        return False, f"device returned HTTP {code}"
+    return True, f"HTTP {code}"
+
+
+def device_health_loop():
+    """Probe every device in DEVICES on a fixed interval and publish the verdict.
+
+    Failures have to repeat DEVICE_HEALTH_FAIL_STREAK times before a device flips
+    to down; a success flips it back immediately, because a box that just
+    answered is not a box worth waiting on. `since` records when the current
+    status was entered so the shell can say how long something has been out."""
+    streaks = {name: 0 for name in DEVICES}
+    while True:
+        for name, cfg in DEVICES.items():
+            ok, detail = classify_probe(cfg["url"])
+            if ok:
+                streaks[name] = 0
+                status = "up"
+            else:
+                streaks[name] += 1
+                # Hold the previous status until the streak is long enough. A
+                # device that has never reported stays "unknown", which the shell
+                # paints as "Connecting..." rather than as an outage.
+                if streaks[name] < DEVICE_HEALTH_FAIL_STREAK:
+                    with device_health_lock:
+                        device_health[name]["checked"] = time.time()
+                    continue
+                status = "down"
+
+            now = time.time()
+            with device_health_lock:
+                entry = device_health[name]
+                if entry["status"] != status:
+                    entry["since"] = now
+                    print(f"Device '{name}' is {status}: {detail}")
+                entry["status"] = status
+                entry["detail"] = detail
+                entry["checked"] = now
+        time.sleep(DEVICE_HEALTH_INTERVAL)
+
+
 def metrics_loop():
     """Collect metrics and write them straight to InfluxDB (no socket round-trip).
 
@@ -1025,6 +1159,14 @@ def monitor_frontend():
     same as the SAR page). It refreshes itself from /system_metrics."""
     return send_file(MONITOR_FRONTEND)
 
+@app.get('/performance_analysis')
+def performance_analysis_frontend():
+    """Serve the post-run performance-analysis page (the profiler plots of the
+    latest SAR run). Hosted as its own collapsible row in the combined dashboard
+    the same way the SAR and monitor pages are, and still reachable directly. It
+    drives itself from /sar_log/status and /sar_log/image/<type>."""
+    return send_file(PERFORMANCE_FRONTEND)
+
 @app.get('/system_metrics')
 def system_metrics():
     """Return the whole live snapshot the monitoring dashboard needs in one call.
@@ -1034,6 +1176,18 @@ def system_metrics():
     copy — there is no per-request psutil sampling or InfluxDB query."""
     with latest_metrics_lock:
         return JSONResponse(latest_metrics)
+
+@app.get('/device_health')
+def device_health_status():
+    """Whether each box behind an nginx prefix is answering, for the shell page.
+
+    Polled by the combined dashboard every few seconds. It is served from the
+    cache device_health_loop maintains, so it never blocks on a dead box no
+    matter how many dashboards are open."""
+    with device_health_lock:
+        devices = {name: dict(entry) for name, entry in device_health.items()}
+    return JSONResponse({"devices": devices})
+
 
 @app.get('/storage_info')
 def storage_info():
@@ -1187,18 +1341,32 @@ SAR_LOG_IMAGE_TYPES = {
     "memory_usage":         "memory_usage_",
 }
 
-@app.get('/sar_log/image/{image_type}')
-def serve_sar_log_image(image_type: str):
-    if image_type not in SAR_LOG_IMAGE_TYPES:
-        return PlainTextResponse("Unknown image type", status_code=400)
+def current_sar_log_folder():
+    """Name of the SAR log folder the dashboard should be showing, or None.
+
+    That is the newest collected folder -- collect_sar_logs() names each one
+    after the profiler run's start time (YYYYmmdd_HHMMSS), so a plain sort puts
+    the newest last -- except between a Reset and the next completed run, where
+    it is None. The folders themselves are never deleted; sar_log_cleared only
+    hides them from the API so the analysis panel blanks along with the SAR
+    output images that Reset wipes."""
+    if sar_log_cleared:
+        return None
     try:
         folders = sorted(d for d in os.listdir(SAR_LOGS_DIR)
                          if os.path.isdir(os.path.join(SAR_LOGS_DIR, d)))
     except FileNotFoundError:
+        return None
+    return folders[-1] if folders else None
+
+@app.get('/sar_log/image/{image_type}')
+def serve_sar_log_image(image_type: str):
+    if image_type not in SAR_LOG_IMAGE_TYPES:
+        return PlainTextResponse("Unknown image type", status_code=400)
+    folder = current_sar_log_folder()
+    if folder is None:
         return PlainTextResponse("No log data", status_code=404)
-    if not folders:
-        return PlainTextResponse("No log data", status_code=404)
-    folder_path = os.path.join(SAR_LOGS_DIR, folders[-1])
+    folder_path = os.path.join(SAR_LOGS_DIR, folder)
     prefix = SAR_LOG_IMAGE_TYPES[image_type]
     try:
         matches = [f for f in os.listdir(folder_path) if f.startswith(prefix) and f.endswith('.webp')]
@@ -1210,7 +1378,32 @@ def serve_sar_log_image(image_type: str):
 
 @app.get('/sar_log/status')
 def sar_log_status():
-    return JSONResponse({"version": sar_log_version})
+    """Describe the profiler plots currently on offer, in one call.
+
+    `version` counts the collections THIS process has made; the SAR page uses it
+    to spot the logs of a run it just started, and it stays first in the payload
+    because that page has always read it. `folder` and `images` are what let the
+    standalone performance-analysis panel drive itself: the folder timestamp
+    identifies the run and survives a restart (unlike version, which resets to
+    0), so the panel re-fetches exactly when it changes, and `images` says which
+    of SAR_LOG_IMAGE_TYPES that folder actually holds so the panel never asks for
+    a plot that is not there.
+
+    After a Reset both go empty (folder null, images []) until the next run is
+    collected, which is what makes the panel clear itself -- see
+    current_sar_log_folder(). `version` deliberately does NOT move on a Reset:
+    sar_process_image_panel.html polls it against a pre-run baseline to spot its
+    own run's logs, and a Reset-driven bump would fire that early."""
+    folder = current_sar_log_folder()
+    images = []
+    if folder is not None:
+        try:
+            names = os.listdir(os.path.join(SAR_LOGS_DIR, folder))
+        except OSError:
+            names = []
+        images = [t for t, prefix in SAR_LOG_IMAGE_TYPES.items()
+                  if any(n.startswith(prefix) and n.endswith('.webp') for n in names)]
+    return JSONResponse({"version": sar_log_version, "folder": folder, "images": images})
 
 @app.get('/sar_colored_image')
 def serve_sar_colored_image(filename: str = Query("")):
