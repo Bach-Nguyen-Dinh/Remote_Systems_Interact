@@ -107,7 +107,7 @@ SAR_PROG = os.path.join(SAR_DIR, "cphd_aic.py")
 SAR_LOGS = os.path.join(SAR_DIR, "logs")            # where the profiler writes log folders
 FAN_STATUS = "/home/sarthak/Remote_Systems_Interact/check_fan_status.sh"
 PROFILER_OPTION = ["--metrics_interval_ms", "500", "--csv_write_interval_s", "5",
-                   "--histograms", "--cores-per-row", "16", "--bin_width", "10", "--split_saturated",
+                   "--histograms", "--cores-per-row", "16", "--bin_width", "10",
                    "--"]
 
 # Network test peers (two-machine paths that are still meaningful on one box)
@@ -130,7 +130,7 @@ FM_INTERFACE_ID = "fm1-mac3"
 VLM_HOST = "192.168.0.11"
 VLM_PORT = 8001
 VLM_BASE_URL = f"http://{VLM_HOST}:{VLM_PORT}"
-VLM_UPLOAD_TIMEOUT = 30      # seconds -- generous for a large SAR tiff over Ethernet
+VLM_UPLOAD_TIMEOUT = 60      # seconds -- generous for a large SAR tiff over Ethernet
 VLM_RESET_TIMEOUT = 5
 
 # Topaz edge device -- the box behind nginx's /topaz/ prefix. Only the health
@@ -583,7 +583,12 @@ def compute_tif_properties(tif_path, filePath):
 def process_cphd_file(filePath, filename):
     def on_image_sent(p):
         compute_tif_properties(p, filePath)
-        push_tif_to_vlm(p)
+        # Fire-and-forget: push_tif_to_vlm blocks on VLM_UPLOAD_TIMEOUT (30s) on a
+        # slow/unreachable VLM box. Running it inline here would stall this poll
+        # loop's process.poll() checks for that long, delaying detection of the SAR
+        # program exiting and thus collect_sar_logs() -- with no benefit, since the
+        # push result isn't used for anything downstream.
+        threading.Thread(target=push_tif_to_vlm, args=(p,), daemon=True).start()
 
     tif_path = handle_image_sending(filename, on_image_sent=on_image_sent)
     if tif_path is None:
