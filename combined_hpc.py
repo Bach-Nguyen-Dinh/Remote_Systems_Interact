@@ -785,7 +785,7 @@ def delete_all_files():
 # ----------------------------------------------------------------------------
 def handle_command(message):
     """Execute a control command in-process. Returns the JSON response to send."""
-    global current_run_cphd, tif_file_properties, sar_error
+    global current_run_cphd, tif_file_properties, sar_error, sar_log_cleared
 
     if message == "3":
         delete_all_files()
@@ -808,6 +808,10 @@ def handle_command(message):
         current_run_cphd = filename
         tif_file_properties = {}
         sar_error = None                      # clear any prior failure before a new run
+        # Hide the previous run's profiler plots the moment a new run starts, the
+        # same way Reset does -- otherwise the performance-analysis panel would
+        # keep showing stale plots for the whole duration of the new SAR run.
+        sar_log_cleared = True
         filePath = cphd_files.get(filename)
         if filePath and os.path.exists(filePath):
             print("file exists, start processing")
@@ -1434,7 +1438,14 @@ def sar_log_status():
     collected, which is what makes the panel clear itself -- see
     current_sar_log_folder(). `version` deliberately does NOT move on a Reset:
     sar_process_image_panel.html polls it against a pre-run baseline to spot its
-    own run's logs, and a Reset-driven bump would fire that early."""
+    own run's logs, and a Reset-driven bump would fire that early.
+
+    `running` and `run_pending` let the standalone performance-analysis panel
+    show a status message for the gap before `folder` has anything to offer:
+    `running` is true for the whole subprocess lifetime (SAR is still crunching,
+    no CSV yet), and `run_pending` stays true from the RUN command through the
+    post-exit collect_sar_logs() call (output produced, plots not converted /
+    on disk yet). Both go false/None the same moment `folder` does, on Reset."""
     folder = current_sar_log_folder()
     images = []
     histogram_images = []
@@ -1452,7 +1463,9 @@ def sar_log_status():
         histogram_images = [t for t, base in HISTOGRAM_IMAGE_TYPES.items()
                             if f"{base}.webp" in hist_names]
     return JSONResponse({"version": sar_log_version, "folder": folder, "images": images,
-                         "histogram_images": histogram_images})
+                         "histogram_images": histogram_images,
+                         "running": sar_process is not None,
+                         "run_pending": current_run_cphd is not None})
 
 @app.get('/sar_colored_image')
 def serve_sar_colored_image(filename: str = Query("")):

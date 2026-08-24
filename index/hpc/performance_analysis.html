@@ -43,6 +43,7 @@
             --text:          rgba(204, 204, 220, 0.90);
             --text-weak:     rgba(204, 204, 220, 0.65);
             --text-faint:    rgba(204, 204, 220, 0.40);
+            --status:        #ff4c47;   /* matches sar_process_combined.html's status color */
         }
 
         * { box-sizing: border-box; }
@@ -73,6 +74,17 @@
         }
         .tb-label { color: var(--text-weak); }
         .tb-run   { color: var(--text-faint); white-space: nowrap; }
+
+        /* ---- run-status line: mirrors sar_process_combined.html's .status-container,
+           so the two panels read as one system while a run is in flight. ---- */
+        .status-container {
+            font-size: 13px;
+            min-height: 16px;
+            margin: 0 0 8px 0;
+            font-weight: bold;
+            color: var(--status);
+        }
+        .status-container p { margin: 0; }
 
         /* ---- tabs: Overview (the six standard plots) / Histograms ---- */
         .tabbar {
@@ -174,6 +186,8 @@
         <div class="tb-run" id="runLabel">No run recorded</div>
     </div>
 
+    <div class="status-container"><p id="paStatus">&nbsp;</p></div>
+
     <div class="tabbar" role="tablist">
         <button type="button" class="tab-btn active" id="tabBtnOverview" data-tab="overview">Overview</button>
         <button type="button" class="tab-btn" id="tabBtnHistograms" data-tab="histograms">Histograms</button>
@@ -220,10 +234,49 @@
             { type: "core_usage_stacked_mean", label: "Core usage — stacked, per core (mean)", wide: true }
         ];
 
-        var POLL_MS = 5000;
+        // Poll quickly while a run is in flight or its plots are still being
+        // fetched, so the status line and the tiles stay responsive; fall back
+        // to a relaxed cadence once there is nothing changing to catch.
+        var POLL_MS_FAST = 1200;
+        var POLL_MS_SLOW = 5000;
         var tiles = {};        // type -> { img, empty }
         var histTiles = {};    // type -> { img, empty }
         var currentKey = null; // signature of the run currently on screen
+
+        // Most recent /sar_log/status payload, used by the status line and by
+        // the poll scheduler to decide how eager to be.
+        var lastStatus = { running: false, folder: null, run_pending: false };
+        // Number of tiles whose <img src> was assigned by the current render()
+        // and hasn't fired load/error yet -- what backs the "Loading plots ..."
+        // phase between plots existing on disk and actually being on screen.
+        var loadPending = 0;
+
+        function setStatusText(text) {
+            var el = document.getElementById("paStatus");
+            if (el) el.textContent = text || " ";
+        }
+
+        // One place that turns (lastStatus, loadPending) into the message shown
+        // above the tabs. Called after every poll and after every tile
+        // load/error, so the line tracks the run through all four phases:
+        // running -> generating (CSV/plots not on disk yet) -> loading (on disk,
+        // still being fetched) -> done (blank).
+        function refreshStatusText() {
+            if (lastStatus.running) {
+                setStatusText("SAR run in progress — waiting for output ...");
+            } else if (!lastStatus.folder && lastStatus.run_pending) {
+                setStatusText("Run complete — generating performance plots ...");
+            } else if (lastStatus.folder && loadPending > 0) {
+                setStatusText("Loading plots ...");
+            } else {
+                setStatusText("");
+            }
+        }
+
+        function tileLoadSettled() {
+            if (loadPending > 0) loadPending--;
+            refreshStatusText();
+        }
 
         function buildTiles(grid, plots, frameClass) {
             var out = {};
@@ -253,6 +306,11 @@
                     img.style.display = "none";
                     empty.style.display = "flex";
                 };
+                // Separate listeners (not the onload/onerror properties above,
+                // which drive the tile's own show/hide) so the "Loading plots"
+                // status line can track fetch-in-flight count independently.
+                img.addEventListener("load", tileLoadSettled);
+                img.addEventListener("error", tileLoadSettled);
 
                 frame.appendChild(empty);
                 frame.appendChild(img);
@@ -316,6 +374,10 @@
             document.getElementById("runLabel").textContent =
                 folder ? formatRun(folder) : "No run recorded";
 
+            // Fresh count for this render: only the tiles assigned a src below
+            // count as "loading" -- a cleared tile never fires load/error.
+            loadPending = 0;
+
             PLOTS.forEach(function (p) {
                 var t = tiles[p.type];
                 if (!folder || available.indexOf(p.type) === -1) {
@@ -325,6 +387,7 @@
                 // Assign even if the URL is unchanged only when the key moved --
                 // render() is called solely on a key change, so this always is a
                 // genuinely new image.
+                loadPending++;
                 t.img.src = IMAGE_URL + p.type + "?run=" + encodeURIComponent(key);
             });
 
@@ -334,26 +397,51 @@
                     clearTile(t);
                     return;
                 }
+                loadPending++;
                 t.img.src = HIST_IMAGE_URL + p.type + "?run=" + encodeURIComponent(key);
             });
         }
 
+        var pollTimer = null;
+
         // /sar_log/status reports both the newest log folder and the number of
         // collections this backend process has made. The folder alone identifies
         // a run and survives a restart; version is kept in the signature so a
-        // re-collection into the same folder still counts as a change.
+        // re-collection into the same folder still counts as a change. It also
+        // reports `running`/`run_pending`, which is what lets this page clear
+        // itself and show a status line for a run that hasn't reached the log
+        // folder yet -- see refreshStatusText().
         function poll() {
             fetch(STATUS_URL, { cache: "no-store" })
                 .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
                 .then(function (status) {
+                    lastStatus = status;
                     var key = (status.folder || "none") + "|" + (status.version || 0);
-                    if (key === currentKey) return;
-                    currentKey = key;
-                    render(status, key);
+                    if (key !== currentKey) {
+                        currentKey = key;
+                        render(status, key);
+                    }
+                    refreshStatusText();
                 })
                 // A failed poll leaves the current plots alone: a restart or a
                 // proxy blip should not blank a perfectly good analysis.
-                .catch(function () {});
+                .catch(function () {})
+                .finally(scheduleNextPoll);
+        }
+
+        // Poll fast whenever there's something in flight worth catching promptly
+        // -- a run still running or crunching plots on the backend, or plots
+        // that exist but haven't finished loading into the tiles yet -- and back
+        // off to the relaxed cadence once the panel is settled.
+        function scheduleNextPoll() {
+            if (pollTimer) clearTimeout(pollTimer);
+            var busy = lastStatus.running ||
+                       (!lastStatus.folder && lastStatus.run_pending) ||
+                       loadPending > 0;
+            pollTimer = setTimeout(function () {
+                if (document.hidden) { scheduleNextPoll(); return; }
+                poll();
+            }, busy ? POLL_MS_FAST : POLL_MS_SLOW);
         }
 
         poll();
@@ -362,12 +450,6 @@
         // catch the old plots and would otherwise sit on them for a whole
         // interval before blanking. Two quick catch-up polls close that window.
         [1200, 3000].forEach(function (ms) { setTimeout(poll, ms); });
-        setInterval(function () {
-            // Nothing to keep up to date while the browser tab is in the
-            // background; visibilitychange below catches up on the way back.
-            if (document.hidden) return;
-            poll();
-        }, POLL_MS);
         document.addEventListener("visibilitychange", function () {
             if (!document.hidden) poll();
         });
