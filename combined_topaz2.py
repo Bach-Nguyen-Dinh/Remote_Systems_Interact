@@ -718,10 +718,13 @@ def send_message(payload: Optional[CommandMessage] = None):
     Three families of command need host-side bookkeeping before (or instead of)
     being forwarded:
 
-      * "run_<workload>[:<n cores>]" — drop the previous run's progress so the
-        page doesn't briefly show stale numbers, and for the AI-engine workloads
-        snapshot current usage as the baseline their "has it actually started?"
-        check measures against.
+      * "run_<workload>[:<n ai cores>[:<n cpu cores>]]" — drop the previous
+        run's progress so the page doesn't briefly show stale numbers, and for
+        the AI-engine workloads snapshot current usage as the baseline their
+        "has it actually started?" check measures against. The core counts are
+        the target's business; everything after the workload name is forwarded
+        untouched (the AI-ship and AI-smoke pages send both counts, the others
+        just the AI count).
       * "stop_<workload>" — append the PID the target reported for the run in
         flight, so it kills that run and not a newer one.
       * "clear_<workload>" — purely host-side; nothing to tell the target."""

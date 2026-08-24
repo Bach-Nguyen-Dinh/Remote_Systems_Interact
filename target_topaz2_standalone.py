@@ -54,6 +54,10 @@ SAVE_PATH_IPERF_UP_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_UpEthAdt.
 AI_METRIC_PATH = "/home/user/ai_tool/status"
 AI_PORT = 8888
 NUM_AI_CORE = 4
+# Upper bound for the AI-ship page's "number of running CPU core" picker. The
+# page offers 1..4; clamp to what this box actually has so a stale page can't
+# ask for more.
+NUM_CPU_CORE = min(4, os.cpu_count() or 1)
 
 # IMU Fusion daemon configuration
 IMU_EXECUTABLE_PATH = "/home/user/Remote_Systems_Interact/topaz_imu/main"
@@ -76,10 +80,12 @@ small_obj_stop_requested = False  # set by stop_small_object_detection()
 current_output_count = 0
 
 ai_core_run_ai_smoke = 4
+cpu_core_run_ai_smoke = NUM_CPU_CORE
 ai_smoke_running = False
 ai_smoke_process = None           # Popen of ai_server.py while a run is in flight
 ai_smoke_stop_requested = False   # set by stop_ai_smoke()
 ai_core_run_ai_ship = 4
+cpu_core_run_ai_ship = NUM_CPU_CORE
 ai_ship_running = False
 ai_ship_process = None            # Popen of ai_ship.py while a run is in flight
 ai_ship_stop_requested = False    # set by stop_ai_ship()
@@ -175,7 +181,7 @@ def stop_targets_running_process(message, process):
     return True
 
 def run_ai_smoke():
-    global ai_core_run_ai_smoke, ai_smoke_running
+    global ai_core_run_ai_smoke, cpu_core_run_ai_smoke, ai_smoke_running
     global ai_smoke_process, ai_smoke_stop_requested
 
     if ai_smoke_running:
@@ -185,13 +191,16 @@ def run_ai_smoke():
     ai_smoke_stop_requested = False
 
     try:
-        print(f"Running ai server with {ai_core_run_ai_smoke} cores")
+        print(f"Running ai server with {ai_core_run_ai_smoke} AI cores "
+              f"and {cpu_core_run_ai_smoke} CPU cores")
 
         # Run the AI smoke process in its own process group, so a Stop from the
         # dashboard can signal the whole group (the server plus its workers).
         process = subprocess.Popen([
             "python3",
             AI_SMOKE_PATH,
+            "--cpu",
+            str(cpu_core_run_ai_smoke),
             "--ai",
             str(ai_core_run_ai_smoke)
         ], start_new_session=True)
@@ -203,6 +212,7 @@ def run_ai_smoke():
             "type": "ai_smoke_start",
             "status": "started",
             "ai_cores": ai_core_run_ai_smoke,
+            "cpu_cores": cpu_core_run_ai_smoke,
             "pid": process.pid
         }
         send_progress_update(start_data)
@@ -217,6 +227,7 @@ def run_ai_smoke():
                 "type": "ai_smoke_stopped",
                 "status": "stopped",
                 "ai_cores": ai_core_run_ai_smoke,
+                "cpu_cores": cpu_core_run_ai_smoke,
                 "pid": process.pid
             }
             print("AI smoke process stopped on request")
@@ -225,6 +236,7 @@ def run_ai_smoke():
                 "type": "ai_smoke_complete",
                 "status": "completed",
                 "ai_cores": ai_core_run_ai_smoke,
+                "cpu_cores": cpu_core_run_ai_smoke,
                 "pid": process.pid
             }
             print("AI smoke process completed successfully")
@@ -234,6 +246,7 @@ def run_ai_smoke():
                 "status": "error",
                 "error": f"Process exited with code {return_code}",
                 "ai_cores": ai_core_run_ai_smoke,
+                "cpu_cores": cpu_core_run_ai_smoke,
                 "pid": process.pid
             }
             print(f"AI smoke process failed with return code {return_code}")
@@ -275,7 +288,7 @@ def stop_ai_smoke(message):
     terminate_process_group(process, "AI smoke")
 
 def run_ai_ship():
-    global ai_core_run_ai_ship, ai_ship_running
+    global ai_core_run_ai_ship, cpu_core_run_ai_ship, ai_ship_running
     global ai_ship_process, ai_ship_stop_requested
 
     if ai_ship_running:
@@ -285,12 +298,15 @@ def run_ai_ship():
     ai_ship_stop_requested = False
 
     try:
-        print(f"Running ai application with {ai_core_run_ai_ship} cores")
+        print(f"Running ai application with {ai_core_run_ai_ship} AI cores "
+              f"and {cpu_core_run_ai_ship} CPU cores")
 
         # Own process group so Stop can signal the whole group — see run_ai_smoke().
         process = subprocess.Popen([
             "python3",
             AI_SHIP_PATH,
+            "--cpu",
+            str(cpu_core_run_ai_ship),
             "--ai",
             str(ai_core_run_ai_ship)
         ], start_new_session=True)
@@ -302,6 +318,7 @@ def run_ai_ship():
             "type": "ai_ship_start",
             "status": "started",
             "ai_cores": ai_core_run_ai_ship,
+            "cpu_cores": cpu_core_run_ai_ship,
             "pid": process.pid
         }
         send_progress_update(start_data)
@@ -315,6 +332,7 @@ def run_ai_ship():
                 "type": "ai_ship_stopped",
                 "status": "stopped",
                 "ai_cores": ai_core_run_ai_ship,
+                "cpu_cores": cpu_core_run_ai_ship,
                 "pid": process.pid
             }
             print("AI ship application stopped on request")
@@ -323,6 +341,7 @@ def run_ai_ship():
                 "type": "ai_ship_complete",
                 "status": "completed",
                 "ai_cores": ai_core_run_ai_ship,
+                "cpu_cores": cpu_core_run_ai_ship,
                 "pid": process.pid
             }
             print("AI ship application completed successfully")
@@ -332,6 +351,7 @@ def run_ai_ship():
                 "status": "error",
                 "error": f"Process exited with code {return_code}",
                 "ai_cores": ai_core_run_ai_ship,
+                "cpu_cores": cpu_core_run_ai_ship,
                 "pid": process.pid
             }
             print(f"AI ship application failed with return code {return_code}")
@@ -676,7 +696,9 @@ def process_cphd_file(file_path):
         #     handle_image_sending(png_path)
 
 def listen_for_messages():
-    global progress_update, BW, ai_core_run_ai_smoke, ai_core_run_ai_ship
+    global progress_update, BW
+    global ai_core_run_ai_smoke, cpu_core_run_ai_smoke
+    global ai_core_run_ai_ship, cpu_core_run_ai_ship
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Allow reuse
@@ -739,12 +761,22 @@ def listen_for_messages():
                                          args=(message,), daemon=True).start()
 
                     elif message.startswith("run_ai_smoke"):
-                        if ":" in message:
-                            ai_core_run_ai_smoke = int(message.split(":")[1])
+                        # "run_ai_smoke:<ai cores>[:<cpu cores>]" — the CPU field
+                        # is optional so an older page that only sends the AI
+                        # count still runs, keeping the previous CPU selection.
+                        parts = message.split(":")
+                        if len(parts) > 1:
+                            ai_core_run_ai_smoke = int(parts[1])
                             if ai_core_run_ai_smoke > NUM_AI_CORE:
                                 ai_core_run_ai_smoke = NUM_AI_CORE
                             elif ai_core_run_ai_smoke <= 0:
                                 ai_core_run_ai_smoke = 1
+                        if len(parts) > 2:
+                            cpu_core_run_ai_smoke = int(parts[2])
+                            if cpu_core_run_ai_smoke > NUM_CPU_CORE:
+                                cpu_core_run_ai_smoke = NUM_CPU_CORE
+                            elif cpu_core_run_ai_smoke <= 0:
+                                cpu_core_run_ai_smoke = 1
                         threading.Thread(target=run_ai_smoke, daemon=True).start()
 
                     elif message.startswith("stop_ai_smoke"):
@@ -754,12 +786,22 @@ def listen_for_messages():
                                          args=(message,), daemon=True).start()
 
                     elif message.startswith("run_ai_ship"):
-                        if ":" in message:
-                            ai_core_run_ai_ship = int(message.split(":")[1])
+                        # "run_ai_ship:<ai cores>[:<cpu cores>]" — the CPU field
+                        # is optional so an older page that only sends the AI
+                        # count still runs, keeping the previous CPU selection.
+                        parts = message.split(":")
+                        if len(parts) > 1:
+                            ai_core_run_ai_ship = int(parts[1])
                             if ai_core_run_ai_ship > NUM_AI_CORE:
                                 ai_core_run_ai_ship = NUM_AI_CORE
                             elif ai_core_run_ai_ship <= 0:
                                 ai_core_run_ai_ship = 1
+                        if len(parts) > 2:
+                            cpu_core_run_ai_ship = int(parts[2])
+                            if cpu_core_run_ai_ship > NUM_CPU_CORE:
+                                cpu_core_run_ai_ship = NUM_CPU_CORE
+                            elif cpu_core_run_ai_ship <= 0:
+                                cpu_core_run_ai_ship = 1
                         threading.Thread(target=run_ai_ship, daemon=True).start()
 
                     elif message.startswith("stop_ai_ship"):

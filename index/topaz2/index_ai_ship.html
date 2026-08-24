@@ -240,6 +240,11 @@
                             onchange="select_num_ai_core_run_aiShip()">
                         </select>
                     </p>
+                    <p><strong>Select number of running CPU core:</strong>
+                        <select id="cpuCoreDropdown_aiShip" class="ai-ship-widget-select"
+                            onchange="select_num_cpu_core_run_aiShip()">
+                        </select>
+                    </p>
                     <div>
                         <button id="fetchBtn_aiShip" onclick="preload_ai_ship_images()">Fetch</button>
                         <!-- Run/Clear start disabled: there is nothing to run or clear until
@@ -294,6 +299,7 @@
         let isFetching_aiShip = false;
 
         let numAICoreRun = 4;
+        let numCPUCoreRun = 4;
         let imagePairs = [];
 
         function startProcessingTimer() {
@@ -346,9 +352,13 @@
             }
         }
 
-        // populate options for number of running AI core
-        function populate_options_num_ai_core_run() {
-            const dropdown = document.getElementById('aiCoreDropdown_aiShip');
+        // Both core pickers offer the same 1..4 range, so they share one
+        // populate step keyed by element id.
+        const CORE_DROPDOWN_IDS_aiShip = ['aiCoreDropdown_aiShip', 'cpuCoreDropdown_aiShip'];
+
+        // populate options for number of running AI / CPU core
+        function populate_options_num_core_run(dropdownId) {
+            const dropdown = document.getElementById(dropdownId);
 
             // Only populate if dropdown exists and is empty
             if (!dropdown) return;
@@ -370,13 +380,15 @@
         }
 
         function ensureDropdownPopulated() {
-            const dropdown = document.getElementById('aiCoreDropdown_aiShip');
-            if (dropdown && dropdown.options.length === 0) {
-                populate_options_num_ai_core_run();
+            for (const dropdownId of CORE_DROPDOWN_IDS_aiShip) {
+                const dropdown = document.getElementById(dropdownId);
+                if (dropdown && dropdown.options.length === 0) {
+                    populate_options_num_core_run(dropdownId);
+                }
             }
         }
 
-        populate_options_num_ai_core_run();
+        ensureDropdownPopulated();
 
         // Set up MutationObserver to watch for dropdown
         const observer = new MutationObserver(() => {
@@ -396,6 +408,12 @@
             const dropdown = document.getElementById('aiCoreDropdown_aiShip');
             numAICoreRun = parseInt(dropdown.value);
             console.log('AI Ship - Number of AI cores selected:', numAICoreRun);
+        };
+
+        window.select_num_cpu_core_run_aiShip = function() {
+            const dropdown = document.getElementById('cpuCoreDropdown_aiShip');
+            numCPUCoreRun = parseInt(dropdown.value);
+            console.log('AI Ship - Number of CPU cores selected:', numCPUCoreRun);
         };
 
         // function select_num_ai_core_run() {
@@ -960,7 +978,7 @@
                     headers: {
                         "Content-Type": "application/json"
                     },
-                    body: JSON.stringify({ message: `run_ai_ship:${numAICoreRun}` })
+                    body: JSON.stringify({ message: `run_ai_ship:${numAICoreRun}:${numCPUCoreRun}` })
                 })
                 .then(response => response.json())
                 .then(data => {
