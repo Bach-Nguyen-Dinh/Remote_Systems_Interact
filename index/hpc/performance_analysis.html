@@ -106,9 +106,9 @@
         @media (max-width: 900px) {
             .plot-grid { grid-template-columns: minmax(0, 1fr); }
         }
-        /* Histograms tab: a single column, one plot per row. */
-        .plot-grid--single {
-            grid-template-columns: minmax(0, 1fr);
+        /* Histograms tab: a plot marked `wide` spans the full row width. */
+        .plot--span {
+            grid-column: 1 / -1;
         }
 
         .plot {
@@ -183,7 +183,7 @@
         <div class="plot-grid" id="plotGrid"></div>
     </div>
     <div class="tab-panel" id="tabHistograms">
-        <div class="plot-grid plot-grid--single" id="histGrid"></div>
+        <div class="plot-grid" id="histGrid"></div>
     </div>
 
     <script>
@@ -210,12 +210,14 @@
             { type: "memory_usage",        label: "Memory usage"        }
         ];
 
-        // Histograms tab: one column, `type` is the key combined_hpc.py's
+        // Histograms tab: two rows -- P vs E cores and Pooled core usage share
+        // the first row, the stacked per-core chart spans the full second row
+        // (it's `wide`). `type` is the key combined_hpc.py's
         // HISTOGRAM_IMAGE_TYPES maps to the plot's filename.
         var HIST_PLOTS = [
             { type: "core_usage_p_and_e_mean", label: "Core usage — P vs E cores (mean)" },
-            { type: "core_usage_stacked_mean", label: "Core usage — stacked, per core (mean)" },
-            { type: "pooled_core_usage",       label: "Pooled core usage"                    }
+            { type: "pooled_core_usage",       label: "Pooled core usage"                    },
+            { type: "core_usage_stacked_mean", label: "Core usage — stacked, per core (mean)", wide: true }
         ];
 
         var POLL_MS = 5000;
@@ -227,7 +229,7 @@
             var out = {};
             plots.forEach(function (p) {
                 var cell = document.createElement("div");
-                cell.className = "plot";
+                cell.className = p.wide ? "plot plot--span" : "plot";
 
                 var title = document.createElement("div");
                 title.className = "plot-title";
