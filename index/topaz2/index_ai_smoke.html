@@ -354,9 +354,10 @@
             }
         }
 
-        // Both core pickers offer the same 1..4 range, so they share one
-        // populate step keyed by element id.
+        // Both core pickers share one populate step keyed by element id.
+        // AI cores offer 1..4; the CPU picker starts at 2.
         const CORE_DROPDOWN_IDS_aiSmoke = ['aiCoreDropdown_aiSmoke', 'cpuCoreDropdown_aiSmoke'];
+        const CORE_DROPDOWN_MIN_aiSmoke = { 'cpuCoreDropdown_aiSmoke': 2 };
 
         // populate options for number of running AI / CPU core
         function populate_options_num_core_run(dropdownId) {
@@ -366,8 +367,9 @@
             if (!dropdown) return;
             if (dropdown.options.length > 0) return; // Already populated
 
-            // Generate options 1 through 4
-            for (let i = 1; i <= 4; i++) {
+            // Generate options from this dropdown's minimum through 4
+            const minCore = CORE_DROPDOWN_MIN_aiSmoke[dropdownId] || 1;
+            for (let i = minCore; i <= 4; i++) {
                 const option = document.createElement('option');
                 option.value = i;
                 option.textContent = i;
