@@ -106,7 +106,9 @@ SAR_DIR = "/home/sarthak/workspace/SAR_codebase"
 SAR_PROG = os.path.join(SAR_DIR, "cphd_aic.py")
 SAR_LOGS = os.path.join(SAR_DIR, "logs")            # where the profiler writes log folders
 FAN_STATUS = "/home/sarthak/Remote_Systems_Interact/check_fan_status.sh"
-PROFILER_OPTION = ["--metrics_interval_ms", "500", "--csv_write_interval_s", "5", "--"]
+PROFILER_OPTION = ["--metrics_interval_ms", "500", "--csv_write_interval_s", "5",
+                   "--histograms", "--cores-per-row", "16", "--bin_width", "10", "--split_saturated",
+                   "--"]
 
 # Network test peers (two-machine paths that are still meaningful on one box)
 RDB_IP = "10.42.1.7"
@@ -426,6 +428,24 @@ def collect_sar_logs():
                 produced = True
             except Exception as e:
                 print(f"Error copying SAR log csv {fname}: {e}")
+    # Histogram plots (--histograms) land in their own subfolder of the run dir,
+    # under fixed filenames rather than a timestamp suffix, so they get their own
+    # (smaller) type map and endpoint below instead of reusing SAR_LOG_IMAGE_TYPES'
+    # prefix matching. They are much higher-resolution source PNGs (the stacked
+    # chart especially, one axis per row of cores) than the six standard plots, so
+    # they get a larger max_size to stay legible.
+    hist_src_dir = os.path.join(latest_path, "histogram")
+    if os.path.isdir(hist_src_dir):
+        hist_dest_dir = os.path.join(dest_dir, "histogram")
+        os.makedirs(hist_dest_dir, exist_ok=True)
+        for fname in sorted(os.listdir(hist_src_dir)):
+            src_path = os.path.join(hist_src_dir, fname)
+            if not os.path.isfile(src_path) or not fname.lower().endswith('.png'):
+                continue
+            webp_name = os.path.splitext(fname)[0] + '.webp'
+            optimize_tif(src_path, os.path.join(hist_dest_dir, webp_name),
+                         format='webp', max_size=(1600, 1600), quality=85)
+            produced = True
     if produced:
         sar_log_cleared = False   # this run's plots supersede whatever Reset hid
         sar_log_version += 1
@@ -1341,6 +1361,16 @@ SAR_LOG_IMAGE_TYPES = {
     "memory_usage":         "memory_usage_",
 }
 
+# Histogram plots (histogram/ subfolder of the run dir, written by --histograms).
+# Unlike SAR_LOG_IMAGE_TYPES these filenames carry no run timestamp, so the map
+# holds the exact basename rather than a prefix. Only a subset of what
+# --histograms can produce is exposed here for now.
+HISTOGRAM_IMAGE_TYPES = {
+    "core_usage_p_and_e_mean": "core_usage_histogram_p_and_e_mean",
+    "core_usage_stacked_mean": "core_usage_histogram_stacked_mean",
+    "pooled_core_usage":       "pooled_core_usage_histogram",
+}
+
 def current_sar_log_folder():
     """Name of the SAR log folder the dashboard should be showing, or None.
 
@@ -1376,6 +1406,17 @@ def serve_sar_log_image(image_type: str):
         return PlainTextResponse("Image not found", status_code=404)
     return send_from_directory(folder_path, matches[0])
 
+@app.get('/sar_log/histogram_image/{image_type}')
+def serve_sar_log_histogram_image(image_type: str):
+    if image_type not in HISTOGRAM_IMAGE_TYPES:
+        return PlainTextResponse("Unknown image type", status_code=400)
+    folder = current_sar_log_folder()
+    if folder is None:
+        return PlainTextResponse("No log data", status_code=404)
+    hist_dir = os.path.join(SAR_LOGS_DIR, folder, "histogram")
+    webp_name = HISTOGRAM_IMAGE_TYPES[image_type] + ".webp"
+    return send_from_directory(hist_dir, webp_name)
+
 @app.get('/sar_log/status')
 def sar_log_status():
     """Describe the profiler plots currently on offer, in one call.
@@ -1396,6 +1437,7 @@ def sar_log_status():
     own run's logs, and a Reset-driven bump would fire that early."""
     folder = current_sar_log_folder()
     images = []
+    histogram_images = []
     if folder is not None:
         try:
             names = os.listdir(os.path.join(SAR_LOGS_DIR, folder))
@@ -1403,7 +1445,14 @@ def sar_log_status():
             names = []
         images = [t for t, prefix in SAR_LOG_IMAGE_TYPES.items()
                   if any(n.startswith(prefix) and n.endswith('.webp') for n in names)]
-    return JSONResponse({"version": sar_log_version, "folder": folder, "images": images})
+        try:
+            hist_names = os.listdir(os.path.join(SAR_LOGS_DIR, folder, "histogram"))
+        except OSError:
+            hist_names = []
+        histogram_images = [t for t, base in HISTOGRAM_IMAGE_TYPES.items()
+                            if f"{base}.webp" in hist_names]
+    return JSONResponse({"version": sar_log_version, "folder": folder, "images": images,
+                         "histogram_images": histogram_images})
 
 @app.get('/sar_colored_image')
 def serve_sar_colored_image(filename: str = Query("")):

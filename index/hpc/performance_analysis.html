@@ -74,6 +74,29 @@
         .tb-label { color: var(--text-weak); }
         .tb-run   { color: var(--text-faint); white-space: nowrap; }
 
+        /* ---- tabs: Overview (the six standard plots) / Histograms ---- */
+        .tabbar {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 10px;
+            border-bottom: 1px solid var(--border);
+        }
+        .tab-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-weak);
+            font: inherit;
+            font-size: 12px;
+            padding: 6px 12px;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+        }
+        .tab-btn:hover { color: var(--text); }
+        .tab-btn.active { color: var(--text); border-bottom-color: var(--text); }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+
         /* ---- plot grid ---- */
         .plot-grid {
             display: grid;
@@ -82,6 +105,10 @@
         }
         @media (max-width: 900px) {
             .plot-grid { grid-template-columns: minmax(0, 1fr); }
+        }
+        /* Histograms tab: a single column, one plot per row. */
+        .plot-grid--single {
+            grid-template-columns: minmax(0, 1fr);
         }
 
         .plot {
@@ -106,6 +133,12 @@
             position: relative;
             width: 100%;
             aspect-ratio: 800 / 455;
+        }
+        /* Histogram source charts run wider/shorter than the standard plots
+           (up to 5249x2934 for the stacked chart at --cores-per-row 16); object-fit
+           contain handles the exact ratio, this just picks a sane tile shape. */
+        .plot-frame--wide {
+            aspect-ratio: 2 / 1;
         }
         .plot-frame img {
             position: absolute;
@@ -141,7 +174,17 @@
         <div class="tb-run" id="runLabel">No run recorded</div>
     </div>
 
-    <div class="plot-grid" id="plotGrid"></div>
+    <div class="tabbar" role="tablist">
+        <button type="button" class="tab-btn active" id="tabBtnOverview" data-tab="overview">Overview</button>
+        <button type="button" class="tab-btn" id="tabBtnHistograms" data-tab="histograms">Histograms</button>
+    </div>
+
+    <div class="tab-panel active" id="tabOverview">
+        <div class="plot-grid" id="plotGrid"></div>
+    </div>
+    <div class="tab-panel" id="tabHistograms">
+        <div class="plot-grid plot-grid--single" id="histGrid"></div>
+    </div>
 
     <script>
     (function () {
@@ -154,6 +197,7 @@
         // document on :3000 -- that no longer happens.)
         var STATUS_URL = "/sar_log/status";
         var IMAGE_URL  = "/sar_log/image/";
+        var HIST_IMAGE_URL = "/sar_log/histogram_image/";
 
         // Rendered in this order, two per row. `type` is the key
         // combined_hpc.py's SAR_LOG_IMAGE_TYPES maps to the plot's filename.
@@ -166,14 +210,22 @@
             { type: "memory_usage",        label: "Memory usage"        }
         ];
 
+        // Histograms tab: one column, `type` is the key combined_hpc.py's
+        // HISTOGRAM_IMAGE_TYPES maps to the plot's filename.
+        var HIST_PLOTS = [
+            { type: "core_usage_p_and_e_mean", label: "Core usage — P vs E cores (mean)" },
+            { type: "core_usage_stacked_mean", label: "Core usage — stacked, per core (mean)" },
+            { type: "pooled_core_usage",       label: "Pooled core usage"                    }
+        ];
+
         var POLL_MS = 5000;
         var tiles = {};        // type -> { img, empty }
+        var histTiles = {};    // type -> { img, empty }
         var currentKey = null; // signature of the run currently on screen
 
-        // ---- build the tiles once; only their images change afterwards ----
-        (function build() {
-            var grid = document.getElementById("plotGrid");
-            PLOTS.forEach(function (p) {
+        function buildTiles(grid, plots, frameClass) {
+            var out = {};
+            plots.forEach(function (p) {
                 var cell = document.createElement("div");
                 cell.className = "plot";
 
@@ -182,7 +234,7 @@
                 title.textContent = p.label;
 
                 var frame = document.createElement("div");
-                frame.className = "plot-frame";
+                frame.className = frameClass ? "plot-frame " + frameClass : "plot-frame";
 
                 var empty = document.createElement("div");
                 empty.className = "no-data";
@@ -206,7 +258,32 @@
                 cell.appendChild(frame);
                 grid.appendChild(cell);
 
-                tiles[p.type] = { img: img, empty: empty };
+                out[p.type] = { img: img, empty: empty };
+            });
+            return out;
+        }
+
+        // ---- build the tiles once; only their images change afterwards ----
+        (function build() {
+            tiles = buildTiles(document.getElementById("plotGrid"), PLOTS);
+            histTiles = buildTiles(document.getElementById("histGrid"), HIST_PLOTS, "plot-frame--wide");
+        })();
+
+        // ---- tab switching ----
+        (function initTabs() {
+            var buttons = document.querySelectorAll(".tab-btn");
+            var panels = {
+                overview:   document.getElementById("tabOverview"),
+                histograms: document.getElementById("tabHistograms")
+            };
+            buttons.forEach(function (btn) {
+                btn.addEventListener("click", function () {
+                    buttons.forEach(function (b) { b.classList.remove("active"); });
+                    btn.classList.add("active");
+                    Object.keys(panels).forEach(function (key) {
+                        panels[key].classList.toggle("active", key === btn.dataset.tab);
+                    });
+                });
             });
         })();
 
@@ -231,6 +308,7 @@
         // changes the signature and therefore the URL.
         function render(status, key) {
             var available = status.images || [];
+            var availableHist = status.histogram_images || [];
             var folder = status.folder;
 
             document.getElementById("runLabel").textContent =
@@ -246,6 +324,15 @@
                 // render() is called solely on a key change, so this always is a
                 // genuinely new image.
                 t.img.src = IMAGE_URL + p.type + "?run=" + encodeURIComponent(key);
+            });
+
+            HIST_PLOTS.forEach(function (p) {
+                var t = histTiles[p.type];
+                if (!folder || availableHist.indexOf(p.type) === -1) {
+                    clearTile(t);
+                    return;
+                }
+                t.img.src = HIST_IMAGE_URL + p.type + "?run=" + encodeURIComponent(key);
             });
         }
 
