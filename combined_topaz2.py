@@ -272,14 +272,37 @@ class CommandMessage(BaseModel):
 # ----------------------------------------------------------------------------
 # Static-file helpers (stand-ins for Flask's send_file / send_from_directory)
 # ----------------------------------------------------------------------------
-def send_file(path, media_type=None):
+def send_file(path, media_type=None, headers=None):
     """Serve one known file, 404 if it has gone missing.
 
     Flask's send_file raised NotFound for a missing path; FileResponse would only
     fail when the body is already being written, so the check is explicit here."""
     if not os.path.isfile(path):
         return PlainTextResponse("File not found", status_code=404)
-    return FileResponse(path, media_type=media_type)
+    return FileResponse(path, media_type=media_type, headers=headers)
+
+
+def send_page(path):
+    """Serve one of the dashboard's HTML pages, always freshly revalidated.
+
+    FileResponse sends `etag` and `last-modified` but no `Cache-Control`. With no
+    explicit directive a browser is free to invent its own freshness lifetime
+    from the file's age, and they disagree wildly about how: Chrome re-asks
+    almost immediately, Firefox can sit on a page for a long time. The symptom is
+    an edit that "only shows up in one browser" — the server is serving the new
+    file the whole time, the browser simply never requests it.
+
+    `no-cache` does not mean "do not store": it means "revalidate before use", so
+    the browser asks every time instead of guessing. Note that FileResponse does
+    not implement conditional requests (StaticFiles does), so that revalidation
+    is answered with a full 200, not a bodyless 304 — a few tens of KB per page
+    per dashboard load. These pages are small and edited constantly, and a
+    dashboard silently showing last week's markup is the more expensive failure.
+
+    Images keep the default: they are effectively immutable per filename, and the
+    EDAC stage frames carry their own cache-busting ?v=."""
+    return send_file(path, media_type="text/html",
+                     headers={"Cache-Control": "no-cache"})
 
 
 def send_from_directory(directory, filename, media_type=None):
@@ -663,44 +686,44 @@ def forward_message_to_target(message):
 def combined_frontend():
     """Thin shell: two collapsible sections, each an <iframe> onto a standalone
     page below (Orientation + System monitoring), same-origin so both auto-size."""
-    return send_file(COMBINED_FRONTEND)
+    return send_page(COMBINED_FRONTEND)
 
 
 @app.get('/orientation')
 def orientation_frontend():
     """IMU orientation page (gyroscope, accelerometer, integrated angles)."""
-    return send_file(ORIENTATION_FRONTEND)
+    return send_page(ORIENTATION_FRONTEND)
 
 
 @app.get('/monitor')
 @app.get('/system_monitor')
 def monitor_frontend():
     """Live system-utilisation page (CPU / AI cores / memory / disk / network)."""
-    return send_file(MONITOR_FRONTEND)
+    return send_page(MONITOR_FRONTEND)
 
 
 @app.get('/small_obj_app')
 def small_obj_frontend():
     """Small object detection page (Vision model tab)."""
-    return send_file(SMALL_OBJ_FRONTEND)
+    return send_page(SMALL_OBJ_FRONTEND)
 
 
 @app.get('/auto_nav_app')
 def auto_nav_frontend():
     """Autonomous navigation page (Vision model tab)."""
-    return send_file(AUTO_NAV_FRONTEND)
+    return send_page(AUTO_NAV_FRONTEND)
 
 
 @app.get('/ai_ship_app')
 def ai_ship_frontend():
     """AI ship detection page (Vision model tab)."""
-    return send_file(AI_SHIP_FRONTEND)
+    return send_page(AI_SHIP_FRONTEND)
 
 
 @app.get('/ai_smoke_app')
 def ai_smoke_frontend():
     """AI smoke detection page (Vision model tab)."""
-    return send_file(AI_SMOKE_FRONTEND)
+    return send_page(AI_SMOKE_FRONTEND)
 
 
 @app.get('/system_metrics')
