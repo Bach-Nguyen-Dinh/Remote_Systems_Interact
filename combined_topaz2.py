@@ -14,6 +14,7 @@ sends is:
 The app then serves the dashboard directly at '/':
 
   * '/'                     -> index/topaz2/combined_dashboard.html  (thin shell)
+  * '/test'                -> index/topaz2/combined_dashboard_testing.html (WIP shell)
   * '/orientation'         -> index/topaz2/orientation.html         (IMU: gyro/accel/angles)
   * '/system_monitor'      -> index/topaz2/system_monitor.html      (CPU/AI/mem/net panels)
   * '/system_metrics'      -> JSON snapshot the two pages poll for live values
@@ -142,6 +143,7 @@ FM_INTERFACE_ID = "fm1-mac3"
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 INDEX_DIR = os.path.join(CURR_DIR, "index", "topaz2")
 COMBINED_FRONTEND = os.path.join(INDEX_DIR, "combined_dashboard.html")
+COMBINED_TESTING_FRONTEND = os.path.join(INDEX_DIR, "combined_dashboard_testing.html")
 ORIENTATION_FRONTEND = os.path.join(INDEX_DIR, "orientation.html")
 MONITOR_FRONTEND = os.path.join(INDEX_DIR, "system_monitor.html")
 
@@ -867,6 +869,14 @@ def combined_frontend():
     """Thin shell: two collapsible sections, each an <iframe> onto a standalone
     page below (Orientation + System monitoring), same-origin so both auto-size."""
     return send_page(COMBINED_FRONTEND)
+
+
+@app.get('/test')
+def combined_frontend_testing():
+    """Work-in-progress copy of the shell, served alongside the live one so
+    layout changes can be tried without disturbing '/'. Its iframes use relative
+    srcs, which resolve against '/' here, so it shares the same sub-pages."""
+    return send_page(COMBINED_TESTING_FRONTEND)
 
 
 @app.get('/orientation')
