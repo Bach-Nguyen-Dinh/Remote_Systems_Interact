@@ -240,6 +240,11 @@
                             onchange="select_num_ai_core_run_aiSmoke()">
                         </select>
                     </p>
+                    <p><strong>Select number of running CPU core:</strong>
+                        <select id="cpuCoreDropdown_aiSmoke" class="ai-smoke-widget-select"
+                            onchange="select_num_cpu_core_run_aiSmoke()">
+                        </select>
+                    </p>
                     <div>
                         <button id="fetchBtn_aiSmoke" onclick="preload_ai_smoke_images()">Fetch</button>
                         <!-- Run/Clear start disabled: there is nothing to run or clear until
@@ -263,6 +268,7 @@
         let ai_smoke_InputImageCache = {};
         let ai_smoke_OutputImageCache = {};
         let numAICoreRun = 4;
+        let numCPUCoreRun = 4;
         let displayInterval = null;
         let imagePairs = [];
 
@@ -348,16 +354,22 @@
             }
         }
 
-        // populate options for number of running AI core
-        function populate_options_num_ai_core_run() {
-            const dropdown = document.getElementById('aiCoreDropdown_aiSmoke');
+        // Both core pickers share one populate step keyed by element id.
+        // AI cores offer 1..4; the CPU picker starts at 2.
+        const CORE_DROPDOWN_IDS_aiSmoke = ['aiCoreDropdown_aiSmoke', 'cpuCoreDropdown_aiSmoke'];
+        const CORE_DROPDOWN_MIN_aiSmoke = { 'cpuCoreDropdown_aiSmoke': 2 };
+
+        // populate options for number of running AI / CPU core
+        function populate_options_num_core_run(dropdownId) {
+            const dropdown = document.getElementById(dropdownId);
 
             // Only populate if dropdown exists and is empty
             if (!dropdown) return;
             if (dropdown.options.length > 0) return; // Already populated
 
-            // Generate options 1 through 4
-            for (let i = 1; i <= 4; i++) {
+            // Generate options from this dropdown's minimum through 4
+            const minCore = CORE_DROPDOWN_MIN_aiSmoke[dropdownId] || 1;
+            for (let i = minCore; i <= 4; i++) {
                 const option = document.createElement('option');
                 option.value = i;
                 option.textContent = i;
@@ -372,13 +384,15 @@
         }
 
         function ensureDropdownPopulated() {
-            const dropdown = document.getElementById('aiCoreDropdown_aiSmoke');
-            if (dropdown && dropdown.options.length === 0) {
-                populate_options_num_ai_core_run();
+            for (const dropdownId of CORE_DROPDOWN_IDS_aiSmoke) {
+                const dropdown = document.getElementById(dropdownId);
+                if (dropdown && dropdown.options.length === 0) {
+                    populate_options_num_core_run(dropdownId);
+                }
             }
         }
 
-        populate_options_num_ai_core_run();
+        ensureDropdownPopulated();
 
         // Set up MutationObserver to watch for dropdown
         const observer = new MutationObserver(() => {
@@ -398,6 +412,12 @@
             const dropdown = document.getElementById('aiCoreDropdown_aiSmoke');
             numAICoreRun = parseInt(dropdown.value);
             console.log('AI Smoke - Number of AI cores selected:', numAICoreRun);
+        };
+
+        window.select_num_cpu_core_run_aiSmoke = function() {
+            const dropdown = document.getElementById('cpuCoreDropdown_aiSmoke');
+            numCPUCoreRun = parseInt(dropdown.value);
+            console.log('AI Smoke - Number of CPU cores selected:', numCPUCoreRun);
         };
 
         // function select_num_ai_core_run() {
@@ -1071,7 +1091,7 @@
                     headers: {
                         "Content-Type": "application/json"
                     },
-                    body: JSON.stringify({ message: `run_ai_smoke:${numAICoreRun}` })
+                    body: JSON.stringify({ message: `run_ai_smoke:${numAICoreRun}:${numCPUCoreRun}` })
                 })
                 .then(response => response.json())
                 .then(data => {

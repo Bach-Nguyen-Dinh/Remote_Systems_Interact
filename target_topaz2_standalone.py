@@ -1,4 +1,5 @@
 from PIL import Image
+import argparse
 import socket
 import subprocess
 import threading
@@ -19,7 +20,9 @@ INPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Image"
 OUTPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Predictions"
 
 AI_SMOKE_PATH = "/home/user/ai_smoke/ai_server.py"
+AI_SMOKE_PATH_TASKSET = "/home/user/ai_smoke/ai_server_taskset.py"
 AI_SHIP_PATH = "/home/user/modified_ai_ship/ship/ai_ship.py"
+AI_SHIP_PATH_TASKSET = "/home/user/modified_ai_ship/ship/ai_ship_taskset.py"
 
 # IMAGE_PATH_2 = "/home/root/Desktop/Bach/backprojection_result_small.png"  
 # IMAGE_PATH_1 = "/home/root/Desktop/Bach/backprojection_histogram.png"
@@ -54,6 +57,10 @@ SAVE_PATH_IPERF_UP_ETH_ADT = os.path.join(CURR_DIR, "iperf3_end_result_UpEthAdt.
 AI_METRIC_PATH = "/home/user/ai_tool/status"
 AI_PORT = 8888
 NUM_AI_CORE = 4
+# Upper bound for the AI-ship page's "number of running CPU core" picker. The
+# page offers 1..4; clamp to what this box actually has so a stale page can't
+# ask for more.
+NUM_CPU_CORE = min(4, os.cpu_count() or 1)
 
 # IMU Fusion daemon configuration
 IMU_EXECUTABLE_PATH = "/home/user/Remote_Systems_Interact/topaz_imu/main"
@@ -76,10 +83,21 @@ small_obj_stop_requested = False  # set by stop_small_object_detection()
 current_output_count = 0
 
 ai_core_run_ai_smoke = 4
+cpu_core_run_ai_smoke = NUM_CPU_CORE
 ai_smoke_running = False
 ai_smoke_process = None           # Popen of ai_server.py while a run is in flight
 ai_smoke_stop_requested = False   # set by stop_ai_smoke()
 ai_core_run_ai_ship = 4
+cpu_core_run_ai_ship = NUM_CPU_CORE
+# --taskset on this program's command line, applying to both AI workloads. Off:
+# the workload script is told how many CPU cores to use and restricts itself
+# (`--cpu <n>`). On: the restriction is imposed from outside by taskset(1)
+# pinning the process to cores 0..n-1, and the *_taskset.py script is run with
+# `--taskset` so it leaves its own cores alone. Fixed for the life of the process
+# — the dashboard chooses the core COUNT, this chooses how it is applied. See
+# build_ai_ship_command() and build_ai_smoke_command(), which differ in the
+# single-core case.
+taskset_mode = False
 ai_ship_running = False
 ai_ship_process = None            # Popen of ai_ship.py while a run is in flight
 ai_ship_stop_requested = False    # set by stop_ai_ship()
@@ -174,8 +192,74 @@ def stop_targets_running_process(message, process):
         return int(parts[1]) == process.pid
     return True
 
+# Cores that can be taken offline on the Topaz. cpu0 runs the kernel and cannot
+# be, so a single-core run is "everything but cpu0 off" rather than "only cpu0 on".
+OFFLINEABLE_CPU_CORES = (1, 2, 3)
+
+
+def restore_all_cpu_cores():
+    """Bring cores 1-3 back online after a run that took them offline.
+
+    A single-core AI-smoke run gets its one core by writing 0 to
+    /sys/devices/system/cpu/cpuN/online, not by masking affinity, and nothing
+    puts them back on its own. Called from run_ai_smoke()'s finally block rather
+    than after a clean exit, because a Stop or a crash leaves the cores off just
+    as surely as a normal finish -- and a Topaz stuck on one core until reboot is
+    a much worse failure than the run that caused it."""
+    for core in OFFLINEABLE_CPU_CORES:
+        os.system(f"echo 1 | sudo tee /sys/devices/system/cpu/cpu{core}/online > /dev/null 2>&1")
+    print(f"CPU cores {OFFLINEABLE_CPU_CORES} brought back online")
+
+
+def build_ai_smoke_command():
+    """(argv, offlines_cores) for one AI-smoke run, in whichever CPU-restriction
+    mode this program was started in.
+
+    Default:   python3 ai_server.py --cpu <n> --ai <m>
+    --taskset, n > 1:
+               taskset -c 0,..,<n-1> python3 ai_server_taskset.py --taskset --ai <m>
+    --taskset, n == 1:
+               python3 ai_server_taskset.py --cpu 1 --ai <m>
+
+    The single-core case is deliberately NOT a taskset invocation. Pinning to one
+    core leaves the other three online and idling, which is not the same
+    measurement as running on a machine that has one core; ai_server_taskset.py
+    --cpu 1 hot-unplugs the rest to get that. The second element of the return
+    says so, because the caller then owes the box a restore_all_cpu_cores()."""
+    if not taskset_mode:
+        return [
+            "python3",
+            AI_SMOKE_PATH,
+            "--cpu",
+            str(cpu_core_run_ai_smoke),
+            "--ai",
+            str(ai_core_run_ai_smoke)
+        ], False
+
+    if cpu_core_run_ai_smoke == 1:
+        return [
+            "python3",
+            AI_SMOKE_PATH_TASKSET,
+            "--cpu",
+            "1",
+            "--ai",
+            str(ai_core_run_ai_smoke)
+        ], True
+
+    return [
+        "taskset",
+        "-c",
+        taskset_core_list(cpu_core_run_ai_smoke),
+        "python3",
+        AI_SMOKE_PATH_TASKSET,
+        "--taskset",
+        "--ai",
+        str(ai_core_run_ai_smoke)
+    ], False
+
+
 def run_ai_smoke():
-    global ai_core_run_ai_smoke, ai_smoke_running
+    global ai_core_run_ai_smoke, cpu_core_run_ai_smoke, ai_smoke_running
     global ai_smoke_process, ai_smoke_stop_requested
 
     if ai_smoke_running:
@@ -184,17 +268,22 @@ def run_ai_smoke():
     ai_smoke_running = True
     ai_smoke_stop_requested = False
 
+    # Set before the try so the finally block can read it even if building the
+    # command or spawning the process is what failed.
+    offlines_cores = False
+
     try:
-        print(f"Running ai server with {ai_core_run_ai_smoke} cores")
+        command, offlines_cores = build_ai_smoke_command()
+        print(f"Running ai server with {ai_core_run_ai_smoke} AI cores "
+              f"and {cpu_core_run_ai_smoke} CPU cores"
+              f"{' (taskset)' if taskset_mode else ''}")
+        print(f"  {' '.join(command)}")
 
         # Run the AI smoke process in its own process group, so a Stop from the
         # dashboard can signal the whole group (the server plus its workers).
-        process = subprocess.Popen([
-            "python3",
-            AI_SMOKE_PATH,
-            "--ai",
-            str(ai_core_run_ai_smoke)
-        ], start_new_session=True)
+        # In taskset mode the group leader is taskset itself, which execs into
+        # python3 rather than forking, so the PID below is still the workload's.
+        process = subprocess.Popen(command, start_new_session=True)
         ai_smoke_process = process
 
         # Send start notification. The PID rides along so the host can hand it
@@ -203,6 +292,8 @@ def run_ai_smoke():
             "type": "ai_smoke_start",
             "status": "started",
             "ai_cores": ai_core_run_ai_smoke,
+            "cpu_cores": cpu_core_run_ai_smoke,
+            "taskset": taskset_mode,
             "pid": process.pid
         }
         send_progress_update(start_data)
@@ -217,6 +308,8 @@ def run_ai_smoke():
                 "type": "ai_smoke_stopped",
                 "status": "stopped",
                 "ai_cores": ai_core_run_ai_smoke,
+                "cpu_cores": cpu_core_run_ai_smoke,
+                "taskset": taskset_mode,
                 "pid": process.pid
             }
             print("AI smoke process stopped on request")
@@ -225,6 +318,8 @@ def run_ai_smoke():
                 "type": "ai_smoke_complete",
                 "status": "completed",
                 "ai_cores": ai_core_run_ai_smoke,
+                "cpu_cores": cpu_core_run_ai_smoke,
+                "taskset": taskset_mode,
                 "pid": process.pid
             }
             print("AI smoke process completed successfully")
@@ -234,6 +329,8 @@ def run_ai_smoke():
                 "status": "error",
                 "error": f"Process exited with code {return_code}",
                 "ai_cores": ai_core_run_ai_smoke,
+                "cpu_cores": cpu_core_run_ai_smoke,
+                "taskset": taskset_mode,
                 "pid": process.pid
             }
             print(f"AI smoke process failed with return code {return_code}")
@@ -249,6 +346,8 @@ def run_ai_smoke():
         send_progress_update(error_data)
         print(f"Error running ai_smoke: {e}")
     finally:
+        if offlines_cores:
+            restore_all_cpu_cores()
         ai_smoke_process = None
         ai_smoke_running = False
 
@@ -274,8 +373,49 @@ def stop_ai_smoke(message):
     ai_smoke_stop_requested = True
     terminate_process_group(process, "AI smoke")
 
+def taskset_core_list(num_cores):
+    """The `taskset -c` CPU list for `num_cores`: the first N cores, counting
+    from 0. 1 -> "0", 3 -> "0,1,2". Topaz has four, and callers clamp to
+    NUM_CPU_CORE before reaching here."""
+    return ",".join(str(core) for core in range(num_cores))
+
+
+def build_ai_ship_command():
+    """argv for one AI-ship run, in whichever CPU-restriction mode this program
+    was started in.
+
+    Default:  python3 ai_ship.py --cpu <n> --ai <m>
+    --taskset: taskset -c 0,..,<n-1> python3 ai_ship_taskset.py --taskset --ai <m>
+
+    Both spend the same number of CPU cores; they differ in who enforces it. The
+    two scripts are separate files because --cpu and --taskset are mutually
+    exclusive in ai_ship_taskset.py's parser -- passing a core count in taskset
+    mode is meaningless, since the affinity mask is already set by the time
+    python starts."""
+    if taskset_mode:
+        return [
+            "taskset",
+            "-c",
+            taskset_core_list(cpu_core_run_ai_ship),
+            "python3",
+            AI_SHIP_PATH_TASKSET,
+            "--taskset",
+            "--ai",
+            str(ai_core_run_ai_ship)
+        ]
+
+    return [
+        "python3",
+        AI_SHIP_PATH,
+        "--cpu",
+        str(cpu_core_run_ai_ship),
+        "--ai",
+        str(ai_core_run_ai_ship)
+    ]
+
+
 def run_ai_ship():
-    global ai_core_run_ai_ship, ai_ship_running
+    global ai_core_run_ai_ship, cpu_core_run_ai_ship, ai_ship_running
     global ai_ship_process, ai_ship_stop_requested
 
     if ai_ship_running:
@@ -285,15 +425,17 @@ def run_ai_ship():
     ai_ship_stop_requested = False
 
     try:
-        print(f"Running ai application with {ai_core_run_ai_ship} cores")
+        command = build_ai_ship_command()
+        print(f"Running ai application with {ai_core_run_ai_ship} AI cores "
+              f"and {cpu_core_run_ai_ship} CPU cores"
+              f"{' (taskset)' if taskset_mode else ''}")
+        print(f"  {' '.join(command)}")
 
         # Own process group so Stop can signal the whole group — see run_ai_smoke().
-        process = subprocess.Popen([
-            "python3",
-            AI_SHIP_PATH,
-            "--ai",
-            str(ai_core_run_ai_ship)
-        ], start_new_session=True)
+        # In taskset mode the group leader is taskset itself, which execs into
+        # python3 rather than forking, so the PID reported below is still the one
+        # a later Stop needs to signal.
+        process = subprocess.Popen(command, start_new_session=True)
         ai_ship_process = process
 
         # Send start notification, carrying the PID for a later
@@ -302,6 +444,8 @@ def run_ai_ship():
             "type": "ai_ship_start",
             "status": "started",
             "ai_cores": ai_core_run_ai_ship,
+            "cpu_cores": cpu_core_run_ai_ship,
+            "taskset": taskset_mode,
             "pid": process.pid
         }
         send_progress_update(start_data)
@@ -315,6 +459,8 @@ def run_ai_ship():
                 "type": "ai_ship_stopped",
                 "status": "stopped",
                 "ai_cores": ai_core_run_ai_ship,
+                "cpu_cores": cpu_core_run_ai_ship,
+                "taskset": taskset_mode,
                 "pid": process.pid
             }
             print("AI ship application stopped on request")
@@ -323,6 +469,8 @@ def run_ai_ship():
                 "type": "ai_ship_complete",
                 "status": "completed",
                 "ai_cores": ai_core_run_ai_ship,
+                "cpu_cores": cpu_core_run_ai_ship,
+                "taskset": taskset_mode,
                 "pid": process.pid
             }
             print("AI ship application completed successfully")
@@ -332,6 +480,8 @@ def run_ai_ship():
                 "status": "error",
                 "error": f"Process exited with code {return_code}",
                 "ai_cores": ai_core_run_ai_ship,
+                "cpu_cores": cpu_core_run_ai_ship,
+                "taskset": taskset_mode,
                 "pid": process.pid
             }
             print(f"AI ship application failed with return code {return_code}")
@@ -676,7 +826,9 @@ def process_cphd_file(file_path):
         #     handle_image_sending(png_path)
 
 def listen_for_messages():
-    global progress_update, BW, ai_core_run_ai_smoke, ai_core_run_ai_ship
+    global progress_update, BW
+    global ai_core_run_ai_smoke, cpu_core_run_ai_smoke
+    global ai_core_run_ai_ship, cpu_core_run_ai_ship
 
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Allow reuse
@@ -739,12 +891,22 @@ def listen_for_messages():
                                          args=(message,), daemon=True).start()
 
                     elif message.startswith("run_ai_smoke"):
-                        if ":" in message:
-                            ai_core_run_ai_smoke = int(message.split(":")[1])
+                        # "run_ai_smoke:<ai cores>[:<cpu cores>]" — the CPU field
+                        # is optional so an older page that only sends the AI
+                        # count still runs, keeping the previous CPU selection.
+                        parts = message.split(":")
+                        if len(parts) > 1:
+                            ai_core_run_ai_smoke = int(parts[1])
                             if ai_core_run_ai_smoke > NUM_AI_CORE:
                                 ai_core_run_ai_smoke = NUM_AI_CORE
                             elif ai_core_run_ai_smoke <= 0:
                                 ai_core_run_ai_smoke = 1
+                        if len(parts) > 2:
+                            cpu_core_run_ai_smoke = int(parts[2])
+                            if cpu_core_run_ai_smoke > NUM_CPU_CORE:
+                                cpu_core_run_ai_smoke = NUM_CPU_CORE
+                            elif cpu_core_run_ai_smoke <= 0:
+                                cpu_core_run_ai_smoke = 1
                         threading.Thread(target=run_ai_smoke, daemon=True).start()
 
                     elif message.startswith("stop_ai_smoke"):
@@ -754,12 +916,22 @@ def listen_for_messages():
                                          args=(message,), daemon=True).start()
 
                     elif message.startswith("run_ai_ship"):
-                        if ":" in message:
-                            ai_core_run_ai_ship = int(message.split(":")[1])
+                        # "run_ai_ship:<ai cores>[:<cpu cores>]" — the CPU field
+                        # is optional so an older page that only sends the AI
+                        # count still runs, keeping the previous CPU selection.
+                        parts = message.split(":")
+                        if len(parts) > 1:
+                            ai_core_run_ai_ship = int(parts[1])
                             if ai_core_run_ai_ship > NUM_AI_CORE:
                                 ai_core_run_ai_ship = NUM_AI_CORE
                             elif ai_core_run_ai_ship <= 0:
                                 ai_core_run_ai_ship = 1
+                        if len(parts) > 2:
+                            cpu_core_run_ai_ship = int(parts[2])
+                            if cpu_core_run_ai_ship > NUM_CPU_CORE:
+                                cpu_core_run_ai_ship = NUM_CPU_CORE
+                            elif cpu_core_run_ai_ship <= 0:
+                                cpu_core_run_ai_ship = 1
                         threading.Thread(target=run_ai_ship, daemon=True).start()
 
                     elif message.startswith("stop_ai_ship"):
@@ -1112,8 +1284,25 @@ def get_system_info():
     # print(f"System Info: {system_info}")
     return system_info
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Topaz target agent: system metrics, network tests and AI workloads.")
+    parser.add_argument(
+        "--taskset", action="store_true",
+        help="Pin the AI ship and AI smoke workloads to CPU cores 0..n-1 with "
+             "taskset(1) and run the *_taskset.py scripts, instead of letting the "
+             "workload restrict itself with --cpu n. n is the CPU-core count chosen "
+             "on the dashboard either way. A single-core AI-smoke run is the "
+             "exception: it hot-unplugs cores 1-3 instead, and they are brought back "
+             "online when the run ends.")
+    return parser.parse_args()
+
+
 def main():
-    global imu_manager
+    global imu_manager, taskset_mode
+
+    taskset_mode = parse_args().taskset
+    print(f"AI workload CPU restriction: {'taskset' if taskset_mode else 'in-process (--cpu)'}")
 
     # Initialize IMU Manager (shares stop_event with main program)
     imu_manager = IMUManager(

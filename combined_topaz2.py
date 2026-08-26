@@ -14,17 +14,28 @@ sends is:
 The app then serves the dashboard directly at '/':
 
   * '/'                     -> index/topaz2/combined_dashboard.html  (thin shell)
+  * '/test'                -> index/topaz2/combined_dashboard_testing.html (WIP shell)
   * '/orientation'         -> index/topaz2/orientation.html         (IMU: gyro/accel/angles)
   * '/system_monitor'      -> index/topaz2/system_monitor.html      (CPU/AI/mem/net panels)
   * '/system_metrics'      -> JSON snapshot the two pages poll for live values
 
-plus the four "Vision model" workload pages the shell hosts as tabs, each with its
-own small API family (image lists, image bytes, run progress):
+plus the demo pages, each with its own small API family (image lists, image bytes,
+run progress). The shell hosts the four vision models as tabs of one row, and EDAC
+as a row of its own:
 
   * '/small_obj_app'  -> index_grafana_topaz_small_object.html + '/small_obj_detect/*'
   * '/auto_nav_app'   -> index_land_nav.html                   + '/auto_nav/*'
   * '/ai_ship_app'    -> index_ai_ship.html                    + '/ai_ship/*'
   * '/ai_smoke_app'   -> index_ai_smoke.html                   + '/ai_smoke/*'
+  * '/edac_app'       -> edac.html                             + '/edac/*'
+
+EDAC is the odd one out, which is why it sits apart in the shell. The four vision
+pages display frames that already exist in a directory on THIS host — the target
+only reports how far along it is. The EDAC page's frames are produced on the
+target as the demo runs (an image is corrupted and then rebuilt from Reed-Solomon
+parity kept in SPI FRAM), so they travel base64-encoded inside the progress
+messages and are decoded, rendered and cached here by _store_edac_image() before
+the page ever asks for them.
 
 Those pages' live progress ("3 of 40 images processed", elapsed time, …) does not
 come over the metrics stream: the target opens a short connection to DATA_PORT and
@@ -60,10 +71,12 @@ dashboards would exhaust the pool. The progress fan-out below therefore hands up
 to asyncio queues on the event loop instead of blocking `queue.Queue.get()`.
 """
 
+import io
 import os
 import json
 import time
 import queue
+import base64
 import socket
 import struct
 import asyncio
@@ -91,6 +104,16 @@ try:
     from influxdb import InfluxDBClient  # type: ignore
 except Exception:                        # influxdb client is optional
     InfluxDBClient = None
+
+try:
+    # Used only to render the EDAC page's stage frames. LOAD_TRUNCATED_IMAGES is
+    # the whole point: a *corrupted* image is exactly the case Pillow would
+    # normally refuse, and showing how far the decoder got before the damage is
+    # the demo. Without Pillow the EDAC page falls back to serving the raw bytes.
+    from PIL import Image, ImageFile   # type: ignore
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
+except Exception:                        # Pillow is optional
+    Image = None
 
 # ----------------------------------------------------------------------------
 # Configuration
@@ -120,6 +143,7 @@ FM_INTERFACE_ID = "fm1-mac3"
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 INDEX_DIR = os.path.join(CURR_DIR, "index", "topaz2")
 COMBINED_FRONTEND = os.path.join(INDEX_DIR, "combined_dashboard.html")
+COMBINED_TESTING_FRONTEND = os.path.join(INDEX_DIR, "combined_dashboard_testing.html")
 ORIENTATION_FRONTEND = os.path.join(INDEX_DIR, "orientation.html")
 MONITOR_FRONTEND = os.path.join(INDEX_DIR, "system_monitor.html")
 
@@ -128,6 +152,19 @@ SMALL_OBJ_FRONTEND = os.path.join(INDEX_DIR, "index_grafana_topaz_small_object.h
 AUTO_NAV_FRONTEND = os.path.join(INDEX_DIR, "index_land_nav.html")
 AI_SHIP_FRONTEND = os.path.join(INDEX_DIR, "index_ai_ship.html")
 AI_SMOKE_FRONTEND = os.path.join(INDEX_DIR, "index_ai_smoke.html")
+EDAC_FRONTEND = os.path.join(INDEX_DIR, "edac.html")
+
+# Where the EDAC page's three stage frames land. Unlike the vision workloads —
+# whose frames are pre-existing files on this host — these are produced on the
+# target during the run, arrive base64-encoded over DATA_PORT, and are rendered
+# to PNG here (see _store_edac_image). Scratch: rewritten every run, safe to
+# delete, never committed.
+EDAC_STAGE_DIR = os.path.join(CURR_DIR, "edac_stages")
+EDAC_STAGES = ("original", "corrupted", "recovered")
+# Longest edge of a rendered stage frame. The demo images are up to 1600 px
+# wide; the page shows them in a panel a fraction of that, and shrinking here
+# keeps the browser from decoding a needlessly large bitmap on every switch.
+EDAC_STAGE_MAX_PX = 1100
 
 # Image sets those pages display. Input/"before" and output/"after" frames are
 # produced on this host (or copied here) — the target only reports progress.
@@ -168,7 +205,29 @@ latest_progress = {
     "auto_nav": {},
     "ai_ship": {},
     "ai_smoke": {},
+    "edac": {},
 }
+
+# The EDAC page's view of the demo, accumulated rather than replaced. The
+# latest_progress cache above holds only the LAST message, which is enough for
+# the vision pages (every one of their updates is a complete progress report)
+# but not here: EDAC sends several *kinds* of message — the file menu, the fault
+# menu, state transitions, one per stage image — and a page loading (or
+# reloading) mid-demo needs all of them. run_data_server folds each into this,
+# and 'edac/state' serves the result.
+edac_state = {
+    "available": False,     # flipped by the first message the target sends
+    "phase": "idle",
+    "busy": False,
+    "files": [],            # demo image menu, from the target's catalogue
+    "faults": [],           # the nine fault models, read out of the binary
+    "fram": {},             # slot table + geometry, refreshed on every state
+    "stages": {},           # stage name -> cache-busting token
+    "message": "",
+    "detail": "",
+    "verdict": None,
+}
+edac_state_lock = threading.Lock()
 
 # Live SSE listeners per workload: one asyncio.Queue per open '<workload>/events'
 # request. The '<workload>/progress' cache above only ever holds the *latest*
@@ -272,14 +331,37 @@ class CommandMessage(BaseModel):
 # ----------------------------------------------------------------------------
 # Static-file helpers (stand-ins for Flask's send_file / send_from_directory)
 # ----------------------------------------------------------------------------
-def send_file(path, media_type=None):
+def send_file(path, media_type=None, headers=None):
     """Serve one known file, 404 if it has gone missing.
 
     Flask's send_file raised NotFound for a missing path; FileResponse would only
     fail when the body is already being written, so the check is explicit here."""
     if not os.path.isfile(path):
         return PlainTextResponse("File not found", status_code=404)
-    return FileResponse(path, media_type=media_type)
+    return FileResponse(path, media_type=media_type, headers=headers)
+
+
+def send_page(path):
+    """Serve one of the dashboard's HTML pages, always freshly revalidated.
+
+    FileResponse sends `etag` and `last-modified` but no `Cache-Control`. With no
+    explicit directive a browser is free to invent its own freshness lifetime
+    from the file's age, and they disagree wildly about how: Chrome re-asks
+    almost immediately, Firefox can sit on a page for a long time. The symptom is
+    an edit that "only shows up in one browser" — the server is serving the new
+    file the whole time, the browser simply never requests it.
+
+    `no-cache` does not mean "do not store": it means "revalidate before use", so
+    the browser asks every time instead of guessing. Note that FileResponse does
+    not implement conditional requests (StaticFiles does), so that revalidation
+    is answered with a full 200, not a bodyless 304 — a few tens of KB per page
+    per dashboard load. These pages are small and edited constantly, and a
+    dashboard silently showing last week's markup is the more expensive failure.
+
+    Images keep the default: they are effectively immutable per filename, and the
+    EDAC stage frames carry their own cache-busting ?v=."""
+    return send_file(path, media_type="text/html",
+                     headers={"Cache-Control": "no-cache"})
 
 
 def send_from_directory(directory, filename, media_type=None):
@@ -473,7 +555,7 @@ def _progress_key(update):
     port also carries CPHD file lists and file-size replies this dashboard has no
     use for, and those must not land in a progress cache."""
     msg_type = str(update.get("type", ""))
-    for key in ("ai_smoke", "ai_ship", "auto_nav", "small_obj_detect"):
+    for key in ("ai_smoke", "ai_ship", "auto_nav", "small_obj_detect", "edac"):
         if msg_type.startswith(key):
             return key
     return None
@@ -521,6 +603,124 @@ def _note_progress_timing(key, update):
         print(f"[timing] {key}: {len(gaps) + 1} updates in {now - state['t0']:.1f}s, "
               f"gap ms p50={at(0.5):.1f} p90={at(0.9):.1f} max={gaps[-1]:.1f}, "
               f">200ms={sum(1 for g in gaps if g > 200)}")
+
+
+def _store_edac_image(update):
+    """Turn one 'edac_image' message into a file on disk, and shrink the message.
+
+    The target sends the stage's RAW bytes base64-encoded, which for the largest
+    demo image is ~1.8 MB. Two things must not happen to a payload that size:
+    being kept in the last-value cache, and being fanned out to every open SSE
+    stream. So the bytes are written out here and the message that continues
+    through the pipeline carries only a stage name and a token.
+
+    Rendering happens on this side of the link deliberately. Decoding a damaged
+    file is the interesting part of the demo, and doing it here means the
+    decoding and display rules can change without redeploying to the board.
+
+    Returns the slimmed-down update to publish in place of the original.
+    """
+    stage = str(update.get("stage", ""))
+    token = update.get("seq", 0)
+    slim = {
+        "type": "edac_image",
+        "stage": stage,
+        "name": update.get("name"),
+        "size": update.get("size"),
+        "seq": token,
+    }
+    if stage not in EDAC_STAGES:
+        slim["error"] = f"unknown stage {stage!r}"
+        return slim
+
+    try:
+        raw = base64.b64decode(update.get("b64", ""), validate=False)
+    except Exception as exc:                            # noqa: BLE001
+        slim["error"] = f"undecodable payload: {exc}"
+        return slim
+
+    os.makedirs(EDAC_STAGE_DIR, exist_ok=True)
+    out_path = os.path.join(EDAC_STAGE_DIR, f"{stage}.png")
+
+    rendered = False
+    if Image is not None:
+        try:
+            with io.BytesIO(raw) as buf:
+                img = Image.open(buf)
+                img.load()          # forces the decode, truncation tolerated
+                img = img.convert("RGB")
+                img.thumbnail((EDAC_STAGE_MAX_PX, EDAC_STAGE_MAX_PX))
+                img.save(out_path, "PNG", optimize=False)
+            rendered = True
+        except Exception as exc:                        # noqa: BLE001
+            # Damaged past the point of yielding even a partial image. That is a
+            # legitimate outcome of a heavy fault, not a server error — the page
+            # renders its own "unreadable" panel from this flag.
+            print(f"EDAC {stage} frame did not decode: {exc}")
+            slim["undecodable"] = True
+
+    if not rendered:
+        # No Pillow, or nothing decoded. Keep the raw bytes so the page can at
+        # least try the browser's own decoder, which is often more forgiving.
+        out_path = os.path.join(EDAC_STAGE_DIR, f"{stage}.raw")
+        try:
+            with open(out_path, "wb") as handle:
+                handle.write(raw)
+        except OSError as exc:
+            slim["error"] = str(exc)
+            return slim
+
+    slim["raw"] = not rendered
+    with edac_state_lock:
+        edac_state["stages"] = dict(edac_state["stages"],
+                                    **{stage: {"seq": token, "raw": not rendered,
+                                               "undecodable": slim.get("undecodable", False)}})
+    return slim
+
+
+def _absorb_edac_update(update):
+    """Fold one EDAC message into `edac_state` and hand back what to publish.
+
+    Everything the target says about EDAC passes through here so that a page
+    opening late can rebuild the whole screen from 'edac/state' alone, while
+    live pages still get each message as it happens over SSE.
+    """
+    msg_type = str(update.get("type", ""))
+
+    if msg_type == "edac_image":
+        return _store_edac_image(update)
+
+    with edac_state_lock:
+        edac_state["available"] = True
+        if msg_type == "edac_catalogue":
+            edac_state["files"] = update.get("files", [])
+            edac_state["faults"] = update.get("faults", [])
+            edac_state["device"] = update.get("device")
+        elif msg_type == "edac_state":
+            for field in ("phase", "busy", "message", "detail", "file_id",
+                          "file_label", "slot_index", "layers", "last_fault",
+                          "device"):
+                if field in update:
+                    edac_state[field] = update[field]
+            if update.get("fram"):
+                edac_state["fram"] = update["fram"]
+            # A verdict describes one completed step, so it is replaced (not
+            # merged) and cleared by any step that reports none.
+            edac_state["verdict"] = update.get("verdict")
+            # The target names the frames its next step invalidates, and always
+            # does so BEFORE sending the replacement — so dropping them here
+            # cannot discard a frame that has just arrived.
+            stale = update.get("reset_stages")
+            if stale:
+                edac_state["stages"] = {k: v for k, v in edac_state["stages"].items()
+                                        if k not in stale}
+            if update.get("phase") == "idle":
+                edac_state["stages"] = {}
+        elif msg_type == "edac_error":
+            edac_state["busy"] = False
+            edac_state["message"] = update.get("message", "EDAC error")
+            edac_state["detail"] = update.get("detail", "")
+    return update
 
 
 def _subscribe_progress(key):
@@ -588,6 +788,11 @@ def _read_workload_update(conn, addr):
                 return
             update = json.loads(raw)
             key = _progress_key(update)
+            if key == "edac":
+                # EDAC messages are folded into a durable state object first, and
+                # an image message is written to disk here so the megabyte of
+                # base64 it arrived with never reaches the cache or the SSE fan-out.
+                update = _absorb_edac_update(update)
             if key is not None:
                 latest_progress[key] = update
                 _track_workload_pid(key, update)
@@ -663,44 +868,58 @@ def forward_message_to_target(message):
 def combined_frontend():
     """Thin shell: two collapsible sections, each an <iframe> onto a standalone
     page below (Orientation + System monitoring), same-origin so both auto-size."""
-    return send_file(COMBINED_FRONTEND)
+    return send_page(COMBINED_FRONTEND)
+
+
+@app.get('/test')
+def combined_frontend_testing():
+    """Work-in-progress copy of the shell, served alongside the live one so
+    layout changes can be tried without disturbing '/'. Its iframes use relative
+    srcs, which resolve against '/' here, so it shares the same sub-pages."""
+    return send_page(COMBINED_TESTING_FRONTEND)
 
 
 @app.get('/orientation')
 def orientation_frontend():
     """IMU orientation page (gyroscope, accelerometer, integrated angles)."""
-    return send_file(ORIENTATION_FRONTEND)
+    return send_page(ORIENTATION_FRONTEND)
 
 
 @app.get('/monitor')
 @app.get('/system_monitor')
 def monitor_frontend():
     """Live system-utilisation page (CPU / AI cores / memory / disk / network)."""
-    return send_file(MONITOR_FRONTEND)
+    return send_page(MONITOR_FRONTEND)
 
 
 @app.get('/small_obj_app')
 def small_obj_frontend():
     """Small object detection page (Vision model tab)."""
-    return send_file(SMALL_OBJ_FRONTEND)
+    return send_page(SMALL_OBJ_FRONTEND)
 
 
 @app.get('/auto_nav_app')
 def auto_nav_frontend():
     """Autonomous navigation page (Vision model tab)."""
-    return send_file(AUTO_NAV_FRONTEND)
+    return send_page(AUTO_NAV_FRONTEND)
 
 
 @app.get('/ai_ship_app')
 def ai_ship_frontend():
     """AI ship detection page (Vision model tab)."""
-    return send_file(AI_SHIP_FRONTEND)
+    return send_page(AI_SHIP_FRONTEND)
 
 
 @app.get('/ai_smoke_app')
 def ai_smoke_frontend():
     """AI smoke detection page (Vision model tab)."""
-    return send_file(AI_SMOKE_FRONTEND)
+    return send_page(AI_SMOKE_FRONTEND)
+
+
+@app.get('/edac_app')
+def edac_frontend():
+    """EDAC demo page: corrupt a file, recover it from FRAM parity."""
+    return send_page(EDAC_FRONTEND)
 
 
 @app.get('/system_metrics')
@@ -718,10 +937,13 @@ def send_message(payload: Optional[CommandMessage] = None):
     Three families of command need host-side bookkeeping before (or instead of)
     being forwarded:
 
-      * "run_<workload>[:<n cores>]" — drop the previous run's progress so the
-        page doesn't briefly show stale numbers, and for the AI-engine workloads
-        snapshot current usage as the baseline their "has it actually started?"
-        check measures against.
+      * "run_<workload>[:<n ai cores>[:<n cpu cores>]]" — drop the previous
+        run's progress so the page doesn't briefly show stale numbers, and for
+        the AI-engine workloads snapshot current usage as the baseline their
+        "has it actually started?" check measures against. The core counts are
+        the target's business; everything after the workload name is forwarded
+        untouched (the AI-ship and AI-smoke pages send both counts, the others
+        just the AI count).
       * "stop_<workload>" — append the PID the target reported for the run in
         flight, so it kills that run and not a newer one.
       * "clear_<workload>" — purely host-side; nothing to tell the target."""
@@ -1151,6 +1373,58 @@ async def ai_smoke_events():
 @app.get('/ai_smoke/ai_core_usage')
 def ai_smoke_core_usage():
     return ai_core_usage_for("ai_smoke")
+
+
+# ---- EDAC (Reed-Solomon parity in SPI FRAM) ----
+# Unlike the four vision pages, this one has no image directories to list: its
+# three frames are produced during the run on the target and pushed here (see
+# _store_edac_image). What it needs instead is one call that rebuilds the whole
+# screen — file menu, fault menu, FRAM slot table, phase — for a page that has
+# just opened, and the SSE stream for everything after that.
+@app.get('/edac/state')
+def edac_current_state():
+    """Everything the page needs to render itself from cold.
+
+    Empty-ish with available=False until the target has answered its first
+    'edac_status', which is how the page knows to show "EDAC unavailable"
+    rather than an empty demo."""
+    with edac_state_lock:
+        return JSONResponse(dict(edac_state))
+
+
+@app.get('/edac/progress')
+def edac_progress():
+    """Last message only — the SSE stream is what the page actually follows."""
+    return JSONResponse(latest_progress["edac"])
+
+
+@app.get('/edac/events')
+async def edac_events():
+    return await progress_event_stream("edac")
+
+
+@app.get('/edac/stage/{stage}')
+def edac_stage_image(stage: str):
+    """One stage frame: the original, the corrupted copy, or the recovery.
+
+    The page appends a '?v=<seq>' that changes with every new frame, so these
+    are cached hard — without that a browser would happily show the previous
+    run's corrupted frame for the whole of the next run."""
+    if stage not in EDAC_STAGES:
+        return PlainTextResponse("Unknown stage", status_code=404)
+
+    rendered = os.path.join(EDAC_STAGE_DIR, f"{stage}.png")
+    if os.path.isfile(rendered):
+        return FileResponse(rendered, media_type="image/png",
+                            headers={"Cache-Control": "public, max-age=31536000"})
+
+    # Pillow missing or the frame decoded to nothing: hand over the bytes as
+    # they arrived and let the browser's own decoder have a go.
+    raw = os.path.join(EDAC_STAGE_DIR, f"{stage}.raw")
+    if os.path.isfile(raw):
+        return FileResponse(raw, media_type="application/octet-stream",
+                            headers={"Cache-Control": "public, max-age=31536000"})
+    return PlainTextResponse("No frame for this stage yet", status_code=404)
 
 
 # ----------------------------------------------------------------------------
