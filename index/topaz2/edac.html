@@ -1,0 +1,1128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EDAC Interface</title>
+    <style>
+        /* ------------------------------------------------------------------
+           EDAC demo page: an image is protected with Reed-Solomon parity kept
+           in the board's SPI FRAM, corrupted with one of nine radiation /
+           flash fault models, and rebuilt from that parity.
+
+           Grafana dark theme, matched to the rest of the Topaz dashboard
+           (combined_dashboard.html / system_monitor.html / index_ai_ship.html):
+           same tokens, same 13px Inter stack, same 3px radius. Declared here
+           rather than inherited from the shell so the page still looks right
+           opened directly at :5001/edac_app.
+
+           Every URL in this file is RELATIVE. The page is served behind an
+           nginx prefix (/topaz/), so a leading slash would escape it.
+           ------------------------------------------------------------------ */
+        :root {
+            --bg:            #020406;
+            --panel-bg:      #111217;
+            --panel-bg-2:    #16171d;
+            --border:        #28292f;
+            --input-border:  #2c3235;
+            --text:          rgba(204, 204, 220, 0.90);
+            --text-weak:     rgba(204, 204, 220, 0.65);
+            --text-faint:    rgba(204, 204, 220, 0.40);
+            --blue:          #2372cc;
+            --blue-hover:    #3696ff;
+            --green:         #73bf69;
+            --orange:        #ff9830;
+            --red:           #f2495c;
+            --purple:        #b877d9;
+            --track:         #2c3036;
+        }
+
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            font-size: 13px;
+            -webkit-font-smoothing: antialiased;
+            padding: 10px 12px 16px;
+        }
+
+        .panel {
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+        }
+
+        .panel-title {
+            font-size: 12px;
+            font-weight: 400;
+            color: var(--text-weak);
+            margin: 0;
+        }
+
+        /* ---- header ------------------------------------------------------ */
+        .edac-head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+        .edac-head h2 {
+            margin: 0;
+            font-size: 15px;
+            font-weight: 500;
+            letter-spacing: .01em;
+        }
+        .edac-head .sub { color: var(--text-faint); font-size: 11px; }
+        /* The hardware this is really running on, stated plainly: the whole
+           claim of the demo is that parity lives somewhere the damaged medium
+           is not. */
+        .edac-device {
+            font-size: 11px;
+            color: var(--text-faint);
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            white-space: nowrap;
+        }
+        .edac-device b { color: var(--green); font-weight: 500; }
+
+        /* ---- pipeline stepper -------------------------------------------- */
+        .steps {
+            display: flex;
+            align-items: stretch;
+            gap: 0;
+            margin-bottom: 12px;
+            overflow: hidden;
+        }
+        .step {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            padding: 10px 14px;
+            background: var(--panel-bg);
+            border: 1px solid var(--border);
+            border-right: none;
+            transition: background .25s ease, border-color .25s ease;
+        }
+        .step:first-child { border-radius: 3px 0 0 3px; }
+        .step:last-child { border-right: 1px solid var(--border); border-radius: 0 3px 3px 0; }
+
+        .step-num {
+            flex: none;
+            width: 22px; height: 22px;
+            border-radius: 50%;
+            border: 1px solid var(--input-border);
+            color: var(--text-faint);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 11px;
+            transition: all .25s ease;
+        }
+        .step-label { font-size: 12px; color: var(--text-faint); line-height: 1.25; }
+        .step-label small { display: block; font-size: 10px; color: var(--text-faint); opacity: .7; }
+
+        .step.done .step-num { background: var(--green); border-color: var(--green); color: #0b1a08; }
+        .step.done .step-label { color: var(--text-weak); }
+        .step.active { background: #14202e; border-color: #2b4b6d; }
+        .step.active .step-num { border-color: var(--blue-hover); color: var(--blue-hover); }
+        .step.active .step-label { color: var(--text); }
+        /* Running: the numbered disc breathes so it is obvious which step the
+           board is actually working on, without a separate spinner. */
+        .step.busy .step-num { animation: pulse 1.1s ease-in-out infinite; }
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(54, 150, 255, .55); }
+            50%      { box-shadow: 0 0 0 6px rgba(54, 150, 255, 0); }
+        }
+
+        /* ---- main two-column body ---------------------------------------- */
+        .edac-main {
+            display: flex;
+            gap: 10px;
+            align-items: stretch;
+            margin-bottom: 10px;
+        }
+        .stage-col { flex: 1 1 auto; min-width: 0; }
+        .control-col { flex: 0 0 262px; }
+
+        @media (max-width: 780px) {
+            .edac-main { flex-wrap: wrap; }
+            .control-col { flex: 1 1 100%; }
+        }
+
+        /* ---- image panel -------------------------------------------------- */
+        .stage-panel { padding: 10px 10px 8px; height: 100%; display: flex; flex-direction: column; }
+
+        .stage-frame {
+            position: relative;
+            flex: 1 1 auto;
+            height: 430px;
+            background: #07090c;
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        /* Each stage is its own layer, cross-faded on switch: swapping one <img>
+           src makes the panel flash empty while the new file decodes, which
+           reads as a glitch in a demo that is *about* glitches. */
+        .stage-layer {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity .28s ease;
+            pointer-events: none;
+        }
+        .stage-layer.shown { opacity: 1; }
+        .stage-layer img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            display: block;
+        }
+
+        .stage-empty {
+            color: var(--text-faint);
+            font-size: 12px;
+            text-align: center;
+            padding: 0 24px;
+            line-height: 1.7;
+        }
+        .stage-empty .big { display: block; font-size: 26px; margin-bottom: 8px; opacity: .5; }
+
+        /* A file damaged past the point of decoding is a real outcome of the
+           heavier fault models, and the most eloquent frame in the demo. */
+        .stage-dead {
+            color: var(--red);
+            text-align: center;
+            font-size: 12px;
+            line-height: 1.8;
+            padding: 0 24px;
+        }
+        .stage-dead .big { display: block; font-size: 30px; margin-bottom: 6px; }
+
+        /* Corner tag naming the frame on screen, so a screenshot is unambiguous. */
+        .stage-tag {
+            position: absolute;
+            top: 8px; left: 8px;
+            font-size: 10px;
+            letter-spacing: .09em;
+            text-transform: uppercase;
+            padding: 3px 8px;
+            border-radius: 2px;
+            background: rgba(2, 4, 6, .82);
+            border: 1px solid var(--border);
+            color: var(--text-weak);
+            z-index: 2;
+            pointer-events: none;
+        }
+        .stage-tag.corrupted { color: var(--red); border-color: #55232c; }
+        .stage-tag.recovered { color: var(--green); border-color: #2f4d2b; }
+
+        /* ---- stage switcher ---------------------------------------------- */
+        .stage-tabs {
+            display: flex;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .stage-tab {
+            flex: 1;
+            padding: 7px 6px;
+            background: var(--panel-bg-2);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            color: var(--text-faint);
+            font-family: inherit;
+            font-size: 11px;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all .15s ease;
+        }
+        .stage-tab:hover:not(:disabled) { color: var(--text); border-color: var(--input-border); }
+        .stage-tab:disabled { opacity: .35; cursor: not-allowed; }
+        .stage-tab.active { color: var(--text); border-color: var(--blue); background: #14202e; }
+        .stage-tab.active.corrupted { border-color: var(--red); background: #221216; }
+        .stage-tab.active.recovered { border-color: var(--green); background: #131e11; }
+
+        /* ---- control rail -------------------------------------------------- */
+        .control-panel { padding: 12px; height: 100%; display: flex; flex-direction: column; gap: 10px; }
+
+        .field label {
+            display: block;
+            font-size: 11px;
+            color: var(--text-faint);
+            margin-bottom: 4px;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+        }
+        .field select {
+            width: 100%;
+            height: 32px;
+            padding: 0 8px;
+            background: var(--panel-bg-2);
+            color: var(--text);
+            border: 1px solid var(--input-border);
+            border-radius: 3px;
+            font-family: inherit;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .field select:focus { outline: none; border-color: var(--blue); }
+        .field select:disabled { opacity: .45; cursor: not-allowed; }
+        .field .hint { font-size: 10px; color: var(--text-faint); margin-top: 4px; line-height: 1.45; }
+
+        .btn {
+            width: 100%;
+            height: 34px;
+            background: var(--panel-bg-2);
+            color: var(--text);
+            border: 1px solid var(--input-border);
+            border-radius: 3px;
+            font-family: inherit;
+            font-size: 12.5px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: all .15s ease;
+        }
+        .btn:hover:not(:disabled) { border-color: #46505c; background: #1c1e26; }
+        .btn:disabled { opacity: .38; cursor: not-allowed; }
+        .btn .n {
+            width: 17px; height: 17px;
+            border-radius: 50%;
+            border: 1px solid currentColor;
+            font-size: 10px;
+            display: flex; align-items: center; justify-content: center;
+            opacity: .75;
+            flex: none;
+        }
+        /* The step the operator should press next is the only lit control, so a
+           demo can be driven correctly without reading anything. */
+        .btn.next { background: var(--blue); border-color: var(--blue); color: #fff; }
+        .btn.next:hover:not(:disabled) { background: var(--blue-hover); border-color: var(--blue-hover); }
+        .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: 500; }
+        .btn.primary:hover:not(:disabled) { background: var(--blue-hover); border-color: var(--blue-hover); }
+        .btn.danger { background: #ca2715; border-color: #ca2715; color: #fff; }
+        .btn.danger:hover:not(:disabled) { background: #ff4c47; border-color: #ff4c47; }
+
+        .rail-sep { border-top: 1px solid var(--border); margin: 2px 0; }
+
+        .link-btn {
+            background: none;
+            border: none;
+            color: var(--text-faint);
+            font-family: inherit;
+            font-size: 10.5px;
+            cursor: pointer;
+            padding: 2px 4px;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+        .link-btn:hover:not(:disabled) { color: var(--text-weak); }
+        .link-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+        /* ---- status + verdict --------------------------------------------- */
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            background: var(--panel-bg);
+            font-size: 12px;
+            color: var(--text-weak);
+            margin-bottom: 10px;
+            min-height: 34px;
+        }
+        .status .dot {
+            width: 7px; height: 7px; border-radius: 50%;
+            background: var(--text-faint); flex: none;
+            transition: background .2s ease;
+        }
+        .status.busy .dot { background: var(--blue-hover); animation: blink 1s ease-in-out infinite; }
+        .status.ok   .dot { background: var(--green); }
+        .status.bad  .dot { background: var(--red); }
+        .status.bad  { color: var(--red); }
+        .status .detail { color: var(--text-faint); font-size: 11px; margin-left: auto; text-align: right; }
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+        /* The one line of the demo an audience is meant to remember. */
+        .verdict {
+            display: none;
+            align-items: center;
+            gap: 10px;
+            padding: 11px 14px;
+            border-radius: 3px;
+            margin-bottom: 10px;
+            font-size: 13.5px;
+            border: 1px solid;
+            animation: verdict-in .35s ease;
+        }
+        .verdict.show { display: flex; }
+        .verdict.pass { background: #12210f; border-color: #3c6335; color: var(--green); }
+        .verdict.fail { background: #23121a; border-color: #6d2f3c; color: var(--red); }
+        .verdict .mark { font-size: 18px; line-height: 1; }
+        .verdict .txt { font-weight: 500; letter-spacing: .01em; }
+        .verdict .note { margin-left: auto; font-size: 11px; opacity: .8; font-weight: 400; }
+        @keyframes verdict-in {
+            from { opacity: 0; transform: translateY(-4px); }
+            to   { opacity: 1; transform: none; }
+        }
+
+        /* ---- FRAM panel ---------------------------------------------------- */
+        .fram-panel { padding: 11px 12px 12px; }
+        .fram-head {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 10px;
+        }
+        .fram-head .meta {
+            font-size: 10.5px;
+            color: var(--text-faint);
+            font-family: 'SFMono-Regular', Consolas, monospace;
+        }
+
+        /* The slot table as the chip actually holds it: 16 fixed-size slots, a
+           lit one for every protected file. This is where the operator watches
+           parity arrive and be read back. */
+        .slot-strip {
+            display: grid;
+            grid-template-columns: repeat(16, 1fr);
+            gap: 4px;
+            margin-bottom: 10px;
+        }
+        @media (max-width: 640px) { .slot-strip { grid-template-columns: repeat(8, 1fr); } }
+
+        .slot {
+            position: relative;
+            height: 40px;
+            border: 1px solid var(--border);
+            border-radius: 2px;
+            background: var(--panel-bg-2);
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            padding-bottom: 3px;
+            font-size: 9px;
+            color: var(--text-faint);
+            overflow: hidden;
+            transition: border-color .3s ease, background .3s ease;
+        }
+        /* Fill height shows how much of the slot's 15.5 KB the parity uses, so a
+           multi-layer file visibly costs less FRAM than its size suggests. */
+        .slot .fill {
+            position: absolute;
+            left: 0; right: 0; bottom: 0;
+            background: #2c4a6b;
+            transition: height .5s cubic-bezier(.4, 0, .2, 1);
+        }
+        .slot.used { border-color: #35506b; color: var(--text-weak); }
+        .slot.active { border-color: var(--blue-hover); background: #14202e; color: var(--text); }
+        .slot.active .fill { background: var(--blue); }
+        .slot span { position: relative; z-index: 1; }
+
+        /* Parity landing in the chip, and being read back out of it. Two
+           different colours because they are two different directions. */
+        .slot.write { animation: slot-write .9s ease; }
+        .slot.read  { animation: slot-read .9s ease; }
+        @keyframes slot-write {
+            0%   { box-shadow: 0 0 0 0 rgba(54, 150, 255, .8); }
+            30%  { box-shadow: 0 0 0 5px rgba(54, 150, 255, .35); background: #1d3f5e; }
+            100% { box-shadow: 0 0 0 0 rgba(54, 150, 255, 0); }
+        }
+        @keyframes slot-read {
+            0%   { box-shadow: 0 0 0 0 rgba(115, 191, 105, .8); }
+            30%  { box-shadow: 0 0 0 5px rgba(115, 191, 105, .35); background: #1a2e17; }
+            100% { box-shadow: 0 0 0 0 rgba(115, 191, 105, 0); }
+        }
+
+        .slot-detail {
+            font-size: 11.5px;
+            color: var(--text-weak);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 18px;
+            align-items: baseline;
+            min-height: 17px;
+        }
+        .slot-detail .k { color: var(--text-faint); font-size: 10.5px; }
+        .slot-detail .v { color: var(--text); }
+        .slot-detail .none { color: var(--text-faint); font-style: italic; }
+
+        /* ---- unavailable overlay ------------------------------------------- */
+        .unavailable {
+            display: none;
+            padding: 26px 20px;
+            text-align: center;
+            color: var(--text-faint);
+            font-size: 12.5px;
+            line-height: 1.9;
+        }
+        .unavailable code {
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            color: var(--text-weak);
+            font-size: 11.5px;
+        }
+        body.edac-offline .edac-live { display: none; }
+        body.edac-offline .unavailable { display: block; }
+    </style>
+</head>
+<body>
+
+<div class="edac-head">
+    <div>
+        <h2>Error Detection and Correction</h2>
+        <div class="sub">Reed&ndash;Solomon RS(255,223) parity held off-medium in radiation-hard FRAM</div>
+    </div>
+    <div class="edac-device">
+        FRAM MB85RS2MTA &middot; 256&nbsp;KB &middot; <b id="edac-dev">/dev/spidev0.0</b>
+    </div>
+</div>
+
+<div class="unavailable">
+    <div>The EDAC demo is not responding on the target.</div>
+    <div>Check that the agent is running and that <code>/dev/spidev0.0</code> is reachable.</div>
+    <div style="margin-top:12px"><button class="btn primary" style="width:auto;padding:0 18px;display:inline-flex" onclick="edacRetry()">Retry</button></div>
+</div>
+
+<div class="edac-live">
+
+    <!-- Pipeline: the three things that happen to the file, in order. -->
+    <div class="steps" id="edac-steps">
+        <div class="step" data-step="protect">
+            <div class="step-num">1</div>
+            <div class="step-label">Protect<small>parity &rarr; FRAM</small></div>
+        </div>
+        <div class="step" data-step="inject">
+            <div class="step-num">2</div>
+            <div class="step-label">Corrupt<small>fault hits the file</small></div>
+        </div>
+        <div class="step" data-step="recover">
+            <div class="step-num">3</div>
+            <div class="step-label">Recover<small>rebuild &amp; verify</small></div>
+        </div>
+    </div>
+
+    <div class="status" id="edac-status">
+        <span class="dot"></span>
+        <span class="msg">Connecting&hellip;</span>
+        <span class="detail"></span>
+    </div>
+
+    <div class="verdict" id="edac-verdict">
+        <span class="mark"></span>
+        <span class="txt"></span>
+        <span class="note"></span>
+    </div>
+
+    <div class="edac-main">
+        <!-- One image panel, three stages. -->
+        <div class="stage-col">
+            <div class="panel stage-panel">
+                <div class="stage-frame" id="edac-frame">
+                    <div class="stage-tag" id="edac-tag">Original</div>
+
+                    <div class="stage-layer" data-stage="original"><img alt="Original image"></div>
+                    <div class="stage-layer" data-stage="corrupted"><img alt="Corrupted image"></div>
+                    <div class="stage-layer" data-stage="recovered"><img alt="Recovered image"></div>
+
+                    <div class="stage-layer shown" data-stage="empty">
+                        <div class="stage-empty">
+                            <span class="big">&#9634;</span>
+                            Choose an image to begin
+                        </div>
+                    </div>
+                    <div class="stage-layer" data-stage="dead">
+                        <div class="stage-dead">
+                            <span class="big">&#9888;</span>
+                            The damage destroyed the file<br>
+                            <span style="color:var(--text-faint)">nothing left that a decoder can read</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="stage-tabs">
+                    <button class="stage-tab active" data-stage="original" disabled onclick="edacShow('original', true)">Original</button>
+                    <button class="stage-tab corrupted" data-stage="corrupted" disabled onclick="edacShow('corrupted', true)">Corrupted</button>
+                    <button class="stage-tab recovered" data-stage="recovered" disabled onclick="edacShow('recovered', true)">Recovered</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Controls, in the order they are pressed. -->
+        <div class="control-col">
+            <div class="panel control-panel">
+                <div class="field">
+                    <label for="edac-file">Image</label>
+                    <select id="edac-file" onchange="edacLoad()"></select>
+                    <div class="hint" id="edac-file-hint">&nbsp;</div>
+                </div>
+
+                <div class="field">
+                    <label for="edac-fault">Fault model</label>
+                    <select id="edac-fault"></select>
+                    <div class="hint" id="edac-fault-hint">&nbsp;</div>
+                </div>
+
+                <div class="rail-sep"></div>
+
+                <button class="btn" id="btn-protect" onclick="edacProtect()"><span class="n">1</span>Protect</button>
+                <button class="btn" id="btn-inject"  onclick="edacInject()"><span class="n">2</span>Inject fault</button>
+                <button class="btn" id="btn-recover" onclick="edacRecover()"><span class="n">3</span>Recover</button>
+
+                <div class="rail-sep"></div>
+
+                <button class="btn primary" id="btn-auto" onclick="edacAuto()">Run full demo</button>
+                <button class="btn danger" id="btn-reset" onclick="edacReset()">Reset</button>
+
+                <div style="margin-top:auto;display:flex;justify-content:space-between;gap:6px;padding-top:8px">
+                    <button class="link-btn" id="btn-selftest" onclick="edacSelftest()">FRAM self-test</button>
+                    <button class="link-btn" id="btn-format" onclick="edacFormat()">Format FRAM</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- The chip itself: 16 slots, one lit per protected file. -->
+    <div class="panel fram-panel">
+        <div class="fram-head">
+            <h3 class="panel-title">FRAM parity store</h3>
+            <div class="meta" id="edac-fram-meta">16 slots &middot; 15.5 KB each</div>
+        </div>
+        <div class="slot-strip" id="edac-slots"></div>
+        <div class="slot-detail" id="edac-slot-detail">
+            <span class="none">No parity stored yet</span>
+        </div>
+    </div>
+
+</div>
+
+<script>
+/* =====================================================================
+   EDAC page controller.
+
+   Talks to combined_topaz2.py only:
+     POST send_message   {message: "edac_..."}   -> forwarded to the target
+     GET  edac/state                             -> whole screen, for a cold load
+     GET  edac/events                            -> SSE, every update as it happens
+     GET  edac/stage/<stage>?v=<seq>             -> one rendered frame
+
+   The target owns the state machine; this file never guesses at it. Every
+   button posts a command and then waits for the phase to come back, which is
+   what keeps a page opened halfway through a demo (or reloaded during one)
+   showing the truth rather than its own idea of it.
+   ===================================================================== */
+
+const STAGES = ["original", "corrupted", "recovered"];
+
+/* Mirror of the server's edac_state. Replaced wholesale on a cold load and
+   patched by each SSE message. */
+let edacState = {
+    available: false, phase: "idle", busy: false,
+    files: [], faults: [], fram: {}, stages: {},
+    message: "", detail: "", verdict: null,
+    file_id: null, file_label: null, slot_index: null, layers: null
+};
+
+let currentStage = null;      // which frame the panel is showing
+let stagePinned = false;      // operator clicked a tab: stop auto-advancing
+let autoRunning = false;      // "Run full demo" is driving
+let autoSelected = false;     // the opening image has been chosen once already
+
+/* ---------- helpers ---------- */
+
+function fmtBytes(n) {
+    if (n === null || n === undefined) return "–";
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024 * 1024)).toFixed(2) + " MB";
+}
+
+function send(message) {
+    return fetch("send_message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: message })
+    }).catch(function (e) { console.error("EDAC command failed", message, e); });
+}
+
+/* ---------- rendering ---------- */
+
+function renderStatus() {
+    const el = document.getElementById("edac-status");
+    el.className = "status";
+    if (edacState.busy) el.classList.add("busy");
+    else if (edacState.verdict && edacState.verdict.kind === "recover") {
+        el.classList.add(edacState.verdict.passed ? "ok" : "bad");
+    }
+    el.querySelector(".msg").textContent = edacState.message || "Ready";
+    el.querySelector(".detail").textContent = edacState.detail || "";
+}
+
+function renderVerdict() {
+    const el = document.getElementById("edac-verdict");
+    const v = edacState.verdict;
+
+    /* Only a recovery produces the headline. An injection reports through the
+       status line instead - the point of the demo is what survives it. */
+    if (!v || v.kind !== "recover") { el.className = "verdict"; return; }
+
+    el.className = "verdict show " + (v.passed ? "pass" : "fail");
+    el.querySelector(".mark").textContent = v.passed ? "✓" : "✗";
+    el.querySelector(".txt").textContent = v.passed
+        ? "File recovered — integrity verified against its CRC32"
+        : "Recovery failed — the file could not be rebuilt";
+
+    let note = "";
+    if (v.passed) {
+        note = v.repaired ? v.repaired + " damaged section(s) repaired from FRAM parity"
+                          : "no damage found";
+        if (v.rearmed === false) note += " · press Protect before the next fault";
+    } else if (v.unrepairable) {
+        note = v.unrepairable + " section(s) beyond repair";
+    }
+    el.querySelector(".note").textContent = note;
+}
+
+function renderSteps() {
+    const phase = edacState.phase;
+    /* done: this step has happened for the file on screen.
+       active: this step is what comes next. */
+    const done = {
+        protect: ["protected", "corrupted", "recovered"].indexOf(phase) >= 0,
+        inject:  ["corrupted", "recovered"].indexOf(phase) >= 0,
+        recover: phase === "recovered"
+    };
+    const next = phase === "loaded" ? "protect"
+               : phase === "protected" ? "inject"
+               : phase === "corrupted" ? "recover"
+               : phase === "recovered" ? "inject"
+               : null;
+
+    document.querySelectorAll("#edac-steps .step").forEach(function (step) {
+        const key = step.dataset.step;
+        step.classList.toggle("done", !!done[key]);
+        step.classList.toggle("active", key === next);
+        step.classList.toggle("busy", edacState.busy && key === next);
+    });
+}
+
+function renderControls() {
+    const phase = edacState.phase;
+    const busy = edacState.busy;
+    const loaded = !!edacState.file_id;
+    const blocked = busy || autoRunning;
+
+    const canProtect = loaded && phase === "loaded";
+    const canInject = ["protected", "recovered"].indexOf(phase) >= 0;
+    const canRecover = phase === "corrupted";
+
+    function set(id, enabled, isNext) {
+        const b = document.getElementById(id);
+        b.disabled = !enabled || blocked;
+        b.classList.toggle("next", !!isNext && enabled && !blocked);
+    }
+    set("btn-protect", canProtect, true);
+    set("btn-inject", canInject, true);
+    set("btn-recover", canRecover, true);
+
+    document.getElementById("btn-auto").disabled = !loaded || blocked;
+    document.getElementById("btn-reset").disabled = blocked;
+    document.getElementById("btn-selftest").disabled = blocked;
+    document.getElementById("btn-format").disabled = blocked;
+    document.getElementById("edac-file").disabled = blocked;
+    document.getElementById("edac-fault").disabled = blocked;
+}
+
+function renderStageTabs() {
+    document.querySelectorAll(".stage-tab").forEach(function (tab) {
+        const stage = tab.dataset.stage;
+        tab.disabled = !edacState.stages[stage];
+        tab.classList.toggle("active", stage === currentStage);
+    });
+}
+
+/* Show one stage in the image panel.
+
+   `manual` marks an operator click, which pins the panel so the next update
+   does not yank the frame away while they are looking at it. Any new stage
+   arriving unpins it again - during a run, following along is what is wanted. */
+function edacShow(stage, manual) {
+    const info = edacState.stages[stage];
+    if (!info) return;
+    if (manual) stagePinned = true;
+
+    const layer = document.querySelector('.stage-layer[data-stage="' + stage + '"]');
+    const img = layer.querySelector("img");
+    const want = "edac/stage/" + stage + "?v=" + info.seq;
+    if (img.getAttribute("src") !== want) img.setAttribute("src", want);
+
+    currentStage = stage;
+    const dead = !!info.undecodable;
+    document.querySelectorAll(".stage-layer").forEach(function (l) {
+        const isTarget = dead ? l.dataset.stage === "dead" : l.dataset.stage === stage;
+        l.classList.toggle("shown", isTarget);
+    });
+
+    const tag = document.getElementById("edac-tag");
+    tag.textContent = stage;
+    tag.className = "stage-tag " + stage;
+    renderStageTabs();
+}
+
+function renderStagePanel() {
+    const have = STAGES.filter(function (s) { return !!edacState.stages[s]; });
+
+    if (!have.length) {
+        currentStage = null;
+        stagePinned = false;
+        document.querySelectorAll(".stage-layer").forEach(function (l) {
+            l.classList.toggle("shown", l.dataset.stage === "empty");
+        });
+        document.getElementById("edac-tag").textContent =
+            edacState.file_label ? "Loading…" : "No image";
+        document.getElementById("edac-tag").className = "stage-tag";
+        renderStageTabs();
+        return;
+    }
+
+    /* Auto-advance to the newest frame: the last stage to arrive is the one the
+       operator just caused, so it is what they want to see. */
+    if (!stagePinned || !edacState.stages[currentStage]) {
+        let newest = have[0];
+        have.forEach(function (s) {
+            if (edacState.stages[s].seq > edacState.stages[newest].seq) newest = s;
+        });
+        edacShow(newest, false);
+    } else {
+        edacShow(currentStage, false);
+    }
+}
+
+function renderFram() {
+    const fram = edacState.fram || {};
+    const slots = fram.slots || [];
+    const count = fram.slot_count || 16;
+    const slotBytes = fram.slot_bytes || 15872;
+    const strip = document.getElementById("edac-slots");
+
+    document.getElementById("edac-fram-meta").textContent =
+        (fram.slots_used || 0) + " of " + count + " slots in use · " +
+        fmtBytes(slotBytes) + " of parity per slot";
+
+    /* Rebuild only when the slot count changes; otherwise patch in place so the
+       write/read animations are not wiped out by a re-render. */
+    if (strip.children.length !== count) {
+        strip.innerHTML = "";
+        for (let i = 0; i < count; i++) {
+            const cell = document.createElement("div");
+            cell.className = "slot";
+            cell.dataset.index = String(i);
+            cell.innerHTML = '<div class="fill" style="height:0"></div><span>' + i + "</span>";
+            strip.appendChild(cell);
+        }
+    }
+
+    for (let i = 0; i < count; i++) {
+        const cell = strip.children[i];
+        const slot = slots[i] || { in_use: false };
+        cell.classList.toggle("used", !!slot.in_use);
+        cell.classList.toggle("active", !!slot.active);
+        const pct = slot.in_use && slot.fram_size
+            ? Math.max(6, Math.min(100, (slot.fram_size / slotBytes) * 100)) : 0;
+        cell.querySelector(".fill").style.height = pct + "%";
+        cell.title = slot.in_use
+            ? "Slot " + i + " — " + slot.name + " · " + fmtBytes(slot.fram_size) + " of parity"
+            : "Slot " + i + " — free";
+    }
+
+    const detail = document.getElementById("edac-slot-detail");
+    const mine = slots.filter(function (s) { return s.active; })[0];
+    if (!mine) {
+        detail.innerHTML = fram.error
+            ? '<span class="none">Slot table unreadable — ' + fram.error + "</span>"
+            : '<span class="none">No parity stored for this image yet</span>';
+        return;
+    }
+    detail.innerHTML =
+        '<span><span class="k">slot</span> <span class="v">' + mine.index + "</span></span>" +
+        '<span><span class="k">file</span> <span class="v">' + mine.name + "</span></span>" +
+        '<span><span class="k">protected</span> <span class="v">' + fmtBytes(mine.size) + "</span></span>" +
+        '<span><span class="k">parity layers</span> <span class="v">' + (mine.layers || "–") + "</span></span>" +
+        '<span><span class="k">parity in FRAM</span> <span class="v">' + fmtBytes(mine.fram_size) + "</span></span>";
+}
+
+/* One-shot flash on the slot holding our parity, when it is written or read. */
+function pulseSlot(kind) {
+    const idx = edacState.slot_index;
+    if (idx === null || idx === undefined) return;
+    const cell = document.querySelector('#edac-slots .slot[data-index="' + idx + '"]');
+    if (!cell) return;
+    cell.classList.remove("write", "read");
+    void cell.offsetWidth;             // restart the animation
+    cell.classList.add(kind);
+    setTimeout(function () { cell.classList.remove(kind); }, 950);
+}
+
+function renderMenus() {
+    const fileSel = document.getElementById("edac-file");
+    if (fileSel.dataset.count !== String(edacState.files.length)) {
+        fileSel.innerHTML = '<option value="">Choose an image…</option>';
+        edacState.files.forEach(function (f) {
+            const opt = document.createElement("option");
+            opt.value = f.id;
+            opt.textContent = f.label + "  —  " + fmtBytes(f.size);
+            fileSel.appendChild(opt);
+        });
+        fileSel.dataset.count = String(edacState.files.length);
+    }
+    if (edacState.file_id && fileSel.value !== edacState.file_id) {
+        fileSel.value = edacState.file_id;
+    } else if (!edacState.file_id && !edacState.busy && edacState.phase === "idle"
+               && edacState.files.length && !autoSelected) {
+        /* Open the page and it is already loaded with a demo. The catalogue is
+           sorted smallest-first, and the smallest is the single-layer JPEG —
+           the one image that corrupts visibly and recovers over and over
+           without a fresh Protect. Guarded so a reload mid-demo restores what
+           is actually running instead of resetting to this. */
+        autoSelected = true;
+        fileSel.value = edacState.files[0].id;
+        edacLoad();
+    }
+    renderFileHint();
+
+    const faultSel = document.getElementById("edac-fault");
+    if (faultSel.dataset.count !== String(edacState.faults.length) && edacState.faults.length) {
+        faultSel.innerHTML = "";
+        const groups = {};
+        edacState.faults.forEach(function (f) {
+            if (!groups[f.category]) {
+                groups[f.category] = document.createElement("optgroup");
+                groups[f.category].label = f.category;
+                faultSel.appendChild(groups[f.category]);
+            }
+            const opt = document.createElement("option");
+            opt.value = f.index;
+            opt.textContent = f.name;
+            opt.dataset.description = f.description || "";
+            groups[f.category].appendChild(opt);
+        });
+        faultSel.dataset.count = String(edacState.faults.length);
+        faultSel.value = "1";          // SEU: one cosmic ray, one flipped bit
+        renderFaultHint();
+    }
+}
+
+function renderFileHint() {
+    const sel = document.getElementById("edac-file");
+    const f = edacState.files.filter(function (x) { return x.id === sel.value; })[0];
+    const el = document.getElementById("edac-file-hint");
+    if (!f) { el.textContent = "\u00a0"; return; }
+
+    /* Worth saying, because the two formats fail very differently and that
+       difference IS the demo. A JPEG decodes down to the damage and then
+       visibly falls apart, so the fault is on screen. A PNG is one zlib
+       stream: light damage is invisible and heavy damage destroys the file
+       outright, landing on the "nothing left to read" panel instead. */
+    const png = /\.png$/i.test(f.label);
+    el.textContent = fmtBytes(f.size) + " \u00b7 " +
+        (png ? "PNG \u2014 damage tends to destroy the whole file"
+             : "JPEG \u2014 damage stays visible on screen");
+}
+
+function renderFaultHint() {
+    const sel = document.getElementById("edac-fault");
+    const opt = sel.options[sel.selectedIndex];
+    document.getElementById("edac-fault-hint").textContent =
+        (opt && opt.dataset.description) ? opt.dataset.description : " ";
+}
+
+function renderAll() {
+    document.body.classList.toggle("edac-offline", !edacState.available);
+    if (edacState.device) document.getElementById("edac-dev").textContent = edacState.device;
+    renderMenus();
+    renderStatus();
+    renderVerdict();
+    renderSteps();
+    renderControls();
+    renderStagePanel();
+    renderFram();
+}
+
+/* ---------- live updates ---------- */
+
+function applyUpdate(u) {
+    if (!u || !u.type) return;
+    edacState.available = true;
+
+    if (u.type === "edac_catalogue") {
+        edacState.files = u.files || [];
+        edacState.faults = u.faults || [];
+        if (u.device) edacState.device = u.device;
+
+    } else if (u.type === "edac_state") {
+        const previousSlot = edacState.slot_index;
+        ["phase", "busy", "message", "detail", "file_id", "file_label",
+         "slot_index", "layers", "last_fault", "device"].forEach(function (k) {
+            if (k in u) edacState[k] = u[k];
+        });
+        if (u.fram) edacState.fram = u.fram;
+        edacState.verdict = u.verdict || null;
+
+        if (u.reset_stages) {
+            u.reset_stages.forEach(function (s) { delete edacState.stages[s]; });
+            stagePinned = false;
+        }
+
+        /* Parity has just landed in a slot: flash it. Reading it back out is
+           flashed when a recovery reports its verdict. */
+        if (u.verdict && u.verdict.kind === "recover") pulseSlot("read");
+        else if (edacState.slot_index !== null && edacState.slot_index !== previousSlot
+                 && edacState.phase === "protected") {
+            setTimeout(function () { pulseSlot("write"); }, 40);
+        }
+
+    } else if (u.type === "edac_image") {
+        edacState.stages[u.stage] = {
+            seq: u.seq, raw: !!u.raw, undecodable: !!u.undecodable
+        };
+        stagePinned = false;           // follow the newest frame during a run
+
+    } else if (u.type === "edac_error") {
+        edacState.busy = false;
+        edacState.message = u.message || "EDAC error";
+        edacState.detail = u.detail || "";
+        edacState.verdict = null;
+        autoRunning = false;
+    }
+
+    renderAll();
+}
+
+function openStream() {
+    const src = new EventSource("edac/events");
+    src.onmessage = function (ev) {
+        try { applyUpdate(JSON.parse(ev.data)); }
+        catch (e) { console.error("EDAC stream parse error", e); }
+    };
+    src.onerror = function () {
+        /* EventSource reconnects on its own; refresh state on the way back in
+           so nothing missed while it was down stays missed. */
+        setTimeout(loadState, 2000);
+    };
+}
+
+function loadState() {
+    return fetch("edac/state")
+        .then(function (r) { return r.json(); })
+        .then(function (s) {
+            if (s && typeof s === "object") {
+                edacState = Object.assign(edacState, s);
+                edacState.stages = s.stages || {};
+            }
+            renderAll();
+            /* Nothing cached yet: ask the target to describe itself. Also the
+               path taken when the host restarted but the target did not. */
+            if (!edacState.available || !edacState.files.length) send("edac_status");
+        })
+        .catch(function (e) { console.error("EDAC state fetch failed", e); });
+}
+
+/* Resolve once the target reports it has finished whatever it is doing.
+   `wanted` is the phase to wait for; a mismatch after settling means the step
+   failed and the caller should stop rather than press on. */
+function waitForPhase(wanted, timeoutMs) {
+    return new Promise(function (resolve) {
+        const deadline = Date.now() + (timeoutMs || 300000);
+        (function poll() {
+            if (!edacState.busy && edacState.phase === wanted) return resolve(true);
+            if (Date.now() > deadline || !autoRunning) return resolve(false);
+            setTimeout(poll, 120);
+        })();
+    });
+}
+
+/* ---------- commands ---------- */
+
+function edacLoad() {
+    const id = document.getElementById("edac-file").value;
+    renderFileHint();
+    if (id) send("edac_load:" + id);
+}
+
+function edacProtect() { send("edac_protect"); }
+
+function edacInject() {
+    const type = document.getElementById("edac-fault").value || "1";
+    send("edac_inject:" + type);
+}
+
+function edacRecover() { send("edac_recover"); }
+
+function edacReset() {
+    autoRunning = false;
+    send("edac_reset");
+}
+
+function edacSelftest() { send("edac_selftest"); }
+
+function edacFormat() {
+    if (!window.confirm(
+        "Format the FRAM?\n\nEvery slot is wiped and every protected file loses " +
+        "its parity. There is no undo.")) return;
+    send("edac_format");
+}
+
+function edacRetry() { loadState(); }
+
+/* The whole story, unattended: protect, corrupt, recover. Paced so an audience
+   can see each step land rather than watching three things happen at once. */
+async function edacAuto() {
+    if (autoRunning || !edacState.file_id) return;
+    autoRunning = true;
+    renderControls();
+
+    try {
+        if (edacState.phase === "loaded") {
+            await send("edac_protect");
+            if (!await waitForPhase("protected")) return;
+            await new Promise(function (r) { setTimeout(r, 900); });
+        }
+
+        stagePinned = false;
+        edacInject();
+        if (!await waitForPhase("corrupted")) return;
+        await new Promise(function (r) { setTimeout(r, 1600); });
+
+        edacRecover();
+        await waitForPhase("recovered");
+    } finally {
+        autoRunning = false;
+        renderControls();
+    }
+}
+
+/* ---------- boot ---------- */
+
+document.getElementById("edac-fault").addEventListener("change", renderFaultHint);
+
+renderAll();
+loadState().then(openStream);
+</script>
+</body>
+</html>

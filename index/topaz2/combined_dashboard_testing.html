@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Topaz Monitor</title>
+    <style>
+        /* ------------------------------------------------------------------
+           Combined Topaz frontend, served by combined_topaz2.py at '/'. It is
+           a thin shell: three collapsible sections, each hosting standalone
+           page(s) in same-origin <iframe>s:
+             * Orientation      -> orientation      (orientation.html)
+             * System monitoring-> system_monitor   (system_monitor.html)
+             * Vision models    -> four tabs, one inference demo page each:
+                 Small object detection -> small_obj_app (index_grafana_topaz_small_object.html)
+                 Autonomous navigation  -> auto_nav_app  (index_land_nav.html)
+                 AI ship                -> ai_ship_app   (index_ai_ship.html)
+                 AI smoke               -> ai_smoke_app  (index_ai_smoke.html)
+             * EDAC             -> edac_app         (edac.html)
+           Keeping them as iframes means each page stays standalone and is edited
+           independently. Because all frames are same-origin the shell auto-sizes
+           each to its content, so the whole dashboard scrolls as one page.
+
+           Orientation and System monitoring both render from the same
+           /system_metrics snapshot, so the shell polls that endpoint ONCE and
+           pushes each snapshot into the frames that subscribed (see the metrics
+           broker in the script below) instead of letting each frame poll it.
+
+           The Vision models tabs stay MOUNTED once visited (hidden, not removed):
+           each page runs its own polling/preload state, and tearing that down on
+           every tab switch would abort an in-flight run. Only the first click on
+           a tab loads its frame, so the page starts cheap.
+
+           IMPORTANT — every URL here is RELATIVE (no leading slash). This page is
+           designed to be reachable both directly (http://<box>:5001/) and behind
+           an nginx prefix (https://<domain>/topaz/ -> :5001/). Relative srcs
+           resolve against whatever prefix the request arrived on; a leading slash
+           would escape the prefix and 404. See set_up_proxy_server.md.
+           The Grafana dark theme is reproduced here so the shell matches the
+           frames it hosts.
+           ------------------------------------------------------------------ */
+        :root {
+            --bg:        #020406;
+            --border:    #28292f;
+            --text:      rgba(204, 204, 220, 0.90);
+            --text-weak: rgba(204, 204, 220, 0.65);
+            --blue:      #3696ff;
+        }
+
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+            font-size: 13px;
+            -webkit-font-smoothing: antialiased;
+            padding: 8px 10px 24px;
+        }
+
+        /* ---- collapsible section (Grafana row-header style) ---- */
+        .section-row { margin-bottom: 6px; }
+        .section-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            user-select: none;
+            padding: 6px 4px;
+            color: var(--text-weak);
+            font-size: 15px;
+            font-weight: 400;
+        }
+        .section-header:hover { color: var(--text); }
+        .section-header .chev {
+            display: inline-block;
+            font-size: 11px;
+            transition: transform 0.15s ease;
+        }
+        .section-row.collapsed .chev { transform: rotate(-90deg); }
+        .section-row.collapsed .section-body { display: none; }
+
+        /* Every .frame here is auto-sized to its content by fit() below and
+           carries scrolling="no": the whole dashboard scrolls as one page, so a
+           frame must never grow its own scrollbar. fit() keeps the height right;
+           scrolling="no" makes an inner scrollbar impossible even mid-transition. */
+        .frame {
+            width: 100%;
+            border: none;
+            display: block;
+            background: var(--bg);
+        }
+
+        /* ---- tab strip inside the Vision models row ---- */
+        .tabs {
+            display: flex;
+            gap: 4px;
+            border-bottom: 1px solid var(--border);
+            margin: 0 4px 6px;
+        }
+        .tab-btn {
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--text-weak);
+            padding: 10px 16px;
+            font-size: 14px;
+            font-family: inherit;
+            cursor: pointer;
+            transition: color .15s ease, border-color .15s ease;
+        }
+        .tab-btn:hover { color: var(--text); }
+        .tab-btn.active { color: var(--text); border-bottom-color: var(--blue); }
+
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+    </style>
+</head>
+<body>
+
+    <!-- ===================== Orientation ===================== -->
+    <div class="section-row" id="sec-ori">
+        <div class="section-header" onclick="toggleSection('sec-ori')">
+            <span class="chev">&#9662;</span><span>Orientation</span>
+        </div>
+        <div class="section-body">
+            <iframe class="frame" id="frame-ori" src="orientation" scrolling="no"
+                    title="Orientation" style="height: 420px;"></iframe>
+        </div>
+    </div>
+
+    <!-- ===================== System monitoring ===================== -->
+    <div class="section-row" id="sec-mon">
+        <div class="section-header" onclick="toggleSection('sec-mon')">
+            <span class="chev">&#9662;</span><span>System monitoring</span>
+        </div>
+        <div class="section-body">
+            <iframe class="frame" id="frame-mon" src="system_monitor" scrolling="no"
+                    title="System monitoring" style="height: 900px;"></iframe>
+        </div>
+    </div>
+
+    <!-- ===================== Vision models ===================== -->
+    <div class="section-row" id="sec-vis">
+        <div class="section-header" onclick="toggleSection('sec-vis')">
+            <span class="chev">&#9662;</span><span>Vision models</span>
+        </div>
+        <div class="section-body">
+            <div class="tabs">
+                <button class="tab-btn" data-tab="nav" onclick="switchVisionTab('nav')">Autonomous navigation</button>
+                <button class="tab-btn active" data-tab="sod" onclick="switchVisionTab('sod')">Small object detection</button>
+                <button class="tab-btn" data-tab="ship" onclick="switchVisionTab('ship')">AI ship</button>
+                <button class="tab-btn" data-tab="smoke" onclick="switchVisionTab('smoke')">AI smoke</button>
+            </div>
+
+            <!-- data-src, not src: each frame is loaded the first time its tab is
+                 opened (the default tab loads on page load), then stays mounted. -->
+            <div class="tab-panel" data-tab="nav">
+                <iframe class="frame" id="frame-nav" data-src="auto_nav_app" scrolling="no"
+                        title="Autonomous navigation" style="height: 700px;"></iframe>
+            </div>
+            <div class="tab-panel active" data-tab="sod">
+                <iframe class="frame" id="frame-sod" data-src="small_obj_app" scrolling="no"
+                        title="Small object detection" style="height: 700px;"></iframe>
+            </div>
+            <div class="tab-panel" data-tab="ship">
+                <iframe class="frame" id="frame-ship" data-src="ai_ship_app" scrolling="no"
+                        title="AI ship" style="height: 800px;"></iframe>
+            </div>
+            <div class="tab-panel" data-tab="smoke">
+                <iframe class="frame" id="frame-smoke" data-src="ai_smoke_app" scrolling="no"
+                        title="AI smoke" style="height: 800px;"></iframe>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================== EDAC ===================== -->
+    <!-- A row of its own rather than a fifth Vision models tab: EDAC protects and
+         repairs a file, it does not run an inference model, so it does not belong
+         under that heading. Being a plain section frame it carries a real src and
+         loads with the page (like Orientation and System monitoring, unlike the
+         lazily-mounted tabs), so its progress stream is open from the start and
+         the demo is ready the moment the row is scrolled to. -->
+    <div class="section-row" id="sec-edac">
+        <div class="section-header" onclick="toggleSection('sec-edac')">
+            <span class="chev">&#9662;</span><span>EDAC</span>
+        </div>
+        <div class="section-body">
+            <iframe class="frame" id="frame-edac" src="edac_app" scrolling="no"
+                    title="EDAC" style="height: 900px;"></iframe>
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        "use strict";
+
+        // Auto-size a same-origin frame to its content, exactly like the HPC shell
+        // that hosts this page. The Topaz pages build async grids from the first
+        // /system_metrics response, so frames are re-fitted on a 1s poll too.
+        function frameDoc(fr) {
+            try { return fr.contentWindow.document; } catch (e) { return null; }
+        }
+        // Measure the BODY, not documentElement: an auto-height body is exactly as
+        // tall as its content, while documentElement.scrollHeight is never smaller
+        // than the frame's own viewport (i.e. the height we already set). Measuring
+        // the body is what lets a frame SHRINK as well as grow, which the vision
+        // tabs need: switching from a tall tab to a short one must give the height
+        // back instead of leaving a big empty gap under the page.
+        function contentHeight(d) {
+            if (!d) return 0;
+            var b = d.body;
+            if (b) {
+                var h = Math.max(b.scrollHeight, Math.ceil(b.getBoundingClientRect().height));
+                if (h) return h;
+            }
+            return d.documentElement ? d.documentElement.scrollHeight : 0;
+        }
+        // A frame inside a hidden tab panel (or a collapsed row) measures as 0 and
+        // would collapse to its fallback, so leave those alone entirely -- each is
+        // fitted when its tab/row is actually shown.
+        function isVisible(fr) {
+            return fr.offsetParent !== null;
+        }
+        // Size a frame to its content, in both directions. The deadband is
+        // deliberately one-sided: leaving the frame even 1px SHORT than its
+        // content makes the browser paint a scrollbar inside it -- the second
+        // scrollbar this whole auto-sizing exists to avoid -- so any shortfall is
+        // corrected immediately. Only shrinking is damped, which is all that is
+        // needed to stop sub-pixel noise rewriting the style on every tick.
+        function fit(fr, fallback) {
+            var d = frameDoc(fr);
+            if (!d || !isVisible(fr)) return;
+            var h = contentHeight(d) || fallback;
+            if (h > fr.offsetHeight || fr.offsetHeight - h > 1) fr.style.height = h + "px";
+        }
+        // A frame that was just revealed needs a moment to re-layout before its
+        // content height is trustworthy, and these pages build their grids from
+        // their first data response -- so re-fit a few times, not once.
+        function refit(f) {
+            [0, 150, 400, 1000, 1500].forEach(function (ms) {
+                setTimeout(function () { fit(f.el, f.fallback); }, ms);
+            });
+        }
+
+        var FRAMES = [
+            { el: document.getElementById("frame-ori"), fallback: 420, sec: "sec-ori" },
+            { el: document.getElementById("frame-mon"), fallback: 900, sec: "sec-mon" },
+            { el: document.getElementById("frame-sod"), fallback: 700, sec: "sec-vis", tab: "sod" },
+            { el: document.getElementById("frame-nav"), fallback: 700, sec: "sec-vis", tab: "nav" },
+            { el: document.getElementById("frame-ship"), fallback: 800, sec: "sec-vis", tab: "ship" },
+            { el: document.getElementById("frame-smoke"), fallback: 800, sec: "sec-vis", tab: "smoke" },
+            { el: document.getElementById("frame-edac"), fallback: 900, sec: "sec-edac" }
+        ];
+
+        FRAMES.forEach(function (f) {
+            f.el.addEventListener("load", function () { refit(f); });
+        });
+        setInterval(function () { FRAMES.forEach(function (f) { fit(f.el, f.fallback); }); }, 1000);
+
+        // ---- one /system_metrics poll shared by every frame that wants it ----
+        // The Orientation and System monitoring pages render from the SAME
+        // snapshot, so while each ran its own poll this dashboard pulled the
+        // identical payload twice a second. Frames now subscribe by postMessage
+        // and the shell does the fetching, pushing each snapshot to all of them
+        // at the fastest rate any subscriber asked for (a frame wanting a slower
+        // refresh drops the extras itself). A page opened directly, outside this
+        // shell, never gets an ack and falls back to polling for itself.
+        var subs = [];                            // { win, interval }
+        var metricsTimer = null, metricsMs = 0, metricsInFlight = false;
+
+        function pushMetrics(msg) {
+            subs.forEach(function (s) {
+                try { s.win.postMessage(msg, window.location.origin); } catch (e) {}
+            });
+        }
+        function pollMetrics() {
+            if (metricsInFlight || !subs.length) return;
+            metricsInFlight = true;
+            fetch("system_metrics", { cache: "no-store" })
+                .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+                .then(function (d) { pushMetrics({ type: "metrics", data: d }); })
+                .catch(function () { pushMetrics({ type: "metrics-error" }); })
+                .finally(function () { metricsInFlight = false; });
+        }
+        function restartMetricsPoll() {
+            var ms = subs.reduce(function (m, s) { return Math.min(m, s.interval); }, 60000);
+            if (metricsTimer && ms === metricsMs) return;   // re-subscribe, same rate
+            metricsMs = ms;
+            if (metricsTimer) clearInterval(metricsTimer);
+            metricsTimer = setInterval(pollMetrics, ms);
+            pollMetrics();
+        }
+        window.addEventListener("message", function (e) {
+            if (e.origin !== window.location.origin) return;
+            var m = e.data;
+            if (!m || m.type !== "metrics-subscribe") return;
+            var known = subs.filter(function (s) { return s.win === e.source; })[0];
+            var ms = parseInt(m.interval, 10) || 1000;
+            if (known) known.interval = ms;             // frame changed its refresh
+            else subs.push({ win: e.source, interval: ms });
+            // Ack even when nothing changed: the ack is what tells the frame a
+            // host is feeding it, so it stops (or never starts) its own poll.
+            try { e.source.postMessage({ type: "metrics-subscribed" }, window.location.origin); } catch (err) {}
+            restartMetricsPoll();
+        });
+
+        var resizeTimer = null;
+        window.addEventListener("resize", function () {
+            if (resizeTimer) clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(function () {
+                FRAMES.forEach(function (f) { fit(f.el, f.fallback); });
+            }, 200);
+        });
+
+        window.toggleSection = function (id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.classList.toggle("collapsed");
+            // Re-fit this section's frames when it is revealed (can't measure
+            // while hidden). Frames in non-active tabs are skipped by fit().
+            if (!el.classList.contains("collapsed")) {
+                var own = FRAMES.filter(function (x) { return x.sec === id; });
+                own.forEach(function (f) { loadFrame(f); refit(f); });
+            }
+        };
+
+        // ---- Vision models tabs ----
+        // Frames carry data-src and are only given a real src the first time their
+        // tab is shown; after that they stay in the DOM so a running workload page
+        // keeps its polling, preloaded images and elapsed timer across switches.
+        function loadFrame(f) {
+            if (!f.el || !f.tab) return;
+            if (!f.el.getAttribute("src") && f.el.closest(".tab-panel").classList.contains("active")) {
+                f.el.src = f.el.getAttribute("data-src");
+            }
+        }
+
+        window.switchVisionTab = function (tab) {
+            document.querySelectorAll("#sec-vis .tab-btn").forEach(function (b) {
+                b.classList.toggle("active", b.dataset.tab === tab);
+            });
+            document.querySelectorAll("#sec-vis .tab-panel").forEach(function (p) {
+                p.classList.toggle("active", p.dataset.tab === tab);
+            });
+
+            var f = FRAMES.filter(function (x) { return x.tab === tab; })[0];
+            if (!f) return;
+            loadFrame(f);
+            // Now that the panel is visible the frame can finally be measured. The
+            // outgoing tab may have been taller, so this must be able to shrink the
+            // section back down, not just grow it.
+            refit(f);
+        };
+
+        FRAMES.forEach(loadFrame);   // gives the default (visible) vision tab its src
+    })();
+    </script>
+</body>
+</html>
