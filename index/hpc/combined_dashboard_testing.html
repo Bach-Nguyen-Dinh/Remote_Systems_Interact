@@ -213,30 +213,6 @@
         </div>
     </div>
 
-    <!-- ===================== Performance analysis ===================== -->
-    <!-- Starts collapsed: it is a post-run view, so there is nothing to look at
-         until a SAR run has finished. -->
-    <div class="section-row collapsed" id="sec-perf">
-        <div class="section-header" onclick="toggleSection('sec-perf')">
-            <span class="chev">&#9662;</span><span>Performance analysis</span>
-        </div>
-        <div class="section-body">
-            <!-- A plain src, loaded with the page even though the row starts
-                 collapsed. Deferring it would need a mount step, and the only
-                 one here is the /device_health gate, which exists for the two
-                 REMOTE boxes that can be unreachable -- this panel is served by
-                 our own backend, so gating it would be inventing a failure mode
-                 it does not have. The panel is cheap (one small JSON poll, plus
-                 six ~10-40 KB plots that only refetch when the run changes), and
-                 it re-polls itself when the row is opened.
-                 scrolling="no": auto-sized to its own content (see FRAMES
-                 below), so it is never meant to scroll on its own. -->
-            <iframe class="frame" id="frame-perf" src="/performance_analysis"
-                    scrolling="no" title="Performance analysis"
-                    style="height: 1400px;"></iframe>
-        </div>
-    </div>
-
     <!-- ===================== VLM application ===================== -->
     <div class="section-row" id="sec-vlm">
         <div class="section-header" onclick="toggleSection('sec-vlm')">
@@ -280,6 +256,30 @@
         </div>
     </div>
 
+    <!-- ===================== Performance analysis ===================== -->
+    <!-- Starts collapsed: it is a post-run view, so there is nothing to look at
+         until a SAR run has finished. -->
+    <div class="section-row collapsed" id="sec-perf">
+        <div class="section-header" onclick="toggleSection('sec-perf')">
+            <span class="chev">&#9662;</span><span>Performance analysis</span>
+        </div>
+        <div class="section-body">
+            <!-- A plain src, loaded with the page even though the row starts
+                 collapsed. Deferring it would need a mount step, and the only
+                 one here is the /device_health gate, which exists for the two
+                 REMOTE boxes that can be unreachable -- this panel is served by
+                 our own backend, so gating it would be inventing a failure mode
+                 it does not have. The panel is cheap (one small JSON poll, plus
+                 six ~10-40 KB plots that only refetch when the run changes), and
+                 it re-polls itself when the row is opened.
+                 scrolling="no": auto-sized to its own content (see FRAMES
+                 below), so it is never meant to scroll on its own. -->
+            <iframe class="frame" id="frame-perf" src="/performance_analysis"
+                    scrolling="no" title="Performance analysis"
+                    style="height: 1400px;"></iframe>
+        </div>
+    </div>
+
     </div><!-- /Server tab -->
 
     <!-- ===================== Edge device tab ===================== -->
@@ -297,7 +297,7 @@
                  Only affects the framed instance; /topaz/ opened directly still
                  scrolls normally. Frames with a FIXED height (SAR, VLM) keep their
                  scrollbars -- those genuinely need them. -->
-            <iframe class="frame" id="frame-topaz" data-src="/topaz/" scrolling="no" hidden
+            <iframe class="frame" id="frame-topaz" data-src="/topaz/test" scrolling="no" hidden
                     title="Edge Device" style="height: 1900px;"></iframe>
             <div class="device-offline show" id="off-topaz">
                 <div class="dev-icon">&#9679;</div>
