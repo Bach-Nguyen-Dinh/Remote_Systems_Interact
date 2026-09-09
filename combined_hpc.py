@@ -167,8 +167,15 @@ DEVICE_HEALTH_TIMEOUT = 3.0      # per probe (connect + read)
 # down a panel somebody is using.
 DEVICE_HEALTH_FAIL_STREAK = 2
 DEVICES = {
-    "vlm":   {"label": "Vision language model", "url": f"{VLM_BASE_URL}/health"},
-    "topaz": {"label": "Edge device",           "url": f"{TOPAZ_BASE_URL}/system_metrics"},
+    "vlm":        {"label": "Vision language model", "url": f"{VLM_BASE_URL}/health"},
+    "topaz":      {"label": "Edge device",           "url": f"{TOPAZ_BASE_URL}/system_metrics"},
+    # Test build of the Topaz frontend, served alongside the production one at
+    # /test on the same box/port. Only combined_dashboard_testing.html points at
+    # this key -- the production and rsat shells keep using "topaz" above.
+    # Probes /test itself, not /test/system_metrics: that route doesn't exist --
+    # /test is a single standalone page whose relative links fall through to the
+    # box's regular (unprefixed) data routes, it isn't a mirrored /test/* app.
+    "topaz_test": {"label": "Edge device (test)",    "url": f"{TOPAZ_BASE_URL}/test"},
 }
 
 # Host-side served directories / files (unchanged from host_no_chunking.py)

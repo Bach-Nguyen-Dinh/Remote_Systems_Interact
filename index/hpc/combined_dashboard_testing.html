@@ -14,7 +14,7 @@
              * Live system utilisation-> /system_monitor (system_monitor.html)
              * Performance analysis   -> /performance_analysis
                                                        (performance_analysis.html)
-             * Edge device            -> /topaz/         (the Topaz shell)
+             * Edge device            -> /topaz/test     (the Topaz shell's test build)
 
            Those sections are split across two tabs selected from the branding
            header: "Server" (everything running on this box) and "Edge device"
@@ -23,9 +23,12 @@
            opened — and then stays mounted, since it polls and would restart from
            scratch on every switch.
            Two of those sections stream from OTHER boxes and reach us only via
-           nginx: the VLM app (/vlm/) and the Topaz edge device (/topaz/). When
-           one of those boxes is off its frame would show nginx's raw 502 page,
-           so both are health-gated -- see "device health" in the script below.
+           nginx: the VLM app (/vlm/) and the Topaz edge device, here its test
+           build at /topaz/test -- no trailing slash, see the DEVICES comment
+           in the script below for why -- (the production and rsat shells
+           still use the Topaz box's default route, /topaz/). When one of
+           those boxes is off its frame would show nginx's raw 502 page, so
+           both are health-gated -- see "device health" in the script below.
 
            Keeping them as iframes means each page stays standalone and is edited
            independently; nothing here touches their CSS/JS. Because both frames
@@ -474,8 +477,16 @@
               name: "Vision language model", src: "/vlm/",
               frame: document.getElementById("frame-vlm"),
               ph:    document.getElementById("off-vlm") },
-            { key: "topaz", sec: "sec-topaz", tab: "edge",
-              name: "Edge device", src: "/topaz/",
+            { key: "topaz_test", sec: "sec-topaz", tab: "edge",
+              // No trailing slash: the Topaz box's /test route has no /test/
+              // counterpart, and its shell's relative links (system_metrics,
+              // orientation, ...) are designed to fall through to the real
+              // (unprefixed) data routes when loaded from a slash-less URL.
+              // A trailing slash here 307s (the box's own redirect_slashes),
+              // and since nginx forwards our real Host header the redirect it
+              // builds comes back as bare http://<domain>/test -- wrong scheme,
+              // no /topaz/ prefix -- which the browser blocks as mixed content.
+              name: "Edge device", src: "/topaz/test",
               frame: document.getElementById("frame-topaz"),
               ph:    document.getElementById("off-topaz") }
         ];
