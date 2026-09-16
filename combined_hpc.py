@@ -123,12 +123,41 @@ UP_ETH_ADT_INTERFACE_ID = "enp4s0f1"
 WIRELESS_INTERFACE_ID = "wlp3s0"
 FM_INTERFACE_ID = "fm1-mac3"
 
+# ---- direct-link ("local") mode --------------------------------------------
+# Normally this box and the VLM box both sit on the lab LAN behind nginx, and the
+# browser reaches the VLM app through nginx's /vlm/ prefix (see nexon-ssl.conf).
+# LOCAL_MODE is for the other topology: the two boxes cabled straight together
+# with nothing else on the link, the dashboard opened at http://<this box>:5000/
+# and therefore NO nginx anywhere in the path -- which means /vlm/ does not
+# exist and an iframe pointed at it would render this app's own 404 JSON.
+#
+# In that mode the shell is told to frame the VLM box's own origin instead
+# (http://<vlm host>:8001/), which works because the VLM app already serves its
+# frontend bare at that address and sends no X-Frame-Options / frame-ancestors
+# header. Its own fetches are relative, so they resolve against its origin, not
+# ours -- the same property that makes the /vlm/ prefix work under nginx.
+#
+# Configured by environment rather than argv on purpose: this module is also run
+# as `uvicorn combined_hpc:app` (see the SERVER note in the docstring), where
+# sys.argv belongs to uvicorn, and the settings below are read at import time.
+# `run_hpc.sh --local` prompts for the address and exports these for us.
+#
+#   HPC_LOCAL_MODE=1        serve the VLM panel from the VLM box's own origin
+#   HPC_VLM_HOST=10.42.0.3  that box's address on the direct link
+#   HPC_VLM_PORT=8001       only if it ever moves off its default port
+def _env_flag(name):
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+LOCAL_MODE = _env_flag("HPC_LOCAL_MODE")
+
 # VLM box (AICraft Gemma3/SigLIP pipeline, demo1/backend/main.py) -- reachable
 # over the same Ethernet link as the RDB/adapter test peers above. Change
-# VLM_HOST here if that box's address on the link ever changes; nothing else
-# in this file needs to change.
-VLM_HOST = "192.168.0.11"
-VLM_PORT = 8001
+# VLM_HOST here if that box's LAN address ever changes; nothing else in this
+# file needs to change. On a direct link the address comes from the environment
+# instead, so the default below stays the lab-LAN one.
+VLM_HOST = os.environ.get("HPC_VLM_HOST", "").strip() or "192.168.0.11"
+VLM_PORT = int(os.environ.get("HPC_VLM_PORT", "").strip() or 8001)
 VLM_BASE_URL = f"http://{VLM_HOST}:{VLM_PORT}"
 VLM_UPLOAD_TIMEOUT = 60      # seconds -- generous for a large SAR tiff over Ethernet
 VLM_RESET_TIMEOUT = 5
@@ -166,8 +195,16 @@ DEVICE_HEALTH_TIMEOUT = 3.0      # per probe (connect + read)
 # frame when it goes down, so a single dropped packet must not be enough to tear
 # down a panel somebody is using.
 DEVICE_HEALTH_FAIL_STREAK = 2
+#
+# "src" is what the browser should point that device's <iframe> at, and it is
+# published to the shell by /device_health. It is None for every device in the
+# normal nginx deployment, meaning "use your own default" -- each shell hardcodes
+# its own (/vlm/, /topaz/ or /topaz/test), and the prefixes differ per shell, so
+# the server must not invent them. Only LOCAL_MODE overrides one, because only
+# there does the shell's default (/vlm/, an nginx-only path) not exist.
 DEVICES = {
-    "vlm":        {"label": "Vision language model", "url": f"{VLM_BASE_URL}/health"},
+    "vlm":        {"label": "Vision language model", "url": f"{VLM_BASE_URL}/health",
+                   "src": f"{VLM_BASE_URL}/" if LOCAL_MODE else None},
     "topaz":      {"label": "Edge device",           "url": f"{TOPAZ_BASE_URL}/system_metrics"},
     # Test build of the Topaz frontend, served alongside the production one at
     # /test on the same box/port. Only combined_dashboard_testing.html points at
@@ -244,7 +281,7 @@ latest_metrics_lock = threading.Lock()
 # of accusing a perfectly healthy box of being offline.
 device_health = {
     name: {"status": "unknown", "detail": "not probed yet", "label": cfg["label"],
-           "since": None, "checked": None}
+           "since": None, "checked": None, "src": cfg.get("src")}
     for name, cfg in DEVICES.items()
 }
 device_health_lock = threading.Lock()
@@ -1215,11 +1252,16 @@ def system_metrics():
 
 @app.get('/device_health')
 def device_health_status():
-    """Whether each box behind an nginx prefix is answering, for the shell page.
+    """Whether each remote box is answering, for the shell page.
 
     Polled by the combined dashboard every few seconds. It is served from the
     cache device_health_loop maintains, so it never blocks on a dead box no
-    matter how many dashboards are open."""
+    matter how many dashboards are open.
+
+    Each entry also carries "src": the URL the shell should frame for that
+    device, or null to mean "keep your own default". Only direct-link
+    (LOCAL_MODE) runs set it -- see the DEVICES comment for why the server does
+    not otherwise dictate frame URLs."""
     with device_health_lock:
         devices = {name: dict(entry) for name, entry in device_health.items()}
     return JSONResponse({"devices": devices})
@@ -1507,6 +1549,12 @@ def iperf_up_eth_adt_results():
 # ----------------------------------------------------------------------------
 if __name__ == "__main__":
     print(f"Running uvicorn server on {HOST_IP}:{SERVER_PORT}...")
+    # Say which VLM topology is in force, so a direct-link session can tell at a
+    # glance that --local took effect and which box it will frame.
+    if LOCAL_MODE:
+        print(f"Direct-link mode: VLM panel served from {VLM_BASE_URL}/ (nginx bypassed)")
+    else:
+        print(f"VLM panel served through nginx at /vlm/; health probe -> {VLM_BASE_URL}")
     # The collector / iperf3 / AI-card threads start from `lifespan` above, so
     # they come up whether the app is launched from here or by an external
     # `uvicorn combined_hpc:app`.

@@ -471,6 +471,9 @@
         // box behind it was unreachable.
         var DEVICES = [
             { key: "vlm",   sec: "sec-vlm",   tab: "server",
+              // src is nginx's prefix, and only a default: a direct-link
+              // run (no nginx) replaces it with the VLM box's own origin,
+              // handed to us by /device_health. See checkDevices below.
               name: "Vision language model", src: "/vlm/",
               frame: document.getElementById("frame-vlm"),
               ph:    document.getElementById("off-vlm") },
@@ -578,6 +581,14 @@
                         if (!d) return;
                         dev.status = d.status;
                         dev.detail = d.detail || "";
+                        // The backend may override where this panel loads from.
+                        // It does that in exactly one situation: this box cabled
+                        // straight to the VLM box, with no nginx in the path, so
+                        // the /vlm/ default above does not resolve to anything --
+                        // it then hands us that box's own origin instead. Null or
+                        // absent (every nginx deployment, and any older backend)
+                        // leaves our own default untouched.
+                        if (d.src) dev.src = d.src;
                         render(dev);
                     });
                 })
