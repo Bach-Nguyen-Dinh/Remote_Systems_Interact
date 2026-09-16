@@ -15,6 +15,17 @@ import signal
 
 from imu_manager import IMUManager
 
+# EDAC demo controller (Reed-Solomon parity in SPI FRAM). Kept in its own module
+# because it loads a third-party wrapper off sys.path and has a state machine of
+# its own; imported defensively so a board without the EDAC checkout — or
+# without the FRAM — still runs metrics, IMU and the AI workloads normally. The
+# dashboard's EDAC page reports itself unavailable in that case.
+try:
+    import target_topaz2_edac as edac_demo
+except Exception as _edac_import_error:                 # noqa: BLE001
+    edac_demo = None
+    print(f"EDAC demo module unavailable: {_edac_import_error}")
+
 RSS_EXECUTABLE_PATH = "/home/user/Small-Object-Detection/Utils/RSS"
 INPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Image"
 OUTPUT_IMAGE_DIR = "/home/user/Small-Object-Detection/Data/Data1/Predictions"
@@ -943,6 +954,17 @@ def listen_for_messages():
                         if imu_manager is not None:
                             threading.Thread(target=imu_manager.restart, daemon=True).start()
 
+                    elif message.startswith("edac_"):
+                        # "edac_load:<id>", "edac_protect", "edac_inject:<type>[:<seed>]",
+                        # "edac_recover", … — the whole family goes to the EDAC
+                        # module, which parses the arguments and runs the work on
+                        # its own thread (a wrapper call blocks for as long as an
+                        # encode takes, and this loop handles one message at a time).
+                        if edac_demo is not None:
+                            edac_demo.handle_message(message)
+                        else:
+                            print(f"EDAC command ignored (module not loaded): {message}")
+
         except socket.timeout:
             # This is expected and allows checking stop_event
             continue
@@ -1315,6 +1337,11 @@ def main():
         socket_timeout=SOCKET_TIMEOUT,
         stop_event=stop_event
     )
+
+    # EDAC demo: opens the FRAM and reads the slot table once to prove it works.
+    # A failure here only disables the EDAC page (setup() logs and returns None).
+    if edac_demo is not None:
+        edac_demo.setup(send_progress_update)
 
     # All the threads
     threading.Thread(target=listen_for_messages, daemon=True).start()
