@@ -80,11 +80,34 @@ def _topaz():
     combined_hpc.py and does nothing, and loading a second FastAPI app (plus its
     optional Pillow/InfluxDB probing) for a mode that is switched off would be
     pure cost -- and would turn any problem in that file into a failure to start
-    the HPC dashboard at all."""
+    the HPC dashboard at all.
+
+    ONE VIRTUALENV, TWO APPS. In the two-box deployment each app has its own venv
+    (.venv-hpc here, .venv-topaz2 on the Topaz box); embedded, combined_topaz2
+    runs under .venv-hpc. That works because requirements-topaz2.txt is a strict
+    subset of requirements-hpc.txt at identical pins -- deliberately, so the ARM
+    box needs no compiler. Nothing enforces it, though, so a dependency added to
+    requirements-topaz2.txt and not to requirements-hpc.txt surfaces exactly
+    here. Fail with the fix rather than a bare traceback: the mode was asked for
+    explicitly, so carrying on without it would be a silent lie, but the message
+    has to say what to do."""
     global _topaz_module
     if _topaz_module is None:
         import importlib
-        _topaz_module = importlib.import_module(_TOPAZ_MODULE)
+        try:
+            _topaz_module = importlib.import_module(_TOPAZ_MODULE)
+        except ImportError as exc:
+            raise RuntimeError(
+                f"--edge-device needs {_TOPAZ_MODULE}'s dependencies in this "
+                f"virtualenv, and importing it failed:\n"
+                f"    {exc}\n"
+                f"requirements-topaz2.txt is meant to stay a SUBSET of "
+                f"requirements-hpc.txt so that one venv serves both apps. Fix "
+                f"with:\n"
+                f"    .venv-hpc/bin/pip install -r requirements-hpc.txt\n"
+                f"and if something was added to requirements-topaz2.txt, add it "
+                f"to requirements-hpc.txt too."
+            ) from exc
     return _topaz_module
 
 

@@ -12,6 +12,13 @@
 # it needs no psutil, no numpy, and no imaging stack -- it only ever moves bytes
 # that were handed to it. Keep it that way; it is what makes this installable on
 # the ARM box without a compiler.
+#
+# KEEP THIS A SUBSET OF requirements-hpc.txt, at identical pins. `run_hpc.sh
+# --edge-device` embeds combined_topaz2 in combined_hpc.py (see edge_device.py)
+# and runs it under .venv-hpc, not this venv -- so anything added here that is
+# not also in requirements-hpc.txt breaks that mode. edge_device.py fails with
+# this instruction rather than a bare ImportError, but the cheap fix is to add
+# the dependency to both files in the same commit.
 
 # --- ASGI stack -------------------------------------------------------------
 fastapi==0.124.4

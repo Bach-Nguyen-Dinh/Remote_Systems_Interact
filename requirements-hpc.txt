@@ -7,6 +7,11 @@
 # install drifts onto releases that have dropped 3.8 and either refuses to
 # resolve or silently installs an older build than the one tested here.
 
+# The ASGI stack and influxdb below are also what requirements-topaz2.txt pins,
+# at the same versions, because `run_hpc.sh --edge-device` runs combined_topaz2
+# in this venv instead of on its own box (see edge_device.py). Keep the shared
+# entries in step with that file.
+
 # --- ASGI stack -------------------------------------------------------------
 fastapi==0.124.4
 uvicorn[standard]==0.33.0    # extras bring uvloop + httptools (the fast loop/parser)
