@@ -123,8 +123,12 @@ SERVER_PORT = 5001
 SYSINFO_PORT = 12346         # target -> host system-metrics stream (JSON per line)
 DATA_PORT = 55556            # target -> host workload updates (one JSON object per connection)
 
-TARGET_IP = "10.42.0.7"      # embedded Topaz target (for /send_message forwarding)
-TARGET_PORT = 54322
+# Embedded Topaz target (for /send_message forwarding). The target connects to
+# US for metrics/progress, so only this direction needs its address. Overridable
+# by environment because `run_hpc.sh --edge-device` embeds this app in
+# combined_hpc.py and prompts for the address -- see edge_device.py.
+TARGET_IP = os.environ.get("TOPAZ_TARGET_IP", "").strip() or "10.42.0.7"
+TARGET_PORT = int(os.environ.get("TOPAZ_TARGET_PORT", "").strip() or 54322)
 
 # Worker threads available to the `def` request handlers. Starlette's default is
 # 40; the image-bundle handlers walk large directories and stream hundreds of
@@ -289,16 +293,42 @@ ai_baseline_usage = {"ai_ship": 0.0, "ai_smoke": 0.0}
 # ----------------------------------------------------------------------------
 # Application setup
 # ----------------------------------------------------------------------------
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    """Capture the running loop (the socket threads publish onto it) and start the
-    receivers. Doing it here rather than in __main__ means an external
-    `uvicorn combined_topaz2:app` gets the metrics and progress receivers too."""
+def start_background_workers():
+    """Capture the running loop and start the target<->host receivers.
+
+    Split out of `lifespan` so this app can also be EMBEDDED in another process:
+    edge_device.py mounts it inside combined_hpc.py for `run_hpc.sh
+    --edge-device`, and Starlette does not run a mounted sub-app's lifespan, so
+    that process calls this itself. One code path either way -- nothing about
+    the receivers differs between the two.
+
+    MUST be called from the event loop that will serve this app: the socket
+    threads hand every update over with `main_loop.call_soon_threadsafe`, so a
+    loop captured here and served elsewhere would drop them silently.
+
+    Idempotent, and returns whether it actually started anything, so the two
+    callers cannot race into two sets of receivers both bound to SYSINFO_PORT.
+    """
     global main_loop
+    if main_loop is not None:
+        return False
+
     main_loop = asyncio.get_running_loop()
-    anyio.to_thread.current_default_thread_limiter().total_tokens = REQUEST_THREAD_LIMIT
+    # Raise the limit, never lower it: when embedded, the host app has already
+    # sized this for its own handlers and its ceiling is the one that counts.
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    if limiter.total_tokens < REQUEST_THREAD_LIMIT:
+        limiter.total_tokens = REQUEST_THREAD_LIMIT
     threading.Thread(target=receive_metrics, daemon=True).start()
     threading.Thread(target=receive_workload_updates, daemon=True).start()
+    return True
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Start the receivers. Doing it here rather than in __main__ means an
+    external `uvicorn combined_topaz2:app` gets them too."""
+    start_background_workers()
     yield
 
 

@@ -60,6 +60,12 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+# Optional third topology: the Topaz target cabled straight to this box, with
+# combined_topaz2's app mounted in-process instead of running on a second
+# machine behind nginx. Every entry point below is a no-op unless the mode is
+# switched on, and combined_topaz2 is not imported at all until it is.
+import edge_device
+
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
@@ -202,6 +208,10 @@ DEVICE_HEALTH_FAIL_STREAK = 2
 # its own (/vlm/, /topaz/ or /topaz/test), and the prefixes differ per shell, so
 # the server must not invent them. Only LOCAL_MODE overrides one, because only
 # there does the shell's default (/vlm/, an nginx-only path) not exist.
+#
+# "local" marks a device this process serves itself, so it cannot be separately
+# down and is not worth a probe. Only edge-device mode sets it -- see
+# edge_device.apply_to_devices().
 DEVICES = {
     "vlm":        {"label": "Vision language model", "url": f"{VLM_BASE_URL}/health",
                    "src": f"{VLM_BASE_URL}/" if LOCAL_MODE else None},
@@ -214,6 +224,10 @@ DEVICES = {
     # box's regular (unprefixed) data routes, it isn't a mirrored /test/* app.
     "topaz_test": {"label": "Edge device (test)",    "url": f"{TOPAZ_BASE_URL}/test"},
 }
+
+# Edge-device mode rewrites the two Topaz entries above to point at this process
+# instead of the box at TOPAZ_BASE_URL. No-op in the normal deployment.
+edge_device.apply_to_devices(DEVICES)
 
 # Host-side served directories / files (unchanged from host_no_chunking.py)
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -279,9 +293,18 @@ latest_metrics_lock = threading.Lock()
 # device_health_loop. Seeded as "unknown" rather than "down" so a dashboard
 # opened in the first few seconds after a restart shows "Connecting..." instead
 # of accusing a perfectly healthy box of being offline.
+# A "local" device skips that grace period and starts up: it is served by this
+# process, so by the time anything can ask, the answer is already yes -- and
+# "Connecting..." for a panel that was never going to connect to anything reads
+# as a fault.
 device_health = {
-    name: {"status": "unknown", "detail": "not probed yet", "label": cfg["label"],
-           "since": None, "checked": None, "src": cfg.get("src")}
+    name: {"status": "up" if cfg.get("local") else "unknown",
+           "detail": cfg.get("detail", "not probed yet"),
+           "label": cfg["label"],
+           # `since` is when the current status was entered. For a local device
+           # that is when this process came up, which is now.
+           "since": time.time() if cfg.get("local") else None,
+           "checked": None, "src": cfg.get("src")}
     for name, cfg in DEVICES.items()
 }
 device_health_lock = threading.Lock()
@@ -302,10 +325,20 @@ async def lifespan(_app: FastAPI):
     threading.Thread(target=poll_ai_card_diagnostics, daemon=True).start()
     threading.Thread(target=metrics_loop, daemon=True).start()
     threading.Thread(target=device_health_loop, daemon=True).start()
+    # Edge-device mode only. Starlette does not run a mounted sub-app's
+    # lifespan, so the Topaz receivers are started from here, on the loop that
+    # serves the mounted app -- which is the loop they publish onto.
+    edge_device.start()
     yield
 
 
 app = FastAPI(title="Combined HPC dashboard", lifespan=lifespan)
+
+# Edge-device mode only: serve the whole Topaz dashboard under /topaz/, the same
+# prefix nginx proxies to the separate Topaz box in the normal deployment -- so
+# the shells' existing iframe URLs resolve either way, unchanged. No-op
+# otherwise, which leaves /topaz/ to nginx exactly as before.
+edge_device.mount(app)
 
 # Matches the old flask_cors CORS(app) default: every origin, method and header
 # allowed, credentials not allowed.
@@ -1133,7 +1166,13 @@ def device_health_loop():
     streaks = {name: 0 for name in DEVICES}
     while True:
         for name, cfg in DEVICES.items():
-            ok, detail = classify_probe(cfg["url"])
+            if cfg.get("local"):
+                # Served by this process (edge-device mode). Asking ourselves
+                # over HTTP could only ever fail for reasons that would already
+                # have stopped the poll asking the question.
+                ok, detail = True, cfg.get("detail", "served in-process")
+            else:
+                ok, detail = classify_probe(cfg["url"])
             if ok:
                 streaks[name] = 0
                 status = "up"
@@ -1555,6 +1594,12 @@ if __name__ == "__main__":
         print(f"Direct-link mode: VLM panel served from {VLM_BASE_URL}/ (nginx bypassed)")
     else:
         print(f"VLM panel served through nginx at /vlm/; health probe -> {VLM_BASE_URL}")
+    # Same for the Topaz panel: in-process, or the second box behind nginx.
+    for line in edge_device.startup_lines():
+        print(line)
+    if not edge_device.ENABLED:
+        print(f"Edge-device panel served through nginx at /topaz/; "
+              f"health probe -> {TOPAZ_BASE_URL}")
     # The collector / iperf3 / AI-card threads start from `lifespan` above, so
     # they come up whether the app is launched from here or by an external
     # `uvicorn combined_hpc:app`.

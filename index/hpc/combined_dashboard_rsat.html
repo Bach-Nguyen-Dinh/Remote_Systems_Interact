@@ -466,9 +466,9 @@
         };
 
         // ================= device health =================================
-        // The VLM and Topaz panels stream from separate boxes that the browser
-        // only reaches through nginx, so when one is off its frame would fill
-        // with nginx's 502 page. combined_hpc.py probes both from the box nginx
+        // The VLM and Topaz panels usually stream from separate boxes that the
+        // browser only reaches through nginx, so when one is off its frame would
+        // fill with nginx's 502 page. combined_hpc.py probes both from the box nginx
         // proxies from and publishes the verdict at /device_health; this polls
         // that and swaps each frame against a "disconnected" placeholder.
         //
@@ -485,6 +485,14 @@
         // recovery cannot interrupt somebody mid-conversation in the VLM panel.
         // A frame showing the placeholder holds no state to lose, because the
         // box behind it was unreachable.
+        //
+        // Two direct-link modes change where a panel comes from without changing
+        // any of this. `--local` hands us the VLM box's own origin through
+        // d.src below. `--edge-device` runs the Topaz backend inside
+        // combined_hpc.py, mounted at the SAME /topaz/ prefix nginx proxies to
+        // the separate box -- so the src below is already right and nothing is
+        // overridden; only the health verdict changes, to a device that is up
+        // whenever this page is being served at all.
         var DEVICES = [
             { key: "vlm",   sec: "sec-vlm",   tab: "server",
               // src is nginx's prefix, and only a default: a direct-link
