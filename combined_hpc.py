@@ -106,7 +106,9 @@ SAR_DIR = "/home/sarthak/workspace/SAR_codebase"
 SAR_PROG = os.path.join(SAR_DIR, "cphd_aic.py")
 SAR_LOGS = os.path.join(SAR_DIR, "logs")            # where the profiler writes log folders
 FAN_STATUS = "/home/sarthak/Remote_Systems_Interact/check_fan_status.sh"
-PROFILER_OPTION = ["--metrics_interval_ms", "500", "--csv_write_interval_s", "5", "--"]
+PROFILER_OPTION = ["--metrics_interval_ms", "500", "--csv_write_interval_s", "5",
+                   "--histograms", "--cores-per-row", "16", "--bin_width", "10",
+                   "--"]
 
 # Network test peers (two-machine paths that are still meaningful on one box)
 RDB_IP = "10.42.1.7"
@@ -128,7 +130,7 @@ FM_INTERFACE_ID = "fm1-mac3"
 VLM_HOST = "192.168.0.11"
 VLM_PORT = 8001
 VLM_BASE_URL = f"http://{VLM_HOST}:{VLM_PORT}"
-VLM_UPLOAD_TIMEOUT = 30      # seconds -- generous for a large SAR tiff over Ethernet
+VLM_UPLOAD_TIMEOUT = 60      # seconds -- generous for a large SAR tiff over Ethernet
 VLM_RESET_TIMEOUT = 5
 
 # Topaz edge device -- the box behind nginx's /topaz/ prefix. Only the health
@@ -165,8 +167,15 @@ DEVICE_HEALTH_TIMEOUT = 3.0      # per probe (connect + read)
 # down a panel somebody is using.
 DEVICE_HEALTH_FAIL_STREAK = 2
 DEVICES = {
-    "vlm":   {"label": "Vision language model", "url": f"{VLM_BASE_URL}/health"},
-    "topaz": {"label": "Edge device",           "url": f"{TOPAZ_BASE_URL}/system_metrics"},
+    "vlm":        {"label": "Vision language model", "url": f"{VLM_BASE_URL}/health"},
+    "topaz":      {"label": "Edge device",           "url": f"{TOPAZ_BASE_URL}/system_metrics"},
+    # Test build of the Topaz frontend, served alongside the production one at
+    # /test on the same box/port. Only combined_dashboard_testing.html points at
+    # this key -- the production and rsat shells keep using "topaz" above.
+    # Probes /test itself, not /test/system_metrics: that route doesn't exist --
+    # /test is a single standalone page whose relative links fall through to the
+    # box's regular (unprefixed) data routes, it isn't a mirrored /test/* app.
+    "topaz_test": {"label": "Edge device (test)",    "url": f"{TOPAZ_BASE_URL}/test"},
 }
 
 # Host-side served directories / files (unchanged from host_no_chunking.py)
@@ -426,6 +435,24 @@ def collect_sar_logs():
                 produced = True
             except Exception as e:
                 print(f"Error copying SAR log csv {fname}: {e}")
+    # Histogram plots (--histograms) land in their own subfolder of the run dir,
+    # under fixed filenames rather than a timestamp suffix, so they get their own
+    # (smaller) type map and endpoint below instead of reusing SAR_LOG_IMAGE_TYPES'
+    # prefix matching. They are much higher-resolution source PNGs (the stacked
+    # chart especially, one axis per row of cores) than the six standard plots, so
+    # they get a larger max_size to stay legible.
+    hist_src_dir = os.path.join(latest_path, "histogram")
+    if os.path.isdir(hist_src_dir):
+        hist_dest_dir = os.path.join(dest_dir, "histogram")
+        os.makedirs(hist_dest_dir, exist_ok=True)
+        for fname in sorted(os.listdir(hist_src_dir)):
+            src_path = os.path.join(hist_src_dir, fname)
+            if not os.path.isfile(src_path) or not fname.lower().endswith('.png'):
+                continue
+            webp_name = os.path.splitext(fname)[0] + '.webp'
+            optimize_tif(src_path, os.path.join(hist_dest_dir, webp_name),
+                         format='webp', max_size=(1600, 1600), quality=85)
+            produced = True
     if produced:
         sar_log_cleared = False   # this run's plots supersede whatever Reset hid
         sar_log_version += 1
@@ -563,7 +590,12 @@ def compute_tif_properties(tif_path, filePath):
 def process_cphd_file(filePath, filename):
     def on_image_sent(p):
         compute_tif_properties(p, filePath)
-        push_tif_to_vlm(p)
+        # Fire-and-forget: push_tif_to_vlm blocks on VLM_UPLOAD_TIMEOUT (30s) on a
+        # slow/unreachable VLM box. Running it inline here would stall this poll
+        # loop's process.poll() checks for that long, delaying detection of the SAR
+        # program exiting and thus collect_sar_logs() -- with no benefit, since the
+        # push result isn't used for anything downstream.
+        threading.Thread(target=push_tif_to_vlm, args=(p,), daemon=True).start()
 
     tif_path = handle_image_sending(filename, on_image_sent=on_image_sent)
     if tif_path is None:
@@ -765,7 +797,7 @@ def delete_all_files():
 # ----------------------------------------------------------------------------
 def handle_command(message):
     """Execute a control command in-process. Returns the JSON response to send."""
-    global current_run_cphd, tif_file_properties, sar_error
+    global current_run_cphd, tif_file_properties, sar_error, sar_log_cleared
 
     if message == "3":
         delete_all_files()
@@ -788,6 +820,10 @@ def handle_command(message):
         current_run_cphd = filename
         tif_file_properties = {}
         sar_error = None                      # clear any prior failure before a new run
+        # Hide the previous run's profiler plots the moment a new run starts, the
+        # same way Reset does -- otherwise the performance-analysis panel would
+        # keep showing stale plots for the whole duration of the new SAR run.
+        sar_log_cleared = True
         filePath = cphd_files.get(filename)
         if filePath and os.path.exists(filePath):
             print("file exists, start processing")
@@ -1341,6 +1377,16 @@ SAR_LOG_IMAGE_TYPES = {
     "memory_usage":         "memory_usage_",
 }
 
+# Histogram plots (histogram/ subfolder of the run dir, written by --histograms).
+# Unlike SAR_LOG_IMAGE_TYPES these filenames carry no run timestamp, so the map
+# holds the exact basename rather than a prefix. Only a subset of what
+# --histograms can produce is exposed here for now.
+HISTOGRAM_IMAGE_TYPES = {
+    "core_usage_p_and_e_mean": "core_usage_histogram_p_and_e_mean",
+    "core_usage_stacked_mean": "core_usage_histogram_stacked_mean",
+    "pooled_core_usage":       "pooled_core_usage_histogram",
+}
+
 def current_sar_log_folder():
     """Name of the SAR log folder the dashboard should be showing, or None.
 
@@ -1376,6 +1422,17 @@ def serve_sar_log_image(image_type: str):
         return PlainTextResponse("Image not found", status_code=404)
     return send_from_directory(folder_path, matches[0])
 
+@app.get('/sar_log/histogram_image/{image_type}')
+def serve_sar_log_histogram_image(image_type: str):
+    if image_type not in HISTOGRAM_IMAGE_TYPES:
+        return PlainTextResponse("Unknown image type", status_code=400)
+    folder = current_sar_log_folder()
+    if folder is None:
+        return PlainTextResponse("No log data", status_code=404)
+    hist_dir = os.path.join(SAR_LOGS_DIR, folder, "histogram")
+    webp_name = HISTOGRAM_IMAGE_TYPES[image_type] + ".webp"
+    return send_from_directory(hist_dir, webp_name)
+
 @app.get('/sar_log/status')
 def sar_log_status():
     """Describe the profiler plots currently on offer, in one call.
@@ -1393,9 +1450,17 @@ def sar_log_status():
     collected, which is what makes the panel clear itself -- see
     current_sar_log_folder(). `version` deliberately does NOT move on a Reset:
     sar_process_image_panel.html polls it against a pre-run baseline to spot its
-    own run's logs, and a Reset-driven bump would fire that early."""
+    own run's logs, and a Reset-driven bump would fire that early.
+
+    `running` and `run_pending` let the standalone performance-analysis panel
+    show a status message for the gap before `folder` has anything to offer:
+    `running` is true for the whole subprocess lifetime (SAR is still crunching,
+    no CSV yet), and `run_pending` stays true from the RUN command through the
+    post-exit collect_sar_logs() call (output produced, plots not converted /
+    on disk yet). Both go false/None the same moment `folder` does, on Reset."""
     folder = current_sar_log_folder()
     images = []
+    histogram_images = []
     if folder is not None:
         try:
             names = os.listdir(os.path.join(SAR_LOGS_DIR, folder))
@@ -1403,7 +1468,16 @@ def sar_log_status():
             names = []
         images = [t for t, prefix in SAR_LOG_IMAGE_TYPES.items()
                   if any(n.startswith(prefix) and n.endswith('.webp') for n in names)]
-    return JSONResponse({"version": sar_log_version, "folder": folder, "images": images})
+        try:
+            hist_names = os.listdir(os.path.join(SAR_LOGS_DIR, folder, "histogram"))
+        except OSError:
+            hist_names = []
+        histogram_images = [t for t, base in HISTOGRAM_IMAGE_TYPES.items()
+                            if f"{base}.webp" in hist_names]
+    return JSONResponse({"version": sar_log_version, "folder": folder, "images": images,
+                         "histogram_images": histogram_images,
+                         "running": sar_process is not None,
+                         "run_pending": current_run_cphd is not None})
 
 @app.get('/sar_colored_image')
 def serve_sar_colored_image(filename: str = Query("")):
