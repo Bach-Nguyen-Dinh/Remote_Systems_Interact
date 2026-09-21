@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Nexon Dashboard Launcher
+GenericName=Demo launcher
+Comment=Pick the flags, fill in the addresses, start the HPC dashboard
+Exec=/home/sarthak/Remote_Systems_Interact/open_launcher.sh
+Path=/home/sarthak/Remote_Systems_Interact
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;
+Keywords=hpc;topaz;vlm;demo;dashboard;
+StartupNotify=true

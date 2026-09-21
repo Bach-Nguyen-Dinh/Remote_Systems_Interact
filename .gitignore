@@ -24,6 +24,11 @@
 !run_topaz2.sh
 !remote_launch.sh
 
+# The desktop icon: the .desktop entry that gets installed into ~/Desktop and
+# ~/.local/share/applications, plus the wrapper its Exec line points at.
+!open_launcher.sh
+!rsi-dashboard.desktop
+
 # The virtualenvs themselves are build output -- rebuild them from the
 # manifests above, never commit them. Listed after the allowlist so this
 # wins, and so a future "!*.py" style rule can't drag in their contents.
