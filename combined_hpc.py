@@ -196,11 +196,13 @@ TOPAZ_BASE_URL = f"http://{TOPAZ_HOST}:{TOPAZ_PORT}"
 #     auth rejection count as down.
 DEVICE_HEALTH_INTERVAL = 5.0     # seconds between rounds of probes
 DEVICE_HEALTH_TIMEOUT = 3.0      # per probe (connect + read)
-# Consecutive failures before a device is called down. Two rounds (~10s) is the
-# whole safety margin against a false positive: the shell blanks a device's
-# frame when it goes down, so a single dropped packet must not be enough to tear
-# down a panel somebody is using.
-DEVICE_HEALTH_FAIL_STREAK = 2
+# Consecutive failures before a device is called down. This streak is the whole
+# safety margin against a false positive: the shell blanks a device's frame when
+# it goes down, so a single dropped packet must not be enough to tear down a
+# panel somebody is using. Five rounds (~25s) because the boxes this probes are
+# busy ones -- a VLM box mid-inference and a target board mid-run both stall a
+# probe past the 3s timeout now and then without being down.
+DEVICE_HEALTH_FAIL_STREAK = 5
 #
 # "src" is what the browser should point that device's <iframe> at, and it is
 # published to the shell by /device_health. It is None for every device in the
