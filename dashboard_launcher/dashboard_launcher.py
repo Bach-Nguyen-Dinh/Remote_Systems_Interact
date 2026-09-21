@@ -10,7 +10,8 @@ cable. This wraps it:
 
     screen 1  tick the flags                    --local / --edge-device / --manual
     screen 2  fill in the addresses those imply, Start greys out until they parse
-    screen 3  it is running: End, and Edge Camera when there is a board to ask
+    screen 3  it is running: the browser opens itself once :5000 answers;
+              End, Open Dashboard, and Edge Camera when there is a board
 
 Nothing here re-implements run_hpc.sh. The flags and addresses are handed to it
 verbatim, so `--vlm-host`/`--topaz-host` are always passed and its interactive
@@ -52,11 +53,14 @@ hanging on a password prompt no window is going to answer.
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
+import urllib.error
+import urllib.request
 from tkinter import messagebox, scrolledtext, ttk
 
 SYSTEM_PYTHON = "/usr/bin/python3"
@@ -75,6 +79,42 @@ DEFAULT_VLM_HOST = "10.42.0.3"
 DEFAULT_VLM_PORT = "8001"
 DEFAULT_TOPAZ_HOST = "10.42.0.7"
 DEFAULT_TOPAZ_PORT = "54322"
+
+# Where the dashboard lives, once it is up.
+#
+# Readiness is always measured against uvicorn itself on the loopback, because
+# that is the process run_hpc.sh actually starts and it is the same in every
+# mode -- nginx only proxies to it. Where the BROWSER is pointed is a separate
+# question, and it is not the same address:
+#
+#   --local / --edge-device   nginx is out of the path, and run_hpc.sh tells the
+#                             operator to use this box's own :5000. The page is
+#                             built for that: it addresses the VLM box by its
+#                             own origin instead of the /vlm/ prefix.
+#
+#   neither (the lab LAN)     the page uses /vlm/ and /topaz/, which only exist
+#                             in the nginx config, so :5000 direct would load a
+#                             shell whose panels 404. It has to be the site.
+#
+# Opening the wrong one of those does not fail loudly -- it comes up as a
+# dashboard with dead panels -- which is why the choice is made from the flags
+# rather than by defaulting to localhost everywhere.
+BACKEND_PROBE = "http://127.0.0.1:5000/"
+DIRECT_URL = "http://localhost:5000/"
+NGINX_URL = "https://nexon.aicraft.com.au/"
+BROWSER = "firefox"
+# -new-window, not a bare URL: a bare URL opens a tab inside whatever
+# Firefox window happens to be in front, which buries the dashboard in
+# the operator's own browsing. A window of its own is also the one that
+# can be closed at the end of a demo without losing anything else.
+BROWSER_ARGS = ["-new-window"]
+
+# combined_hpc.py imports torch and opens InfluxDB before uvicorn binds, and the
+# far-end boxes are started first, so the gap between Start and a live port is
+# tens of seconds on a cold run. Long enough to look hung, hence the countdown
+# in the log; capped so a backend that never comes up stops polling.
+BACKEND_TIMEOUT = 180.0
+BACKEND_POLL = 1.0
 
 # The direct cable to the VLM box. `nexon_local` is a NetworkManager profile
 # that is already bound to this device -- the launcher only re-activates it, so
@@ -150,6 +190,7 @@ class Launcher:
         # threads, so they need a value from the start rather than a hasattr.
         self.end_btn = None
         self.cam_btn = None
+        self.open_btn = None
         self.status = None
 
         self.body = ttk.Frame(root, padding=16)
@@ -314,8 +355,10 @@ class Launcher:
         ttk.Label(self.body, text="Running",
                   font=("TkDefaultFont", 14, "bold")).pack(anchor="w")
         ttk.Label(self.body, foreground="#555", wraplength=620,
-                  text="Open the dashboard at http://<this box>:5000/  "
-                       "(or /test for the testing shell).").pack(anchor="w", pady=(2, 10))
+                  text="%s opens in a Firefox window of its own, by itself, "
+                       "once the backend answers. Open Dashboard does it again "
+                       "-- for a window closed by mistake."
+                       % self.dashboard_url()).pack(anchor="w", pady=(2, 10))
 
         self.log_widget = scrolledtext.ScrolledText(self.body, height=16, width=84,
                                                     state="disabled", wrap="word",
@@ -326,6 +369,8 @@ class Launcher:
         row.pack(fill="x", pady=(10, 0))
         self.end_btn = ttk.Button(row, text="End", command=self.on_end)
         self.end_btn.pack(side="left")
+        self.open_btn = ttk.Button(row, text="Open Dashboard", command=self.open_browser)
+        self.open_btn.pack(side="left", padx=(8, 0))
         if self.edge.get():
             self.cam_btn = ttk.Button(row, text="Edge Camera", command=self.on_camera)
             self.cam_btn.pack(side="left", padx=(8, 0))
@@ -368,6 +413,7 @@ class Launcher:
             return
         threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
         threading.Thread(target=self._watch, daemon=True).start()
+        threading.Thread(target=self._await_backend, daemon=True).start()
         self.status.configure(text="dashboard running")
 
     def apply_vlm_profile(self):
@@ -408,6 +454,78 @@ class Launcher:
         self.log("run_hpc.sh exited with status %s." % proc.returncode)
         self.widget_do(self.status, lambda w: w.configure(text="dashboard stopped"))
         self.widget_do(self.end_btn, lambda w: w.state(["disabled"]))
+
+    # --------------------------------------------------------------- browser
+
+    def dashboard_url(self):
+        """Which address to hand the browser. See the BACKEND_PROBE comment:
+        the direct-link shells and the nginx shell are different pages, and
+        each only works on its own origin."""
+        return DIRECT_URL if (self.local.get() or self.edge.get()) else NGINX_URL
+
+    def _backend_answers(self):
+        """True once something is serving HTTP on :5000.
+
+        Any status counts, 500 included. The question here is whether uvicorn
+        has bound and is replying at all -- a route that errors is still a
+        backend that is up, and waiting for a 200 would hang on a dashboard
+        that merely has one panel misconfigured."""
+        try:
+            urllib.request.urlopen(BACKEND_PROBE, timeout=2).close()
+            return True
+        except urllib.error.HTTPError:
+            return True
+        except (urllib.error.URLError, OSError):
+            return False
+
+    def _await_backend(self):
+        """Poll until the backend answers, then open the browser once.
+
+        Deliberately a probe rather than a line-match on run_hpc.sh's output:
+        uvicorn prints "Application startup complete" before it has finished
+        binding in some configurations, and the log text is not ours to depend
+        on. A socket that answers is the thing we actually care about."""
+        proc = self.proc
+        deadline = time.time() + BACKEND_TIMEOUT
+        self.log("Waiting for the backend on %s ..." % BACKEND_PROBE)
+        told = 0.0
+        while time.time() < deadline:
+            # Give up quietly if End was pressed or run_hpc.sh died -- _watch
+            # reports the exit, and a browser opening onto a dead port after
+            # the operator has already stopped everything is just confusing.
+            if self.stopped or proc is None or proc.poll() is not None:
+                return
+            if self._backend_answers():
+                self.log("Backend is up.")
+                self.open_browser()
+                return
+            waited = time.time() - (deadline - BACKEND_TIMEOUT)
+            if waited - told >= 15:
+                told = waited
+                self.log("  ... still waiting (%ds)" % waited)
+            time.sleep(BACKEND_POLL)
+        self.log("Backend did not answer within %ds -- not opening the browser. "
+                 "Use Open Dashboard once it comes up." % BACKEND_TIMEOUT)
+
+    def open_browser(self):
+        """Start the browser detached from us.
+
+        start_new_session matters here for the opposite reason it does at
+        Start: it keeps the browser out of any process group this launcher
+        signals, so End tears down the dashboard without also shutting the
+        operator's window in their face."""
+        url = self.dashboard_url()
+        try:
+            subprocess.Popen(
+                [BROWSER] + BROWSER_ARGS + [url],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True)
+        except OSError as exc:
+            self.log("could not start %s: %s -- open %s yourself."
+                     % (BROWSER, exc, url))
+            return
+        self.log("Opened %s in %s." % (url, BROWSER))
 
     # ------------------------------------------------------------------ stop
 
@@ -729,6 +847,10 @@ def check_environment():
     for name, path in (("run_hpc.sh", RUN_HPC), ("display_demo.sh", DISPLAY_DEMO)):
         print("%-14s: %s" % (name, path if os.access(path, os.R_OK) else "MISSING (%s)" % path))
     print("display       : %s" % (os.environ.get("DISPLAY") or "unset"))
+    browser = shutil.which(BROWSER)
+    print("%-14s: %s" % (BROWSER, browser or "MISSING (the browser will not open)"))
+    print("dashboard url : %s  (direct link)" % DIRECT_URL)
+    print("              : %s  (lab LAN, via nginx)" % NGINX_URL)
 
 
 def main():
