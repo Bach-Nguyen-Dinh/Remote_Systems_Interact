@@ -22,6 +22,7 @@
 !requirements-*.txt
 !run_hpc.sh
 !run_topaz2.sh
+!remote_launch.sh
 
 # The virtualenvs themselves are build output -- rebuild them from the
 # manifests above, never commit them. Listed after the allowlist so this
