@@ -4,7 +4,9 @@ Version=1.0
 Name=Nexon Dashboard Launcher
 GenericName=Demo launcher
 Comment=Pick the flags, fill in the addresses, start the HPC dashboard
-Exec=/home/sarthak/Remote_Systems_Interact/open_launcher.sh
+Exec=/home/sarthak/Remote_Systems_Interact/dashboard_launcher/open_launcher.sh
+# The repo root, not this file's own directory: run_hpc.sh and
+# display_demo.sh live there and are what actually get run.
 Path=/home/sarthak/Remote_Systems_Interact
 Icon=utilities-system-monitor
 Terminal=false

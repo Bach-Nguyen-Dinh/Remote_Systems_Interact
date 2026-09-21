@@ -24,10 +24,14 @@
 !run_topaz2.sh
 !remote_launch.sh
 
-# The desktop icon: the .desktop entry that gets installed into ~/Desktop and
-# ~/.local/share/applications, plus the wrapper its Exec line points at.
-!open_launcher.sh
-!rsi-dashboard.desktop
+# The dashboard launcher. Line 1 ignores directories too, and git does not
+# look inside an ignored directory -- so the directory has to be un-ignored
+# first or the rules below it would never be consulted. Listed file by file
+# rather than as dashboard_launcher/*, so a __pycache__ stays ignored.
+!dashboard_launcher/
+!dashboard_launcher/dashboard_launcher.py
+!dashboard_launcher/open_launcher.sh
+!dashboard_launcher/rsi-dashboard.desktop
 
 # The virtualenvs themselves are build output -- rebuild them from the
 # manifests above, never commit them. Listed after the allowlist so this

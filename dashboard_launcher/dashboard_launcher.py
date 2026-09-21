@@ -60,7 +60,13 @@ import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 
 SYSTEM_PYTHON = "/usr/bin/python3"
-REPO = os.path.dirname(os.path.abspath(__file__))
+
+# This file lives in dashboard_launcher/, one level down. The scripts it drives
+# are not the launcher's own -- run_hpc.sh and display_demo.sh are run by hand
+# and by other launchers too -- so they stay at the repo root and are reached
+# by going up, never by assuming they sit next to this file.
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
 RUN_HPC = os.path.join(REPO, "run_hpc.sh")
 DISPLAY_DEMO = os.path.join(REPO, "display_demo.sh")
 
